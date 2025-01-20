@@ -44,10 +44,8 @@ def generate_image_grid(
     # Pick latents and labels.
     print(f'Generating {batch_size} images...')
     latents = torch.randn([batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device)
-    print(latents.shape)
     class_labels = None
     if net.label_dim:
-        # class_labels = torch.eye(net.label_dim, device=device)[torch.randint(net.label_dim, size=[batch_size], device=device)]
         class_labels = torch.eye(net.label_dim, device=device)[[281, 281, 281, 281]]
 
 
@@ -72,28 +70,33 @@ def generate_image_grid(
 
         # Euler step.
         denoised = guide_trained * net(x_hat, t_hat, class_labels).to(torch.float64) if (guide_trained != 0.0) else torch.zeros_like(x_hat)
-        d_cur_template = (x_hat - guide_template * (x_template - x_hat)) / t_hat # is there a way to perfeclty reconstruct even when steps = 1
-        d_cur = (x_hat - denoised ) / t_hat
-        d_cur_total = d_cur_template + d_cur
-        x_next = x_hat + (t_next - t_hat) * d_cur_total
+        d_cur = (x_hat - denoised - t_hat * guide_template*(x_template - x_hat)) / t_hat
+        x_next = x_hat + (t_next - t_hat) * d_cur
 
 
         # Apply 2nd order correction.
         if i < num_steps - 1 and second_order:
             denoised = guide_trained * net(x_next, t_next, class_labels).to(torch.float64) if (guide_trained != 0.0) else torch.zeros_like(x_hat)
-            denoised += guide_template  * (x_template - x_next)
-            d_prime_template = (x_next - guide_template * (x_template - x_next)) / t_next
-            d_prime = (x_next - denoised) / t_next
-            d_prime_total= d_prime_template + d_prime
-            x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur_total + 0.5 * d_prime_total)
+            d_prime = (x_next - denoised - t_next * guide_template*(x_template - x_next)) / t_next
+            x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
+
+
 
     # Save image grid.
     print(f'Saving image grid to "{dest_path}"...')
     image = (x_next * 127.5 + 128).clip(0, 255).to(torch.uint8)
+    image = (x_next * 127.5 + 128).to(torch.uint8)
     image = image.reshape(gridh, gridw, *image.shape[1:]).permute(0, 3, 1, 4, 2)
     image = image.reshape(gridh * net.img_resolution, gridw * net.img_resolution, net.img_channels)
     image = image.cpu().numpy()
     PIL.Image.fromarray(image, 'RGB').save(dest_path)
+
+
+    image = (x_next * 127.5 + 128).clip(0, 255).to(torch.uint8)
+    image = image.reshape(gridh, gridw, *image.shape[1:]).permute(0, 3, 1, 4, 2)
+    image = image.reshape(gridh * net.img_resolution, gridw * net.img_resolution, net.img_channels)
+    image = image.cpu().numpy()
+    PIL.Image.fromarray(image, 'RGB').save(dest_path.split(".png")[0] + "_clip.png")
     print('Done.')
 
 #----------------------------------------------------------------------------
@@ -101,11 +104,10 @@ def generate_image_grid(
 def main():
     model_root = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
     num_steps = 32
-    second_order = False
-    guide_template = 1.0
+    second_order = True
 
-    for num_steps in [ 1, 16, 32]:
-        fname = f'imgs/imgnet-numsteps_{num_steps}-gtmp_{guide_template}-secondorder_{second_order}.png'
+    for guide_template in np.arange(0.0, 0.18, 0.02):
+        fname = f'imgs/imgnet-numsteps_{num_steps}-gtmp_{guide_template:.3f}-secondorder_{second_order}.png'
         generate_image_grid(f'{model_root}/edm-imagenet-64x64-cond-adm.pkl', fname,
                             seed=0, num_steps=num_steps, guide_template=guide_template, guide_trained=1.0,
                             S_churn=40, S_min=0.05, S_max=50, S_noise=1.003, second_order=second_order,

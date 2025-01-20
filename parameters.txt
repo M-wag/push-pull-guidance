@@ -1,10 +1,10 @@
 guide_template constant
-	0.02 - 0.16   
-	above 0.18 turns black
+	0.02 - 0.16 : 	0.16 starts to look very similar
+	> 0.18:		turns black
 
 scaled template constant
-	t 
-	but we should try 1/t^2 
+	t:	works but doesnt make sense theoretically
+(?)	1/t^2:	theoretically correct, all images turn black
 
 
 steps
@@ -14,4 +14,14 @@ steps
 
 
 second order 
-	not working yet
+	16 steps with 2nd order != 32 steps no 2nd order
+	32 steps:
+		0.10:		turns psychedelic
+		0.12, 0.14:	noise
+		> 0.12:		turns black
+
+clipping
+	when values are above 255 will set them to white
+	with more template guidance white spots will explode
+	at gt >= 0.06 stuff white spots start to explode
+
