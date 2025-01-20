@@ -84,35 +84,27 @@ def generate_image_grid(
 
     # Save image grid.
     print(f'Saving image grid to "{dest_path}"...')
-    image = (x_next * 127.5 + 128).clip(0, 255).to(torch.uint8)
     image = (x_next * 127.5 + 128).to(torch.uint8)
     image = image.reshape(gridh, gridw, *image.shape[1:]).permute(0, 3, 1, 4, 2)
     image = image.reshape(gridh * net.img_resolution, gridw * net.img_resolution, net.img_channels)
     image = image.cpu().numpy()
     PIL.Image.fromarray(image, 'RGB').save(dest_path)
-
-
-    image = (x_next * 127.5 + 128).clip(0, 255).to(torch.uint8)
-    image = image.reshape(gridh, gridw, *image.shape[1:]).permute(0, 3, 1, 4, 2)
-    image = image.reshape(gridh * net.img_resolution, gridw * net.img_resolution, net.img_channels)
-    image = image.cpu().numpy()
-    PIL.Image.fromarray(image, 'RGB').save(dest_path.split(".png")[0] + "_clip.png")
     print('Done.')
 
 #----------------------------------------------------------------------------
 
 def main():
     model_root = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
-    num_steps = 32
     second_order = True
 
-    for guide_template in np.arange(0.0, 0.18, 0.02):
-        fname = f'imgs/imgnet-numsteps_{num_steps}-gtmp_{guide_template:.3f}-secondorder_{second_order}.png'
-        generate_image_grid(f'{model_root}/edm-imagenet-64x64-cond-adm.pkl', fname,
-                            seed=0, num_steps=num_steps, guide_template=guide_template, guide_trained=1.0,
-                            S_churn=40, S_min=0.05, S_max=50, S_noise=1.003, second_order=second_order,
-                            gridw=2, gridh=2
-                        ) 
+    for num_steps in [32, 64, 128, 256]:
+        for guide_template in np.arange(0.08, 0.14, 0.02):
+            fname = f'imgs/imgnet-numsteps_{num_steps}-gtmp_{guide_template:.3f}-secondorder_{second_order}.png'
+            generate_image_grid(f'{model_root}/edm-imagenet-64x64-cond-adm.pkl', fname,
+                                seed=0, num_steps=num_steps, guide_template=guide_template, guide_trained=1.0 - guide_template,
+                                S_churn=40, S_min=0.05, S_max=50, S_noise=1.003, second_order=second_order,
+                                gridw=2, gridh=2
+                            ) 
 
 #----------------------------------------------------------------------------
 

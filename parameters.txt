@@ -24,4 +24,16 @@ clipping
 	when values are above 255 will set them to white
 	with more template guidance white spots will explode
 	at gt >= 0.06 stuff white spots start to explode
+	solved if you make vector field combex combination
 
+
+all of the above without making a convex combination
+
+with convex vector field
+
+guide_template :
+	
+	> 0.18 and first order and 32 steps:	turns black
+	0.10 and second order and 32 steps: psychdelic
+	
+	for first order 0.120 is good but blurry
