@@ -1,0 +1,17 @@
+guide_template constant
+	0.02 - 0.16   
+	above 0.18 turns black
+
+scaled template constant
+	t 
+	but we should try 1/t^2 
+
+
+steps
+	minimum 32, really blurry 
+	Papers do up to 1024, but default settings are 256.
+	Try between 32-256
+
+
+second order 
+	not working yet
