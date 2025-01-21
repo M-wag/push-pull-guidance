@@ -15,6 +15,11 @@ import torch
 import PIL.Image
 import dnnlib
 
+from einops import rearrange
+
+import matplotlib.pyplot as plt # should be in seperate function
+from matplotlib.offsetbox import AnnotationBbox, OffsetImage # should be in seperate function
+
 from torchvision.io import read_image # should be removed given we install torchvision just for this
 #----------------------------------------------------------------------------
 
@@ -25,6 +30,7 @@ def generate_image_grid(
     num_steps=18, sigma_min=0.002, sigma_max=80, rho=7,
     S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
     guide_template=0, guide_trained=1.0, second_order=True,
+    save_all_timesteps=False,
 ):
     batch_size = gridw * gridh
     torch.manual_seed(seed)
@@ -39,14 +45,14 @@ def generate_image_grid(
     x_template = img.to(device).to(torch.float32) 
     x_template = (x_template - torch.mean(x_template)) / torch.std(x_template) #??: Why don't we need to rescale
     x_template = x_template.view(net.img_channels, net.img_resolution, net.img_resolution)
-    x_template = x_template.repeat(4, 1, 1, 1)
+    x_template = x_template.repeat(batch_size, 1, 1, 1)
 
     # Pick latents and labels.
     print(f'Generating {batch_size} images...')
     latents = torch.randn([batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device)
     class_labels = None
     if net.label_dim:
-        class_labels = torch.eye(net.label_dim, device=device)[[281, 281, 281, 281]]
+        class_labels = torch.eye(net.label_dim, device=device)[batch_size * [281]]
 
 
     # Adjust noise levels based on what's supported by the network.
@@ -57,6 +63,13 @@ def generate_image_grid(
     step_indices = torch.arange(num_steps, dtype=torch.float64, device=device)
     t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
+
+    xs = None 
+    if save_all_timesteps:
+        # Intialize empty array to save intermediate timestaps
+        mags_template = torch.empty(num_steps)
+        mags_model = torch.empty(num_steps)
+        xs = torch.empty((num_steps, batch_size, net.img_channels, net.img_resolution, net.img_resolution))
 
     # Main sampling loop.
     x_next = latents.to(torch.float64) * t_steps[0]
@@ -70,7 +83,9 @@ def generate_image_grid(
 
         # Euler step.
         denoised = guide_trained * net(x_hat, t_hat, class_labels).to(torch.float64) if (guide_trained != 0.0) else torch.zeros_like(x_hat)
-        d_cur = (x_hat - denoised - t_hat * guide_template*(x_template - x_hat)) / t_hat
+        model_score =  (x_hat - denoised ) / t_hat
+        template_score = -t_hat * (guide_template * (x_template - x_hat)) / t_hat
+        d_cur = model_score + template_score
         x_next = x_hat + (t_next - t_hat) * d_cur
 
 
@@ -80,31 +95,61 @@ def generate_image_grid(
             d_prime = (x_next - denoised - t_next * guide_template*(x_template - x_next)) / t_next
             x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
 
-
+        # Save intermediate timsteps
+        if save_all_timesteps:
+            xs[i] = x_next
+            mags_template[i] = torch.norm(template_score * (t_next - t_hat)) 
+            mags_model[i] = torch.norm(model_score * (t_next - t_hat)) 
 
     # Save image grid.
     print(f'Saving image grid to "{dest_path}"...')
     image = (x_next * 127.5 + 128).to(torch.uint8)
-    image = image.reshape(gridh, gridw, *image.shape[1:]).permute(0, 3, 1, 4, 2)
-    image = image.reshape(gridh * net.img_resolution, gridw * net.img_resolution, net.img_channels)
+    image = rearrange(image, "(b1 b2) c h w -> (b1 h) (b2 w) c", b1=gridh)
     image = image.cpu().numpy()
-    PIL.Image.fromarray(image, 'RGB').save(dest_path)
+
+    xs = (xs * 127.5 + 128).to(torch.uint8)
+    xs2 = rearrange(xs, "t (b1 b2) c  h w -> (b1 h) (t b2 w) c", b1=gridh)
+    xs2 = xs.cpu().numpy()
+    
+    # Plot magnitudes !! MOVE TO SEPEARTE FUNCTION
+    fig, ax  = plt.subplots(1, 1)
+    ax.scatter(list(range(0, num_steps)), np.log10(mags_template.cpu()), label="Template")
+    ax.scatter(list(range(0, num_steps)), np.log10(mags_model.cpu()), label="Model")
+    ax.legend()
+    ax.grid(True)
+
+
+    xs = rearrange(xs, "t (b1 b2) c h w -> t (b1 h) ( b2 w) c", b1=gridh)
+    min_y, max_y = ax.get_ylim()
+    ax.set_ylim(min_y - 2, max_y)
+    for i in range(num_steps):
+        im = OffsetImage(xs[i], zoom=1/2)
+        im.image.axes = ax
+        ab = AnnotationBbox(im, (i, min_y - 1), frameon=False)
+        ax.add_artist(ab)
+
+    
+    plt.show()
+
+    # PIL.Image.fromarray(image, 'RGB').save(dest_path)
+    # PIL.Image.fromarray(xs2, 'RGB').save(dest_path)
     print('Done.')
 
 #----------------------------------------------------------------------------
 
 def main():
     model_root = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
-    second_order = True
+    second_order = False
+    num_steps = 32
 
-    for num_steps in [32, 64, 128, 256]:
-        for guide_template in np.arange(0.08, 0.14, 0.02):
-            fname = f'imgs/imgnet-numsteps_{num_steps}-gtmp_{guide_template:.3f}-secondorder_{second_order}.png'
-            generate_image_grid(f'{model_root}/edm-imagenet-64x64-cond-adm.pkl', fname,
-                                seed=0, num_steps=num_steps, guide_template=guide_template, guide_trained=1.0 - guide_template,
-                                S_churn=40, S_min=0.05, S_max=50, S_noise=1.003, second_order=second_order,
-                                gridw=2, gridh=2
-                            ) 
+    for guide_template in [0.08]:
+        fname = f'imgs/imgnet-numsteps_{num_steps}-gtmp_{guide_template:.3f}-secondorder_{second_order}.png'
+        generate_image_grid(f'{model_root}/edm-imagenet-64x64-cond-adm.pkl', fname,
+                            seed=0,  guide_template=guide_template, guide_trained=1.0 - guide_template,
+                            num_steps=num_steps, second_order=second_order,
+                            S_churn=40, S_min=0.05, S_max=50, S_noise=1.003, 
+                            gridw=1, gridh=1, save_all_timesteps=True,
+                        ) 
 
 #----------------------------------------------------------------------------
 

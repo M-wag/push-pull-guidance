@@ -1,39 +1,19 @@
-guide_template constant
-	0.02 - 0.16 : 	0.16 starts to look very similar
-	> 0.18:		turns black
+withoout convex vector field pixel values will go above 255
+following is with convex vector field i.e guide_template + guide_trained = 1.0
 
-scaled template constant
-	t:	works but doesnt make sense theoretically
-(?)	1/t^2:	theoretically correct, all images turn black
-
-
-steps
-	minimum 32, really blurry 
-	Papers do up to 1024, but default settings are 256.
-	Try between 32-256
-
-
-second order 
-	16 steps with 2nd order != 32 steps no 2nd order
-	32 steps:
-		0.10:		turns psychedelic
-		0.12, 0.14:	noise
-		> 0.12:		turns black
-
-clipping
-	when values are above 255 will set them to white
-	with more template guidance white spots will explode
-	at gt >= 0.06 stuff white spots start to explode
-	solved if you make vector field combex combination
-
-
-all of the above without making a convex combination
-
-with convex vector field
 
 guide_template :
 	
 	> 0.18 and first order and 32 steps:	turns black
-	0.10 and second order and 32 steps: psychdelic
+	> 0.10 and second order and 32 steps: psychdelic then noise then black
+
+
+numsteps: 32 - 256
+template: 0.08- 0.14 
+second_order : Euler and Heun
+
+	instability of Heun doesn't happen at  guide_template > 0.10 when num_steps > 32
+	colors tend to be very faded
+	for higher template guindace little differnce between more timesteps
+
 	
-	for first order 0.120 is good but blurry
