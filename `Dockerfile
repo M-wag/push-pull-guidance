@@ -75,7 +75,7 @@ def generate_image_grid(
         d_template =  t_hat / (t_hat**2 + v_0) * (x_hat - x_template)
         denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
         d_model = (x_hat - denoised) / t_hat
-        guide = 3/4 * (1 - torch.exp(-t_hat**2 * 0.05))
+        guide = torch.exp(-torch.dist(x_hat/x_hat, x_template/x_hat))
         print(guide)
         d_cur = (guide * d_template + (1 - guide) * d_model) * (t_next - t_hat)
         x_next = x_hat +  d_cur
@@ -160,6 +160,7 @@ def main():
         grid[i].set_title(f"v_0: {v_0:.3f}")
 
     # Plot images
+    print(images)
     for i, image in enumerate(images):
         grid[i].imshow(image)
 
