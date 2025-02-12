@@ -10,7 +10,7 @@ from jax import vmap
 from jaxtyping import Float, Array
 from einops import repeat, rearrange
 from functools import partial
-
+from matplotlib.widgets import Slider
 
 def attention_mixture(
     x: Float[Array, "D"],
@@ -18,27 +18,63 @@ def attention_mixture(
     means: Float[Array, "N D"],
     cov_mats: Float[Array, "N D D"]
 ) -> Float[Array, "N"]:
-    """ Computes attention weights for a mixture of Gaussians. """
-
-    N, D = means.shape
-    densities =  vmap(jst.multivariate_normal.pdf, in_axes=(None, 0, 0))(x, means, cov_mats)
-    densities = mix_weights * densities
-    attention = densities.T / jnp.sum(densities)
+    """Computes numerically stable attention weights for a mixture of Gaussians."""
+    # Compute log of the mixture weights (add epsilon to avoid log(0))
+    log_mix_weights = jnp.log(mix_weights + 1e-12)
+    # Compute log-density for each Gaussian component
+    log_gauss = vmap(jst.multivariate_normal.logpdf, in_axes=(None, 0, 0))(x, means, cov_mats)
+    # Sum to get the log of the weighted densities
+    log_densities = log_mix_weights + log_gauss
+    # For numerical stability subtract the maximum log value (log-sum-exp trick)
+    max_log = jnp.max(log_densities)
+    exp_shifted = jnp.exp(log_densities - max_log)
+    # Compute the normalized attention weights
+    attention = exp_shifted / jnp.sum(exp_shifted)
+    
     return attention
-
 
 def score_mixture(
     x: Float[Array, "D"],
     mix_weights: Float[Array, "N"],
     means: Float[Array, "N D"],
     cov_mats: Float[Array, "N D D"]
+) -> Float[Array, "D"]:
+    """
+    Computes the score of a mixture of Gaussians:
+      score(x) = sum_i w_i(x) * Sigma_i^{-1} (mu_i - x)
+    where w_i(x) = (pi_i * N(x; mu_i, Sigma_i)) / (sum_j pi_j * N(x; mu_j, Sigma_j))
+    """
+    # Get attention weights for each component
+    attention = attention_mixture(x, mix_weights, means, cov_mats)
+    # Compute inverse covariance for each component
+    inv_covs = vmap(jnp.linalg.inv)(cov_mats)
+    # Broadcast x to have the same shape as means: (N, D)
+    diff = means - repeat(x, "... D -> ... N D", N=means.shape[0])
+    # Compute per-component contribution to the score
+    # This gives a (N, D) tensor for each component.
+    per_component_score = vmap(lambda inv_cov, d: inv_cov @ d)(inv_covs, diff)
+    # Weight by the attention and sum over components:
+    score = jnp.sum(attention[:, None] * per_component_score, axis=0)
+    return score
+
+
+def score_mixture_a(
+    x: Float[Array, "D"],
+    mix_weights: Float[Array, "N"],
+    means: Float[Array, "N D"],
+    cov_mats: Float[Array, "N D D"]
 ) -> Float[Array, "N"]:
-
+    """
+    Computes the score of a mixture of Gaussians:
+      score(x) = sum_i w_i(x) * Sigma_i^{-1} (mu_i - x)
+    where w_i(x) = (pi_i * N(x; mu_i, Sigma_i)) / (sum_j pi_j * N(x; mu_j, Sigma_j))
+    """
     N,D = means.shape
-
+    # Attention @ P @ (mu - x)
+    precision = jnp.linalg.inv(cov_mats)
     attention = attention_mixture(x, mix_weights, means, cov_mats)
     difference = means - repeat(x, "... D -> ... N D", N=N)
-    score = attention @ difference
+    score = attention @ vmap(jnp.matmul)(precision, difference) 
 
     return score
 
@@ -75,6 +111,7 @@ def plot_density_map_pdf(pdf):
     plt.title("Density")
     plt.show()
 
+
 def plot_quiver(gradient):
     # Generate grid of points
     resolution = 100
@@ -91,12 +128,57 @@ def plot_quiver(gradient):
     plt.show()
 
 
+def plot_basins(solutions: Float[Array, "t n D"], attractors: Float[Array, "N D"]):
+
+    n_steps, n, D = solutions.shape
+    N, D = attractors.shape
+
+    x_range = 25 * jnp.array([-5, 5])
+    y_range = 25 * jnp.array([-5, 5])
+
+    fig, ax = plt.subplots()
+    fig.subplots_adjust(bottom=0.25)
+    ax.set_aspect('equal')
+    ax.set_xlim(x_range)
+    ax.set_ylim(y_range)
+    
+    # Plot attractors
+    ax.scatter(attractors[:, 0], attractors[:, 1], 
+               marker='*', c='red', s=150, zorder=0)
+    scatter = ax.scatter(solutions[0, :, 0], solutions[0, :, 1],
+                         zorder=1, alpha=float(N*10/n), edgecolors='none')
+
+    # Map points to attractors
+
+
+    # Make sliders
+    ax_time = fig.add_axes([0.25, 0.1, 0.65, 0.03])
+    allowed_time_index = jnp.arange(n_steps)
+    slider_time = Slider(
+            ax_time, "Time Index", 0, n_steps,
+            valinit=0, valstep=allowed_time_index, 
+            color="green"
+    )
+
+    def update(val):
+        time_index = slider_time.val
+        scatter.set_offsets(solutions[time_index])
+        fig.canvas.draw_idle()
+
+    slider_time.on_changed(update)
+    plt.show()
+    
+
 def main(debug=True):
-    # Generate attention
-    mix_weights = jnp.array([0.2, 0.2, 0.2, 0.2, 0.2])
-    means = jnp.array([[0, 0], [-1, 1], [1, -1], [1, 1], [-1, -1]])
-    covs = jnp.array([0.1, 0.1, 0.1, 0.1, 0.1])
-    cov_mats = covs[:, None, None,] * jnp.eye(2)
+    means = 30.0 * jnp.array([
+        [-3, 0], 
+        [3, 0],
+        [0, -3],
+    ])
+    N, D = means.shape
+    covs = jnp.ones(N) * 0.01
+    mix_weights = jnp.ones(N) / N
+    cov_mats = covs[:, None, None,] * jnp.eye(D)
 
     if debug:
         print(f"mix_weights\t: {mix_weights.shape}")
@@ -112,34 +194,37 @@ def main(debug=True):
     
     
     # Simulate diffusion 
-    num_steps = 16
+    num_steps = 32
     num_samples = 1000
     key = jr.PRNGKey(0)
 
     # x_0 = jr.multivariate_normal(key, jnp.zeros(2), jnp.eye(2), shape=(1000, 1))
-    x_0 = jr.multivariate_normal(key, jnp.zeros(2), jnp.eye(2), shape=1000)
     step_indices = jnp.arange(num_steps)
-    t_steps = jnp.linspace(1, 0, num_steps)
+    T = 1.0
+    x_0 = jr.multivariate_normal(key, jnp.zeros(2), T * jnp.eye(2), shape=1000)
+    t_steps = jnp.linspace(T, 0.0, num_steps)
     
     def score_match(t, y, args):
-        return -t * vmap(lambda x: score_mixture(x, mix_weights, means, cov_mats + t**2))(y)
+        cov_adjusted = cov_mats + t**2 * jnp.eye(D)
+        return -t * vmap(lambda x: score_mixture_a(x, mix_weights, means, cov_adjusted))(y)
 
     # Initialize solver
-    sol = diffrax.diffeqsolve(
-            terms = diffrax.ODETerm(score_match),
-            solver = diffrax.Euler(),
-            y0 = x_0,
-            t0 = 1.0,
-            t1 = 0.0,
-            dt0 = -1/num_steps,
-            saveat = diffrax.SaveAt(ts=t_steps)
+    jax.config.update("jax_debug_nans", True)
+    with jax.disable_jit():
+        sol = diffrax.diffeqsolve(
+                terms = diffrax.ODETerm(score_match),
+                solver = diffrax.Euler(),
+                y0 = x_0,
+                t0 = T,
+                t1 = 0.0,
+                dt0 = -1/num_steps,
+                saveat = diffrax.SaveAt(ts=t_steps)
         )
 
-    print(sol.ys.shape)
-    plt.plot(sol.ys[0])
-    plt.show()
 
+    assert jnp.all(sol.ys[0] == x_0)
 
+    plot_basins(sol.ys, means)
     
 
 if __name__ ==  "__main__":
