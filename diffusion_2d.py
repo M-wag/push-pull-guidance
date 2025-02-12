@@ -133,22 +133,32 @@ def plot_basins(solutions: Float[Array, "t n D"], attractors: Float[Array, "N D"
     n_steps, n, D = solutions.shape
     N, D = attractors.shape
 
-    x_range = 25 * jnp.array([-5, 5])
-    y_range = 25 * jnp.array([-5, 5])
+    # min_range = np.min(np.min(solutions[:, :, 0]), np.min(solutions[:, :, 1]))  
+    # max_range = np.max(np.max(solutions[:, :, 0]), np.max(solutions[:, :, 1]))
 
     fig, ax = plt.subplots()
     fig.subplots_adjust(bottom=0.25)
     ax.set_aspect('equal')
-    ax.set_xlim(x_range)
-    ax.set_ylim(y_range)
+    # ax.set_xlim((min_range, max_range))
+    # ax.set_ylim((min_range, max_range))
     
     # Plot attractors
     ax.scatter(attractors[:, 0], attractors[:, 1], 
                marker='*', c='red', s=150, zorder=0)
-    scatter = ax.scatter(solutions[0, :, 0], solutions[0, :, 1],
-                         zorder=1, alpha=float(N*10/n), edgecolors='none')
-
     # Map points to attractors
+    distance_to_attractors = jnp.linalg.norm(solutions[-1, :, None, :] - attractors[None, :, :], axis=-1)
+    inx_closest_attractor = jnp.argmin(distance_to_attractors, axis=1)
+
+    # Generate unique colors for each attractor
+    unique_attractors = np.unique(inx_closest_attractor)
+    colors = np.array(plt.cm.jet(jnp.linspace(0, 1, len(unique_attractors))))
+    color_map = {attr: colors[i] for i, attr in enumerate(unique_attractors)}  # Map attractor index to color
+
+    # Initial plot (t = 0)
+    scatter = ax.scatter(solutions[0, :, 0], solutions[0, :, 1], 
+                         c=[color_map[int(attr)] for attr in inx_closest_attractor],
+                         zorder=1, alpha=float(len(unique_attractors) * 10 / solutions.shape[1]),
+                         edgecolors='none')
 
 
     # Make sliders
@@ -160,9 +170,10 @@ def plot_basins(solutions: Float[Array, "t n D"], attractors: Float[Array, "N D"
             color="green"
     )
 
-    def update(val):
-        time_index = slider_time.val
-        scatter.set_offsets(solutions[time_index])
+    def update(t):
+        t = int(slider_time.val)
+        scatter.set_offsets(solutions[t])  # Update positions
+        scatter.set_color([color_map[int(attr)] for attr in inx_closest_attractor])  # Reapply colors
         fig.canvas.draw_idle()
 
     slider_time.on_changed(update)
@@ -170,10 +181,11 @@ def plot_basins(solutions: Float[Array, "t n D"], attractors: Float[Array, "N D"
     
 
 def main(debug=True):
-    means = 30.0 * jnp.array([
+    means = jnp.array([
         [-3, 0], 
         [3, 0],
         [0, -3],
+        [0, 3],
     ])
     N, D = means.shape
     covs = jnp.ones(N) * 0.01
