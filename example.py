@@ -43,7 +43,7 @@ def generate_image_grid(
     latents = torch.randn([batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device)
     class_labels = None
     if net.label_dim:
-        class_labels = torch.eye(net.label_dim, device=device)[batch_size * [281]]
+        class_labels = torch.eye(net.label_dim, device=device)[batch_size * [282]]
 
 
     # Adjust noise levels based on what's supported by the network.
@@ -75,19 +75,17 @@ def generate_image_grid(
         d_template =  t_hat / (t_hat**2 + v_0) * (x_hat - x_template)
         denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
         d_model = (x_hat - denoised) / t_hat
-        guide = 3/4 * (1 - torch.exp(-t_hat**2 * 0.05))
-        print(guide)
-        d_cur = (guide * d_template + (1 - guide) * d_model) * (t_next - t_hat)
-        x_next = x_hat +  d_cur
+        if i > int(num_steps * 3/4 ):
+            guide = 0
+        d_cur = (guide * d_template +  d_model) * (t_next - t_hat)
+        # d_cur = ((guide * d_template) + (1 - guide) * d_model) * (t_next - t_hat)
+        x_next = x_hat + d_cur
 
         # Save intermediate timsteps
         if save_all_timesteps:
             xs[i] = x_next
             metrics[0, i] = torch.norm(x_next)
 
-    # Save image grid.
-    # image = (xs * 127.5 + 128).to(torch.uint8)
-    # image = rearrange(image, "t (b1 b2) c  h w -> (t b1 h) (b2 w) c", b1=gridh)
     return xs.numpy()
     print('Done.')
 
@@ -97,9 +95,10 @@ def main():
     # Simulations parameters
     grid_h = 2
     grid_w = 2
-    sched_guide = np.linspace(0.00, 0.16, 4)
-    sched_guide = [0]
-    sched_v0 = [10e-4, 10e-3,  10e-2]
+    # sched_guide = [0.0, 0.05, 0.1, 0.15, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.0]
+    # sched_v0 = np.power(10.0, [-2, -1, 0, 1, 2])
+    sched_guide = [0.0, 0.05, 0.1, 0.15, 0.30, 0.40, 0.50]
+    sched_v0 = np.power(10.0, [-2, -1, 0])
 
     # Load network.
     model_root = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
@@ -115,23 +114,34 @@ def main():
 
     # Run diffusion process
     images = []
+    xs_guide_0 = None
     for i, guide in enumerate(sched_guide):
         for j, v_0 in enumerate(sched_v0):
             fname = f'imgs/guide={guide:.2f}_v0={v_0:.3f}.png'
-            xs = generate_image_grid(
-                                net, 
-                                fname,
-                                template,
-                                device=device,
-                                seed=0,  
-                                guide=guide,
-                                v_0=v_0,
-                                num_steps=32, 
-                                second_order=False,
-                                S_churn=0, S_min=0.05, S_max=50, S_noise=1.003,  # default S_churn=40, S_churn=0 turns off adding noise
-                                gridw=grid_w, gridh=grid_h, 
-                                save_all_timesteps=True,
-                            ) 
+
+            # Load runs with guide = 0 given it's always the same
+            if guide == 0.0 and xs_guide_0 is not None:
+                xs = xs_guide_0
+            # Running model
+            else:
+                xs = generate_image_grid(
+                                    net, 
+                                    fname,
+                                    template,
+                                    device=device,
+                                    seed=1,  
+                                    guide=guide,
+                                    v_0=v_0,
+                                    num_steps=32, 
+                                    second_order=False,
+                                    S_churn=0, S_min=0.05, S_max=50, S_noise=1.003,  # default S_churn=40, S_churn=0 turns off adding noise
+                                    gridw=grid_w, gridh=grid_h, 
+                                    save_all_timesteps=True,
+                                ) 
+            # Cache runs with guide = 0
+            if guide == 0.0 and xs_guide_0 is None:
+                xs_guide_0 = xs
+
             images.append(rearrange( (xs[-1]  * 127.5 + 128)/255 , "(b1  b2) c h w -> (b1 h) (b2 w) c", b1=grid_h))
 
     # Plotting parameters
@@ -139,12 +149,12 @@ def main():
     num_cols = len(sched_v0)
     fig = plt.figure(figsize=(num_rows * grid_h, num_cols * grid_w))
 
-    grid = ImageGrid(fig, 121, nrows_ncols=(num_rows, num_cols), share_all=True)
-    grid2 = ImageGrid(fig, 122, nrows_ncols=(1, 1), share_all=True)
-
+    # Create image grid
+    grid = ImageGrid(fig, 111, nrows_ncols=(num_rows, num_cols), share_all=True)
     # Show template image
-    grid2[0].imshow(rearrange(template.cpu(), "c h w -> h w c"))
-    grid2[0].set_title("Template")
+    # grid2 = ImageGrid(fig, 122, nrows_ncols=(1, 1), share_all=True, aspect=True)
+    # grid2[0].imshow(rearrange(template.cpu(), "c h w -> h w c"))
+    #  grid2[0].set_title("Template")
 
     # Disable x and y label
     for ax in grid:
@@ -163,6 +173,7 @@ def main():
     for i, image in enumerate(images):
         grid[i].imshow(image)
 
+    plt.tight_layout()
     plt.show()
 
 
