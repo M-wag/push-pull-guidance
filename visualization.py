@@ -63,10 +63,7 @@ def plot_conditions(data):
     for i, a in enumerate(cond_a):
         for j, b in enumerate(cond_b):
             idx = i * num_cols + j
-            img = np.clip(img_grid_data[i, j], 0, 1)
-            img_grid[idx].imshow(img)
-            img_grid[idx].set_xticks([])
-            img_grid[idx].set_yticks([])
+            img_grid[idx].imshow(img_grid_data[i, j])
 
             img_grid[idx].set_ylabel(f"Guide : {a:.3f}")
             img_grid[j].set_title(f"v_0: {b:.3f}")
