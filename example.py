@@ -12,48 +12,39 @@ import tqdm
 import pickle
 import numpy as np
 import torch
-import PIL.Image
 import dnnlib
+import PIL.Image
+import visualization as vis
 
-from einops import rearrange
-
-import matplotlib.pyplot as plt # should be in seperate function
-from matplotlib.offsetbox import AnnotationBbox, OffsetImage # should be in seperate function
+from einops import rearrange, repeat
 
 from torchvision.io import read_image # should be removed given we install torchvision just for this
 #----------------------------------------------------------------------------
 
 
 def generate_image_grid(
-    network_pkl, dest_path,
+    net, template,
     seed=0, gridw=2, gridh=2, device=torch.device('cuda'),
     num_steps=18, sigma_min=0.002, sigma_max=80, rho=7,
     S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
-    guide_template=0, guide_trained=1.0, second_order=True,
+    v_0=1.0, capacity_template=1.0, decay_rate=1.0,
+    second_order=True, 
     save_all_timesteps=False,
 ):
     batch_size = gridw * gridh
     torch.manual_seed(seed)
 
-    # Load network.
-    print(f'Loading network from "{network_pkl}"...')
-    with dnnlib.util.open_url(network_pkl) as f:
-        net = pickle.load(f)['ema'].to(device)
-
-    # Import Template
-    img = read_image("cat.jpg")
-    x_template = img.to(device).to(torch.float32) 
-    x_template = (x_template - torch.mean(x_template)) / torch.std(x_template) #??: Why don't we need to rescale
-    x_template = x_template.view(net.img_channels, net.img_resolution, net.img_resolution)
-    x_template = x_template.repeat(batch_size, 1, 1, 1)
+    # Correct format template
+    template = torch.tensor(template).to(torch.float32).to(device)
+    print(template.shape)
+    x_template = repeat(template, "h w c -> repeat c h w", repeat=batch_size)
 
     # Pick latents and labels.
     print(f'Generating {batch_size} images...')
     latents = torch.randn([batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device)
     class_labels = None
     if net.label_dim:
-        class_labels = torch.eye(net.label_dim, device=device)[batch_size * [281]]
-
+        class_labels = torch.eye(net.label_dim, device=device)[batch_size * [282]]
 
     # Adjust noise levels based on what's supported by the network.
     sigma_min = max(sigma_min, net.sigma_min)
@@ -65,11 +56,10 @@ def generate_image_grid(
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
 
     xs = None 
+    # Intialize empty array to save intermediate timestaps
     if save_all_timesteps:
-        # Intialize empty array to save intermediate timestaps
-        mags_template = torch.empty(num_steps)
-        mags_model = torch.empty(num_steps)
         xs = torch.empty((num_steps, batch_size, net.img_channels, net.img_resolution, net.img_resolution))
+        metrics = torch.empty((5, num_steps))
 
     # Main sampling loop.
     x_next = latents.to(torch.float64) * t_steps[0]
@@ -81,79 +71,111 @@ def generate_image_grid(
         t_hat = net.round_sigma(t_cur + gamma * t_cur)
         x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
 
-        # Euler step.
-        denoised = guide_trained * net(x_hat, t_hat, class_labels).to(torch.float64) if (guide_trained != 0.0) else torch.zeros_like(x_hat)
-        model_score =  (x_hat - denoised ) / t_hat
-        template_score = -t_hat * (guide_template * (x_template - x_hat)) / t_hat
-        d_cur = model_score + template_score
-        x_next = x_hat + (t_next - t_hat) * d_cur
-
-
-        # Apply 2nd order correction.
-        if i < num_steps - 1 and second_order:
-            denoised = guide_trained * net(x_next, t_next, class_labels).to(torch.float64) if (guide_trained != 0.0) else torch.zeros_like(x_hat)
-            d_prime = (x_next - denoised - t_next * guide_template*(x_template - x_next)) / t_next
-            x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
+        # Calculate differentials
+        d_template =  torch.sigmoid(decay_rate * (t_hat - v_0)) * (x_hat - x_template)/t_hat
+        
+        denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
+        d_model = (x_hat - denoised) / t_hat
+        d_cur = (d_template + d_model) * (t_next - t_hat)
+        x_next = x_hat + d_cur
 
         # Save intermediate timsteps
         if save_all_timesteps:
             xs[i] = x_next
-            mags_template[i] = torch.norm(template_score * (t_next - t_hat)) 
-            mags_model[i] = torch.norm(model_score * (t_next - t_hat)) 
+            metrics[0, i] = torch.norm(x_next)
 
-    # Save image grid.
-    print(f'Saving image grid to "{dest_path}"...')
-    image = (x_next * 127.5 + 128).to(torch.uint8)
-    image = rearrange(image, "(b1 b2) c h w -> (b1 h) (b2 w) c", b1=gridh)
-    image = image.cpu().numpy()
-
-    xs = (xs * 127.5 + 128).to(torch.uint8)
-    xs2 = rearrange(xs, "t (b1 b2) c  h w -> (b1 h) (t b2 w) c", b1=gridh)
-    xs2 = xs.cpu().numpy()
-    
-    # Plot magnitudes !! MOVE TO SEPEARTE FUNCTION
-    fig, ax  = plt.subplots(1, 1)
-    ax.scatter(list(range(0, num_steps)), np.log10(mags_template.cpu()), label="Template")
-    ax.scatter(list(range(0, num_steps)), np.log10(mags_model.cpu()), label="Model")
-    ax.legend()
-    ax.grid(True)
-
-
-    xs = rearrange(xs, "t (b1 b2) c h w -> t (b1 h) ( b2 w) c", b1=gridh)
-    min_y, max_y = ax.get_ylim()
-    ax.set_ylim(min_y - 2, max_y)
-    for i in range(num_steps):
-        im = OffsetImage(xs[i], zoom=1/2)
-        im.image.axes = ax
-        ab = AnnotationBbox(im, (i, min_y - 1), frameon=False)
-        ax.add_artist(ab)
-
-    
-    plt.show()
-
-    # PIL.Image.fromarray(image, 'RGB').save(dest_path)
-    # PIL.Image.fromarray(xs2, 'RGB').save(dest_path)
+    return xs.numpy()
     print('Done.')
 
 #----------------------------------------------------------------------------
 
-def main():
-    model_root = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
-    second_order = False
+def run_diffusion():
+    # Simulations parameters
+    grid_h = 1
+    grid_w = 1
+    sched_decay_rate = [1.0]
+    sched_capacity_template = [1.0]
+    sched_v0 = np.linspace(80, 84, 6)
     num_steps = 32
+    seed=0
+    decay_rate = 1.0
 
-    for guide_template in [0.08]:
-        fname = f'imgs/imgnet-numsteps_{num_steps}-gtmp_{guide_template:.3f}-secondorder_{second_order}.png'
-        generate_image_grid(f'{model_root}/edm-imagenet-64x64-cond-adm.pkl', fname,
-                            seed=0,  guide_template=guide_template, guide_trained=1.0 - guide_template,
-                            num_steps=num_steps, second_order=second_order,
-                            S_churn=40, S_min=0.05, S_max=50, S_noise=1.003, 
-                            gridw=1, gridh=1, save_all_timesteps=True,
-                        ) 
+
+    # Load network.
+    model_root = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
+    network_pkl = f'{model_root}/edm-imagenet-64x64-cond-adm.pkl'
+    device = torch.device('cuda')
+    print(f'Loading network from "{network_pkl}"...')
+    with dnnlib.util.open_url(network_pkl) as f:
+        net = pickle.load(f)['ema'].to(device)
+
+
+    # Load template
+    image = np.array(PIL.Image.open("cat.jpg"))
+    template = (image - 128) / 127.5
+
+    # Storing raw data  (cond_a, cond_b, time, batch, channels, height, width)
+    raw_data_all_conditions = np.empty((len(sched_decay_rate), len(sched_v0), num_steps, grid_h * grid_w, net.img_channels, net.img_resolution, net.img_resolution)) # (c_A, c_B, t, B, C, H, W)
+    # Run diffusion process
+    xs_capacity_template_0 = None
+    for i, capacity_template in enumerate(sched_decay_rate):
+        for j, v_0 in enumerate(sched_v0):
+
+            # Load runs with capacity_template = 0 given it's always the same
+            if capacity_template == 0.0 and xs_capacity_template_0 is not None:
+                xs = xs_capacity_template_0
+            # Running model
+            else:
+                xs = generate_image_grid(
+                                    net, 
+                                    template,
+                                    device=device,
+                                    seed=seed,  
+                                    capacity_template=capacity_template,
+                                    v_0=v_0,
+                                    decay_rate=decay_rate,
+                                    num_steps=num_steps, 
+                                    second_order=False,
+                                    S_churn=0, S_min=0.05, S_max=50, S_noise=1.003,  # default S_churn=40, S_churn=0 turns off adding noise
+                                    gridw=grid_w, gridh=grid_h, 
+                                    save_all_timesteps=True,
+                                ) 
+            # Cache runs with capacity_template = 0
+            if capacity_template == 0.0 and xs_capacity_template_0 is None:
+                xs_capacity_template_0 = xs
+
+            raw_data_all_conditions[i, j] = (xs[-1]  * 127.5 + 128)/255 
+
+    data_dict = {
+        "sched_decay_rate": sched_decay_rate,
+        "sched_v0": sched_v0,
+        "raw_data": raw_data_all_conditions,
+        "grid_h": grid_h,
+        "grid_w": grid_w,
+        "template": template,
+    }
+
+    with open("imgs/results.pkl", "wb") as f:
+        pickle.dump(data_dict, f)
+
 
 #----------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    main()
+    # run_diffusion()
+
+    with open("imgs/results.pkl", "rb") as f:
+        data = pickle.load(f)
+    
+    sched_decay_rate = data["sched_decay_rate"]
+    sched_v0 = data["sched_v0"]
+    raw_data = data["raw_data"] # (con_A, con_B, t, B, C, H W)
+    grid_h = data['grid_h']
+    grid_w = data['grid_w']
+    template = data['template']
+
+
+
 
 #----------------------------------------------------------------------------
+
