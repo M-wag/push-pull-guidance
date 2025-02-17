@@ -218,11 +218,7 @@ def main(debug=True):
     
     def score_match(t, y, args):
         cov_adjusted = cov_mats + t**2 * jnp.eye(D)
-<<<<<<< HEAD
-        return -1/2 * t ** 2 * vmap(lambda x: score_mixture_a(x, mix_weights, means, cov_adjusted))(y)
-=======
         return -t * vmap(lambda x: score_mixture_a(x, mix_weights, means, cov_adjusted))(y)
->>>>>>> 020addf8f52184ab7d773cf347edc1d8522c4c3f
 
     # Initialize solver
     jax.config.update("jax_debug_nans", True)
