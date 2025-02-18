@@ -15,13 +15,11 @@ import torch
 import dnnlib
 import PIL.Image
 import visualization as vis
-
 from einops import rearrange, repeat
 
+from torchvision.io import read_image
 
-from torchvision.io import read_image # should be removed given we install torchvision just for this
 #----------------------------------------------------------------------------
-
 
 def generate_image_grid(
     net, template,
@@ -29,16 +27,15 @@ def generate_image_grid(
     num_steps=18, sigma_min=0.002, sigma_max=80, rho=7,
     S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
     v_0=1.0, capacity_template=1.0, decay_rate=1.0,
-    second_order=True, 
+    scale_model_score=1.0,
     save_all_timesteps=False,
 ):
     batch_size = gridw * gridh
     torch.manual_seed(seed)
 
     # Correct format template
-    template = torch.tensor(template).to(torch.float32).to(device)
-    print(template.shape)
-    x_template = repeat(template, "h w c -> repeat c h w", repeat=batch_size)
+    template = torch.tensor(template).to(torch.float64).to(device)
+    x_template = repeat(template, "c h w -> repeat c h w", repeat=batch_size)
 
     # Pick latents and labels.
     print(f'Generating {batch_size} images...')
@@ -64,7 +61,7 @@ def generate_image_grid(
 
     # Main sampling loop.
     x_next = latents.to(torch.float64) * t_steps[0]
-    for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step'): # 0, ..., N-1
+    for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1): # 0, ..., N-1
         x_cur = x_next
 
         # Increase noise temporarily.
@@ -73,21 +70,11 @@ def generate_image_grid(
         x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
 
         # Calculate differentials
-<<<<<<< HEAD
-        d_template =  torch.sigmoid(decay_rate * (t_hat - v_0)) * (x_hat - x_template)/t_hat
-        
+        d_template =  capacity_template * torch.sigmoid(decay_rate * (t_hat - v_0)) * (x_hat - x_template)/t_hat
+        # d_template =  capacity_template * t_hat / (t_hat**2 + v_0 ** 2 ) * (x_hat - x_template)
         denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
-        d_model = (x_hat - denoised) / t_hat
+        d_model = scale_model_score * (x_hat - denoised) / t_hat
         d_cur = (d_template + d_model) * (t_next - t_hat)
-=======
-        d_template =  t_hat / (t_hat**2 + v_0) * (x_hat - x_template)
-        denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
-        d_model = (x_hat - denoised) / t_hat
-        if i > int(num_steps * 3/4 ):
-            guide = 0
-        d_cur = (guide * d_template +  d_model) * (t_next - t_hat)
-        # d_cur = ((guide * d_template) + (1 - guide) * d_model) * (t_next - t_hat)
->>>>>>> 020addf8f52184ab7d773cf347edc1d8522c4c3f
         x_next = x_hat + d_cur
 
         # Save intermediate timsteps
@@ -95,101 +82,144 @@ def generate_image_grid(
             xs[i] = x_next
             metrics[0, i] = torch.norm(x_next)
 
-    return xs.numpy()
+    return xs.numpy(), t_steps.cpu().numpy(), x_template.cpu().numpy()
     print('Done.')
 
 #----------------------------------------------------------------------------
 
-def run_diffusion():
+def run_diffusion_for_schedule(schedule_params):
+    """
+    Run the diffusion process over an arbitrary number of scheduling parameters.
+    
+    schedule_params: dict containing keys starting with "sched_". For example:
+       {
+           "sched_capacity_template": [0.125, 0.0],   # can be more than one value
+           "sched_decay_rate": np.linspace(0.5, 1.5, 3),
+           "sched_v0": np.linspace(1.0, 80, 5),
+           # potentially more keys...
+       }
+    
+    Returns a data dictionary with:
+       - "scheduler_keys": the list of scheduler keys used
+       - "raw_data": a NumPy array with shape (*sched_dims, num_steps, grid_h*grid_w, C, H, W)
+       - additional metadata.
+    """
+
     # Simulations parameters
-    grid_h = 1
-    grid_w = 1
-    sched_decay_rate = [1.0]
-    sched_capacity_template = [1.0]
-    sched_v0 = np.linspace(80, 84, 6)
+    grid_h = 3
+    grid_w = 3
     num_steps = 32
     seed=0
-    decay_rate = 1.0
+
 
 
     # Load network.
     model_root = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
-    network_pkl = f'{model_root}/edm-imagenet-64x64-cond-adm.pkl'
+    # network_pkl = f'{model_root}/edm-imagenet-64x64-cond-adm.pkl'
+    network_pkl = f'{model_root}/edm-afhqv2-64x64-uncond-vp.pkl'
     device = torch.device('cuda')
     print(f'Loading network from "{network_pkl}"...')
     with dnnlib.util.open_url(network_pkl) as f:
         net = pickle.load(f)['ema'].to(device)
 
-
     # Load template
-    image = np.array(PIL.Image.open("cat.jpg"))
-    template = (image - 128) / 127.5
+    template = read_image("cat.jpg")
+    template = (template.to(device).to(torch.float64) - 128) / 127.5 #IF YOU DON't DO torch.float64 here your template reconstruction produces large values
 
-    # Storing raw data  (cond_a, cond_b, time, batch, channels, height, width)
-    raw_data_all_conditions = np.empty((len(sched_decay_rate), len(sched_v0), num_steps, grid_h * grid_w, net.img_channels, net.img_resolution, net.img_resolution)) # (c_A, c_B, t, B, C, H, W)
-    # Run diffusion process
-    xs_capacity_template_0 = None
-    for i, capacity_template in enumerate(sched_decay_rate):
-        for j, v_0 in enumerate(sched_v0):
+    # Identify all scheduling keys (all keys that start with "sched_")
+    sched_keys = [k for k in schedule_params if k.startswith("sched_")]
+    sched_values = [schedule_params[k] for k in sched_keys]
+    sched_shape = [len(vals) for vals in sched_values]
 
-            # Load runs with capacity_template = 0 given it's always the same
-            if capacity_template == 0.0 and xs_capacity_template_0 is not None:
-                xs = xs_capacity_template_0
-            # Running model
-            else:
-                xs = generate_image_grid(
-                                    net, 
-                                    template,
-                                    device=device,
-                                    seed=seed,  
-                                    capacity_template=capacity_template,
-                                    v_0=v_0,
-                                    decay_rate=decay_rate,
-                                    num_steps=num_steps, 
-                                    second_order=False,
-                                    S_churn=0, S_min=0.05, S_max=50, S_noise=1.003,  # default S_churn=40, S_churn=0 turns off adding noise
-                                    gridw=grid_w, gridh=grid_h, 
-                                    save_all_timesteps=True,
-                                ) 
-            # Cache runs with capacity_template = 0
-            if capacity_template == 0.0 and xs_capacity_template_0 is None:
-                xs_capacity_template_0 = xs
 
-            raw_data_all_conditions[i, j] = (xs[-1]  * 127.5 + 128)/255 
+    # Preallocate raw data container.
+    # The resulting shape will be (*sched_shape, num_steps, grid_h*grid_w, channels, H, W)
+    raw_data = np.empty(
+        (*sched_shape, num_steps, grid_h * grid_w, net.img_channels, net.img_resolution, net.img_resolution)
+    )
+    
+    # Cache for capacity_template==0.0 runs.
+    cache = {}
+
+    # Iterate over all combinations of scheduling parameters.
+    for idx in tqdm.tqdm(np.ndindex(*sched_shape), unit="scheduler", position=0):
+        # Create a dict for the current combination.
+        current_sched = {k: vals[i] for k, vals, i in zip(sched_keys, sched_values, idx)}
+        # Derive capacity_template from its related schedule.
+        capacity_template = current_sched.get("sched_capacity_template", 0.125)
+        # Also derive other parameters with defaults if not present.
+        decay_rate = current_sched.get("sched_decay_rate", 1.0)
+        v_0 = current_sched.get("sched_v0", 1.0)
+        
+        # If capacity_template==0.0, reuse the cached result (assumed to be independent of decay_rate and v_0).
+        if capacity_template == 0.0 and 0.0 in cache:
+            xs = cache[0.0]
+        else:
+            xs, t_steps, used_template = generate_image_grid(
+                net, 
+                template,
+                device=device,
+                seed=seed,  
+                capacity_template=capacity_template,
+                v_0=v_0,
+                decay_rate=decay_rate,
+                scale_model_score=1.0,
+                num_steps=num_steps, 
+                S_churn=0, S_min=0.05, S_max=50, S_noise=1.003,  # default S_churn=40, S_churn=0 turns off adding noise
+                gridw=grid_w, gridh=grid_h, 
+                save_all_timesteps=True,
+            )
+            # If capacity_template==0.0, store the result in cache.
+            if capacity_template == 0.0:
+                cache[0.0] = xs
+
+        # Process and store the result.
+        raw_data[idx] = (xs * 127.5 + 128) / 255
 
     data_dict = {
-        "sched_decay_rate": sched_decay_rate,
-        "sched_v0": sched_v0,
-        "raw_data": raw_data_all_conditions,
+        "scheduler_keys": sched_keys,
+        "schedule_params": schedule_params,
+        "raw_data": raw_data,
         "grid_h": grid_h,
         "grid_w": grid_w,
-        "template": template,
+        "t_steps": t_steps,
+        "template": rearrange(used_template[0], "c h w -> h w c"),
     }
+    return data_dict
 
-    with open("imgs/results.pkl", "wb") as f:
-        pickle.dump(data_dict, f)
 
 
 #----------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # run_diffusion()
-
-    with open("imgs/results.pkl", "rb") as f:
-        data = pickle.load(f)
+    # Define multiple schedules by name.
+    schedules = {
+        "mod": {
+            "sched_capacity_template": [0.125],  
+            "sched_decay_rate": [1.0],
+            "sched_v0": np.linspace(1.0, 80, 5),
+        },
+        "og": {
+            "sched_capacity_template": [0],
+            "sched_decay_rate": [0],
+            "sched_v0": [0],
+        },
+    }
     
-    sched_decay_rate = data["sched_decay_rate"]
-    sched_v0 = data["sched_v0"]
-    raw_data = data["raw_data"] # (con_A, con_B, t, B, C, H W)
-    grid_h = data['grid_h']
-    grid_w = data['grid_w']
-    template = data['template']
-
-
-
+    all_results = {}
+    for name, params in schedules.items():
+        print(f"Running schedule: {name}")
+        all_results[name] = run_diffusion_for_schedule(params)
+    
+    # Save aggregated results.
+    with open("imgs/results_all.pkl", "wb") as f:
+        pickle.dump(all_results, f)
+    
+    # Example: load and visualize one schedule.
+    with open("imgs/results_all.pkl", "rb") as f:
+        loaded_results = pickle.load(f)
+    
+    vis.plot_conditions(loaded_results["mod"])
+    vis.plot(loaded_results["mod"])
 
 #----------------------------------------------------------------------------
-=======
-#---------------------------------------------------------------------------
->>>>>>> 020addf8f52184ab7d773cf347edc1d8522c4c3f
-
