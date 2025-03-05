@@ -17,7 +17,6 @@ import PIL.Image
 import visualization as vis
 from einops import rearrange, repeat
 
-from torchvision.io import read_image
 
 #----------------------------------------------------------------------------
 
@@ -192,34 +191,27 @@ def run_diffusion_for_schedule(schedule_params):
 #----------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # Define multiple schedules by name.
-    schedules = {
-        "mod": {
-            "sched_capacity_template": [0.125],  
-            "sched_decay_rate": [1.0],
-            "sched_v0": np.linspace(1.0, 80, 5),
-        },
-        "og": {
-            "sched_capacity_template": [0],
-            "sched_decay_rate": [0],
-            "sched_v0": [0],
-        },
-    }
-    
-    all_results = {}
-    for name, params in schedules.items():
-        print(f"Running schedule: {name}")
-        all_results[name] = run_diffusion_for_schedule(params)
-    
-    # Save aggregated results.
-    with open("imgs/results_all.pkl", "wb") as f:
-        pickle.dump(all_results, f)
-    
     # Example: load and visualize one schedule.
-    with open("imgs/results_all.pkl", "rb") as f:
+    with open("imgs/results_afhq_all.pkl", "rb") as f:
+    # with open("imgs/results_imgnet_all.pkl", "rb") as f:
         loaded_results = pickle.load(f)
     
-    vis.plot_conditions(loaded_results["mod"])
-    vis.plot(loaded_results["mod"])
+
+    data_mod = loaded_results['mod']
+    data_og = loaded_results['og']
+    # Define the ordering of scheduler dimensions (should match generation order)
+    scheduler_order = ["sched_capacity_template", "sched_decay_rate", "sched_v0"]
+    raw_data_2d_mod = vis.transform_raw_data(data_mod["raw_data"], ["sched_capacity_template", "sched_v0"], scheduler_order)
+    raw_data_2d_og = vis.transform_raw_data(data_og["raw_data"], ["sched_capacity_template", "sched_v0"], scheduler_order)
+    
+    data_mod["raw_data"] = raw_data_2d_mod
+    data_og["raw_data"] = raw_data_2d_og
+    
+    # Now call the plotting functions.k
+    vis.plot_condition_by_condition(data_mod, "sched_capacity_template", "sched_v0", data_og)
+    vis.plot(data_mod)
+
+
+
 
 #----------------------------------------------------------------------------
