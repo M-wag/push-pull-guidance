@@ -17,7 +17,6 @@ import PIL.Image
 import visualization as vis
 from einops import rearrange, repeat
 
-from torchvision.io import read_image
 
 #----------------------------------------------------------------------------
 
@@ -192,52 +191,27 @@ def run_diffusion_for_schedule(schedule_params):
 #----------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    fname = "imgs/results_afhq_all.pkl"
-    # fname = "imgs/results_imgnet_all.pkl"
-    if True:
-        # Define multiple schedules by name.
-        schedules = {
-            "mod": {
-                "sched_capacity_template": [ 0.125, 0.25, 0.5],  
-                "sched_decay_rate": [1.0],
-                "sched_v0": np.linspace(1.0, 80, 20),
-            },
-            "og": {
-                "sched_capacity_template": [0],
-                "sched_decay_rate": [0],
-                "sched_v0": [0],
-            },
-        }
-        
-        all_results = {}
-        for name, params in schedules.items():
-            print(f"Running schedule: {name}")
-            all_results[name] = run_diffusion_for_schedule(params)
-        
-        # Save aggregated results.
-        with open(fname, "wb") as f:
-            pickle.dump(all_results, f)
+    # Example: load and visualize one schedule.
+    with open("imgs/results_afhq_all.pkl", "rb") as f:
+    # with open("imgs/results_imgnet_all.pkl", "rb") as f:
+        loaded_results = pickle.load(f)
     
-    with open(fname, "rb") as f:
-        data = pickle.load(f)["mod"]
-    with open(fname, "rb") as f:
-        og_data = pickle.load(f)["og"]
-    
+
+    data_mod = loaded_results['mod']
+    data_og = loaded_results['og']
     # Define the ordering of scheduler dimensions (should match generation order)
     scheduler_order = ["sched_capacity_template", "sched_decay_rate", "sched_v0"]
+    raw_data_2d_mod = vis.transform_raw_data(data_mod["raw_data"], ["sched_capacity_template", "sched_v0"], scheduler_order)
+    raw_data_2d_og = vis.transform_raw_data(data_og["raw_data"], ["sched_capacity_template", "sched_v0"], scheduler_order)
     
-    # Transform raw_data to only keep two dimensions, based on user input.
-    # For example, if we want to plot sched_decay_rate (rows) and sched_v0 (columns),
-    # we fix all others (here, sched_capacity_template) to index 0.
-    raw_data_2d = vis.transform_raw_data(data["raw_data"], ["sched_capacity_template", "sched_v0"], scheduler_order)
-    # Update data dictionary with the transformed raw_data.
-    data["raw_data"] = raw_data_2d
+    data_mod["raw_data"] = raw_data_2d_mod
+    data_og["raw_data"] = raw_data_2d_og
     
-    og_raw_data_2d = vis.transform_raw_data(og_data["raw_data"], ["sched_capacity_template", "sched_v0"], scheduler_order)
-    og_data["raw_data"] = og_raw_data_2d
+    # Now call the plotting functions.k
+    vis.plot_condition_by_condition(data_mod, "sched_capacity_template", "sched_v0", data_og)
+    vis.plot(data_mod)
 
-    # Now call the plotting functions.
-    vis.plot_condition_by_condition(data, "sched_capacity_template", "sched_v0", og_data )
-    vis.plot(data)
+
+
 
 #----------------------------------------------------------------------------

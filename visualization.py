@@ -9,8 +9,7 @@ def transform_raw_data(raw_data, scheduler_keys_to_keep, scheduler_order):
     """
     Given raw_data of shape (sched_1, ..., sched_N, t, B, C, H, W) and an ordered list
     of scheduler keys (scheduler_order), return data of shape (sched_a, sched_b, t, B, C, H, W)
-    based on the scheduler_keys_to_keep (a list of two keys). All other scheduler dimensions
-    are fixed to index 0.
+    based on the scheduler_keys_to_keep (a list of two keys). All other scheduler dimensions are fixed to index 0.
     """
     # Build a tuple of slices: if the current scheduler dimension's index (based on scheduler_order)
     # is in idx_keep, then slice(None) to keep all values; otherwise fix to index 0.
@@ -19,7 +18,7 @@ def transform_raw_data(raw_data, scheduler_keys_to_keep, scheduler_order):
     transformed = raw_data[slicer]
     return transformed
 
-def plot_condition_by_condition(data, scheduler_key_a, scheduler_key_b, og_data):
+def plot_condition_by_condition(data, scheduler_key_a, scheduler_key_b, data_og):
     """
     Plots a grid of images using scheduler_key_a (rows) and scheduler_key_b (columns)
     and shows a template and an unmodified (OG) image on the right.
@@ -61,14 +60,15 @@ def plot_condition_by_condition(data, scheduler_key_a, scheduler_key_b, og_data)
     ax_template.set_xticks([]); ax_template.set_yticks([])
     ax_template.set_title("Template Image")
 
-    # Plot unmodified (OG) image.
-    ax_og = fig.add_subplot(gs_right[1])
-    data_raw_og = og_data["raw_data"]
-    og_img = rearrange(data_raw_og[0, 0, -1], "(b1 b2) c h w -> (b1 h) (b2 w) c",
-                        b1=data["grid_h"], b2=data["grid_w"])
-    ax_og.imshow(og_img, aspect='equal')
-    ax_og.set_xticks([]); ax_og.set_yticks([])
-    ax_og.set_title("Unmodified Image") 
+    if True:
+        # Plot unmodified (OG) image.
+        ax_og = fig.add_subplot(gs_right[1])
+        data_raw_og = data_og["raw_data"]
+        og_img = rearrange(data_raw_og[0, 0, -1], "(b1 b2) c h w -> (b1 h) (b2 w) c",
+                            b1=data["grid_h"], b2=data["grid_w"])
+        ax_og.imshow(og_img, aspect='equal')
+        ax_og.set_xticks([]); ax_og.set_yticks([])
+        ax_og.set_title("Unmodified Image") 
 
     # Create grid for final images.
     img_grid = ImageGrid(fig, gs[:, 0], nrows_ncols=(num_rows, num_cols))
@@ -81,10 +81,14 @@ def plot_condition_by_condition(data, scheduler_key_a, scheduler_key_b, og_data)
         for j in range(num_cols):
             idx = i * num_cols + j
             img_grid[idx].imshow(img_grid_data[i, j])
+            img_grid[idx].set_xticks([])
+            img_grid[idx].set_yticks([])
             if cond_a is not None:
-                img_grid[idx].set_ylabel(f"{scheduler_key_a}: {cond_a[i]:.3f}")
-            if cond_b is not None:
-                img_grid[idx].set_title(f"{scheduler_key_b}: {cond_b[j]:.3f}")
+                img_grid[idx].set_ylabel(f"{scheduler_key_a}:\n {cond_a[i]:.3f}")
+            if cond_b is not None and i == 0:
+                img_grid[idx].set_title(f"{scheduler_key_b}: \n {cond_b[j]:.3f}")
+    plt.tight_layout()
+    plt.savefig('test.png')
     plt.show()
 
 
@@ -133,23 +137,6 @@ def plot(data):
         img_grid[i].set_xticks([])
         img_grid[i].set_yticks([])
     plt.show()
+    plt.savefig('test_time.png')
 
 
-if __name__ == "__main__":
-    # For demonstration, load some data.
-    with open("imgs/results_all.pkl", "rb") as f:
-        data = pickle.load(f)["mod"]
-    
-    # Define the ordering of scheduler dimensions (should match generation order)
-    scheduler_order = ["sched_capacity_template", "sched_decay_rate", "sched_v0"]
-    
-    # Transform raw_data to only keep two dimensions, based on user input.
-    # For example, if we want to plot sched_decay_rate (rows) and sched_v0 (columns),
-    # we fix all others (here, sched_capacity_template) to index 0.
-    raw_data_2d = transform_raw_data(data["raw_data"], ["sched_decay_rate", "sched_v0"], scheduler_order)
-    # Update data dictionary with the transformed raw_data.
-    data["raw_data"] = raw_data_2d
-    
-    # Now call the plotting functions.
-    plot_condition_by_condition(data, "sched_decay_rate", "sched_v0")
-    plot(data)
