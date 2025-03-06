@@ -77,6 +77,7 @@ def plot_condition_by_condition(data, scheduler_key_a, scheduler_key_b, data_og)
     img_grid_data = rearrange(raw_data_2d[:, :, -1],
                               "... (b1 b2) C H W -> ... (b1 H) (b2 W) C",
                               b1=data["grid_h"], b2=data["grid_w"])
+    
     for i in range(num_rows):
         for j in range(num_cols):
             idx = i * num_cols + j

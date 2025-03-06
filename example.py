@@ -13,9 +13,10 @@ import pickle
 import numpy as np
 import torch
 import dnnlib
-import PIL.Image
+from PIL import Image
 import visualization as vis
 from einops import rearrange, repeat
+from torchvision.io import read_image
 
 
 #----------------------------------------------------------------------------
@@ -60,6 +61,12 @@ def generate_image_grid(
 
     # Main sampling loop.
     x_next = latents.to(torch.float64) * t_steps[0]
+    # Initialize random feature matrix
+    dim_img = net.img_channels * net.img_resolution * net.img_resolution
+    dim_feature = dim_img // 64
+    feature = torch.randn(dim_feature, dim_img, dtype=x_next.dtype, device=device)
+    feature_inv = torch.linalg.pinv(feature)
+
     for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1): # 0, ..., N-1
         x_cur = x_next
 
@@ -68,9 +75,15 @@ def generate_image_grid(
         t_hat = net.round_sigma(t_cur + gamma * t_cur)
         x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
 
-        # Calculate differentials
-        d_template =  capacity_template * torch.sigmoid(decay_rate * (t_hat - v_0)) * (x_hat - x_template)/t_hat
+        # template score
+        diff_latent = rearrange((x_hat - x_template), "b c h w -> b (c h w)") @ feature.T
+        d_latent =  capacity_template * torch.sigmoid(decay_rate * (t_hat - v_0)) * diff_latent /t_hat 
+        d_template = rearrange(d_latent @ feature_inv.T, "b (c h w) -> b c h w", c=net.img_channels, h=net.img_resolution)
+
+        # d_template =  capacity_template * torch.sigmoid(decay_rate * (t_hat - v_0)) * (x_hat - x_template)/t_hat
         # d_template =  capacity_template * t_hat / (t_hat**2 + v_0 ** 2 ) * (x_hat - x_template)
+
+        # model score
         denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
         d_model = scale_model_score * (x_hat - denoised) / t_hat
         d_cur = (d_template + d_model) * (t_next - t_hat)
@@ -80,6 +93,10 @@ def generate_image_grid(
         if save_all_timesteps:
             xs[i] = x_next
             metrics[0, i] = torch.norm(x_next)
+
+    del feature
+    del feature_inv
+    del diff_latent
 
     return xs.numpy(), t_steps.cpu().numpy(), x_template.cpu().numpy()
     print('Done.')
@@ -110,18 +127,17 @@ def run_diffusion_for_schedule(schedule_params):
     num_steps = 32
     seed=0
 
-
-
     # Load network.
     model_root = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
-    # network_pkl = f'{model_root}/edm-imagenet-64x64-cond-adm.pkl'
-    network_pkl = f'{model_root}/edm-afhqv2-64x64-uncond-vp.pkl'
+    network_pkl = f'{model_root}/edm-imagenet-64x64-cond-adm.pkl'
+    # network_pkl = f'{model_root}/edm-afhqv2-64x64-uncond-vp.pkl'
     device = torch.device('cuda')
     print(f'Loading network from "{network_pkl}"...')
     with dnnlib.util.open_url(network_pkl) as f:
         net = pickle.load(f)['ema'].to(device)
 
     # Load template
+    template = np.array(Image.open("cat.jpg").convert("RGB"))
     template = read_image("cat.jpg")
     template = (template.to(device).to(torch.float64) - 128) / 127.5 #IF YOU DON't DO torch.float64 here your template reconstruction produces large values
 
@@ -131,26 +147,24 @@ def run_diffusion_for_schedule(schedule_params):
     sched_shape = [len(vals) for vals in sched_values]
 
 
-    # Preallocate raw data container.
-    # The resulting shape will be (*sched_shape, num_steps, grid_h*grid_w, channels, H, W)
+    # (*sched_shape, num_steps, grid_h*grid_w, channels, H, W)
     raw_data = np.empty(
         (*sched_shape, num_steps, grid_h * grid_w, net.img_channels, net.img_resolution, net.img_resolution)
     )
     
-    # Cache for capacity_template==0.0 runs.
+    # cache for images with no control signal
     cache = {}
 
     # Iterate over all combinations of scheduling parameters.
     for idx in tqdm.tqdm(np.ndindex(*sched_shape), unit="scheduler", position=0):
-        # Create a dict for the current combination.
+        # create dict for current schedule
         current_sched = {k: vals[i] for k, vals, i in zip(sched_keys, sched_values, idx)}
-        # Derive capacity_template from its related schedule.
-        capacity_template = current_sched.get("sched_capacity_template", 0.125)
-        # Also derive other parameters with defaults if not present.
-        decay_rate = current_sched.get("sched_decay_rate", 1.0)
-        v_0 = current_sched.get("sched_v0", 1.0)
+        # extract values with default
+        capacity_template = current_sched.get("sched_capacity_template", None)
+        decay_rate = current_sched.get("sched_decay_rate", None)
+        v_0 = current_sched.get("sched_v0", None)
         
-        # If capacity_template==0.0, reuse the cached result (assumed to be independent of decay_rate and v_0).
+        # when using no control signal, reuse the cached result 
         if capacity_template == 0.0 and 0.0 in cache:
             xs = cache[0.0]
         else:
@@ -168,11 +182,10 @@ def run_diffusion_for_schedule(schedule_params):
                 gridw=grid_w, gridh=grid_h, 
                 save_all_timesteps=True,
             )
-            # If capacity_template==0.0, store the result in cache.
+            # if no control signal is provided, cache result
             if capacity_template == 0.0:
                 cache[0.0] = xs
 
-        # Process and store the result.
         raw_data[idx] = (xs * 127.5 + 128) / 255
 
     data_dict = {
@@ -187,27 +200,72 @@ def run_diffusion_for_schedule(schedule_params):
     return data_dict
 
 
+class LinearLatentGradient:
+    def __init__(self, feature, feature_inverse, gradient_latent):
+        self.F = feature
+        self.F_inv = feature_inverse
+        self.grad_z = gradient_latent
+
+        d_template =  capacity_template * torch.sigmoid(decay_rate * (t_hat - v_0)) * (x_hat - x_template)/t
+
+    def __call__(self, x, t):
+        z_x = F @ x
+        score_z = self.grad_z(z_x, t)
+
+
+
+        d_template =  self.capacity_template * torch.sigmoid(self.decay_rate * (t - v_0)) * (x - mu)/t_hat
+        return F_inv @ score_z
+
 
 #----------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # Example: load and visualize one schedule.
-    with open("imgs/results_afhq_all.pkl", "rb") as f:
-    # with open("imgs/results_imgnet_all.pkl", "rb") as f:
+
+    fname = "imgs/results_feature_imgnet.pkl"
+    if True:
+        schedules = {
+            "mod": {
+                "sched_capacity_template": [10],
+                "sched_v0": np.linspace(12.0, 18.0, 6),
+                "sched_decay_rate": [1.0]
+            },
+            # "og": {
+            #     "sched_capacity_template": [0],
+            #     "sched_v0": [0],
+            #     "sched_decay_rate": [0],
+            # },
+        }
+        
+        all_results = {}
+        for name, params in schedules.items():
+            all_results[name] = run_diffusion_for_schedule(params)
+        
+        with open(fname, "wb") as f:
+            pickle.dump(all_results, f)
+
+
+    # with open("imgs/results_afhq_all.pkl", "rb") as f:
+    with open(fname, "rb") as f:
         loaded_results = pickle.load(f)
+    with open("imgs/results_imgnet_all.pkl", "rb") as f:
+        two = pickle.load(f)
+
     
+    loaded_results['og'] = two['og'] 
 
     data_mod = loaded_results['mod']
     data_og = loaded_results['og']
-    # Define the ordering of scheduler dimensions (should match generation order)
-    scheduler_order = ["sched_capacity_template", "sched_decay_rate", "sched_v0"]
+
+    # define the ordering of scheduler dimensions (should match generation order)
+    scheduler_order = ["sched_capacity_template", "sched_v0", "sched_decay_rate"]
     raw_data_2d_mod = vis.transform_raw_data(data_mod["raw_data"], ["sched_capacity_template", "sched_v0"], scheduler_order)
     raw_data_2d_og = vis.transform_raw_data(data_og["raw_data"], ["sched_capacity_template", "sched_v0"], scheduler_order)
     
     data_mod["raw_data"] = raw_data_2d_mod
     data_og["raw_data"] = raw_data_2d_og
     
-    # Now call the plotting functions.k
+    # visualization 
     vis.plot_condition_by_condition(data_mod, "sched_capacity_template", "sched_v0", data_og)
     vis.plot(data_mod)
 
