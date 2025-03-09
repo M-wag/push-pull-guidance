@@ -22,7 +22,7 @@ from torchvision.io import read_image
 #----------------------------------------------------------------------------
 
 def generate_image_grid(
-    net, template,
+    net, template, score_template,
     seed=0, gridw=2, gridh=2, device=torch.device('cuda'),
     num_steps=18, sigma_min=0.002, sigma_max=80, rho=7,
     S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
@@ -61,11 +61,6 @@ def generate_image_grid(
 
     # Main sampling loop.
     x_next = latents.to(torch.float64) * t_steps[0]
-    # Initialize random feature matrix
-    dim_img = net.img_channels * net.img_resolution * net.img_resolution
-    dim_feature = dim_img // 64
-    feature = torch.randn(dim_feature, dim_img, dtype=x_next.dtype, device=device)
-    feature_inv = torch.linalg.pinv(feature)
 
     for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1): # 0, ..., N-1
         x_cur = x_next
@@ -76,10 +71,7 @@ def generate_image_grid(
         x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
 
         # template score
-        diff_latent = rearrange((x_hat - x_template), "b c h w -> b (c h w)") @ feature.T
-        d_latent =  capacity_template * torch.sigmoid(decay_rate * (t_hat - v_0)) * diff_latent /t_hat 
-        d_template = rearrange(d_latent @ feature_inv.T, "b (c h w) -> b c h w", c=net.img_channels, h=net.img_resolution)
-
+        d_template = score_template(x_hat, t_hat)
         # d_template =  capacity_template * torch.sigmoid(decay_rate * (t_hat - v_0)) * (x_hat - x_template)/t_hat
         # d_template =  capacity_template * t_hat / (t_hat**2 + v_0 ** 2 ) * (x_hat - x_template)
 
@@ -94,14 +86,35 @@ def generate_image_grid(
             xs[i] = x_next
             metrics[0, i] = torch.norm(x_next)
 
-    del feature
-    del feature_inv
-    del diff_latent
-
     return xs.numpy(), t_steps.cpu().numpy(), x_template.cpu().numpy()
     print('Done.')
 
 #----------------------------------------------------------------------------
+
+class LinearLatentGradient:
+    def __init__(self, projectors, template, v_0, capacity, decay_rate):
+        self.projectors = projectors
+        self.template = template
+        self.v_0 = v_0
+        self.capacity = capacity
+        self.decay_rate = decay_rate
+        self.inv_projectors = torch.linalg.pinv(projectors)
+
+    def __call__(self, x, t):
+        # flatten images
+        diffs = x - self.template
+        diffs_flat = rearrange(diffs , "b c h w -> b (c h w)") 
+        # (n, dF, dD) @ (b, dD) -> (b, n, dF)
+        projections = torch.einsum("abc , dc -> dab", self.projectors, diffs_flat)
+        # caluclate weights  and reconstruct
+        # (n, dD, dF) @ (b, n, dF) -> (b, n, dD)
+        reconstructed = torch.einsum("ndf, bnf -> bnd", self.inv_projectors, projections)
+        weights = torch.ones(1, device=torch.device('cuda'))
+        diff = torch.einsum("bnd, n -> bd", reconstructed, weights)
+        # calculate final 
+        projection_weighted_flat = self.capacity * torch.sigmoid(self.decay_rate * (t - self.v_0)) * diff/t
+        projection_weighted = rearrange(projection_weighted_flat, "b (c h w) -> b c h w", c=x.shape[-3], h=x.shape[-2], w=x.shape[-1])
+        return projection_weighted
 
 def run_diffusion_for_schedule(schedule_params):
     """
@@ -112,7 +125,6 @@ def run_diffusion_for_schedule(schedule_params):
            "sched_capacity_template": [0.125, 0.0],   # can be more than one value
            "sched_decay_rate": np.linspace(0.5, 1.5, 3),
            "sched_v0": np.linspace(1.0, 80, 5),
-           # potentially more keys...
        }
     
     Returns a data dictionary with:
@@ -129,8 +141,8 @@ def run_diffusion_for_schedule(schedule_params):
 
     # Load network.
     model_root = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
-    network_pkl = f'{model_root}/edm-imagenet-64x64-cond-adm.pkl'
-    # network_pkl = f'{model_root}/edm-afhqv2-64x64-uncond-vp.pkl'
+    # network_pkl = f'{model_root}/edm-imagenet-64x64-cond-adm.pkl'
+    network_pkl = f'{model_root}/edm-afhqv2-64x64-uncond-vp.pkl'
     device = torch.device('cuda')
     print(f'Loading network from "{network_pkl}"...')
     with dnnlib.util.open_url(network_pkl) as f:
@@ -155,6 +167,7 @@ def run_diffusion_for_schedule(schedule_params):
     # cache for images with no control signal
     cache = {}
 
+
     # Iterate over all combinations of scheduling parameters.
     for idx in tqdm.tqdm(np.ndindex(*sched_shape), unit="scheduler", position=0):
         # create dict for current schedule
@@ -163,6 +176,20 @@ def run_diffusion_for_schedule(schedule_params):
         capacity_template = current_sched.get("sched_capacity_template", None)
         decay_rate = current_sched.get("sched_decay_rate", None)
         v_0 = current_sched.get("sched_v0", None)
+        n_projectors = current_sched.get("n_projectors", 1)
+        dim_projector = current_sched.get("dim_projector", 64 * 3)
+
+        # setup additive template-derived score 
+        dim_data = template.shape[-1] * template.shape[-2] * template.shape[-3] 
+        
+        projectors = torch.randn((n_projectors, dim_projector, dim_data), device=device, dtype=torch.float64)
+        score_template = LinearLatentGradient(
+            projectors = projectors,
+            template = template,
+            v_0 = v_0,
+            capacity = capacity_template,
+            decay_rate = decay_rate,
+        )
         
         # when using no control signal, reuse the cached result 
         if capacity_template == 0.0 and 0.0 in cache:
@@ -171,6 +198,7 @@ def run_diffusion_for_schedule(schedule_params):
             xs, t_steps, used_template = generate_image_grid(
                 net, 
                 template,
+                score_template,
                 device=device,
                 seed=seed,  
                 capacity_template=capacity_template,
@@ -200,34 +228,19 @@ def run_diffusion_for_schedule(schedule_params):
     return data_dict
 
 
-class LinearLatentGradient:
-    def __init__(self, feature, feature_inverse, gradient_latent):
-        self.F = feature
-        self.F_inv = feature_inverse
-        self.grad_z = gradient_latent
 
-        d_template =  capacity_template * torch.sigmoid(decay_rate * (t_hat - v_0)) * (x_hat - x_template)/t
-
-    def __call__(self, x, t):
-        z_x = F @ x
-        score_z = self.grad_z(z_x, t)
-
-
-
-        d_template =  self.capacity_template * torch.sigmoid(self.decay_rate * (t - v_0)) * (x - mu)/t_hat
-        return F_inv @ score_z
 
 
 #----------------------------------------------------------------------------
 
 if __name__ == "__main__":
 
-    fname = "imgs/results_feature_imgnet.pkl"
+    fname = "imgs/results_feature_afhq.pkl"
     if True:
         schedules = {
             "mod": {
                 "sched_capacity_template": [10],
-                "sched_v0": np.linspace(12.0, 18.0, 6),
+                "sched_v0": np.linspace(12.0, 18.0, 3),
                 "sched_decay_rate": [1.0]
             },
             # "og": {
@@ -248,7 +261,7 @@ if __name__ == "__main__":
     # with open("imgs/results_afhq_all.pkl", "rb") as f:
     with open(fname, "rb") as f:
         loaded_results = pickle.load(f)
-    with open("imgs/results_imgnet_all.pkl", "rb") as f:
+    with open("imgs/results_afhq_all.pkl", "rb") as f:
         two = pickle.load(f)
 
     
@@ -268,8 +281,6 @@ if __name__ == "__main__":
     # visualization 
     vis.plot_condition_by_condition(data_mod, "sched_capacity_template", "sched_v0", data_og)
     vis.plot(data_mod)
-
-
 
 
 #----------------------------------------------------------------------------
