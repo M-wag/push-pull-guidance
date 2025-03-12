@@ -124,7 +124,7 @@ class AttentionMixture:
 
         return attention
 
-class LinearLatentGradient:
+class LinearLatentGradientB:
     def __init__(self, projectors, template, v_0, capacity, decay_rate):
         self.projectors = projectors
         self.template = template
@@ -164,7 +164,7 @@ class LinearLatentGradient:
     def unflat(self, x) : return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
 
     def __init__(self, projectors, template, v_0, capacity, decay_rate):
-        self.projectors = projectors[0]
+        self.projectors = projectors
         self.template = template
         self.v_0 = v_0
         self.inv_projectors = torch.linalg.pinv(self.projectors)
@@ -174,7 +174,11 @@ class LinearLatentGradient:
         self.decay_rate = decay_rate
 
     def __call__(self, x, t):
-        diff_projected = ((self.flat(x) - self.flat(self.template)) @ self.projectors.T) @ self.inv_projectors.T
+        diff_features = torch.einsum("nFD, bD -> nbF", self.projectors, ((self.flat(x) - self.flat(self.template))))
+        diffs_projected = torch.einsum("nDF, nbF -> nbD", self.inv_projectors, diff_features)
+        diff_projected = torch.einsum("nbD -> bD", diffs_projected)
+        print(diffs_projected.shape)
+        # (B, D)
         dxs = self.capacity * torch.sigmoid(self.decay_rate * (t - self.v_0)) * diff_projected/t
         dx = self.unflat(dxs[0])
         return dx
@@ -234,6 +238,7 @@ def run_diffusion_for_schedule(schedule_params):
 
 
     # Iterate over all combinations of scheduling parameters.
+    torch.manual_seed(seed)
     for idx in tqdm.tqdm(np.ndindex(*sched_shape), unit="scheduler", position=0):
         # create dict for current schedule
         current_sched = {k: vals[i] for k, vals, i in zip(sched_keys, sched_values, idx)}
@@ -300,15 +305,16 @@ def run_diffusion_for_schedule(schedule_params):
 
 if __name__ == "__main__":
 
-    fname = "imgs/results_multi_feature_imgnet.pkl"
+    fname = "imgs/test.pkl"
     if True:
         schedules = {
             "mod": {
-                "sched_capacity_template": [0.125, 1.0],
+                "sched_capacity_template": [1.0],
                 "sched_v0": [12],
                 "sched_decay_rate": [1.0],
                 "sched_n_projectors": [1],
-                "sched_dim_projector": np.linspace(64 * 3, 64 * 8 * 3, 5).astype(int)
+                "sched_dim_projector": [1250]
+                # "sched_dim_projector": np.concatenate((np.linspace(192, 864, 3), np.linspace(928, 1536, 6))).astype(int),
             },
             # "og": {
             #     "sched_capacity_template": [0],
@@ -344,7 +350,6 @@ if __name__ == "__main__":
     
     # visualization 
     vis.plot_condition_by_condition(data_mod, "sched_capacity_template", "sched_dim_projector", data_og)
-    vis.plot(data_mod)
 
 
 #----------------------------------------------------------------------------
