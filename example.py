@@ -93,8 +93,6 @@ def generate_image_grid(
 
 
 
-
-
 class AttentionMixture:
     def __init__(self, means, stds, mix_weights):
         self.means = means
@@ -159,6 +157,26 @@ class LinearLatentGradient:
         # scale each delta by its temporal weight and take weighted sum using spatial weights
         dxs = self.capacity * rearrange(weights_temporal, "n -> 1 n 1")  * diff_projected
         dx = self.unflat(torch.einsum("bn,bnd->bd", weights_spatial, dxs))
+        return dx
+
+class LinearLatentGradient:
+    def flat(self, x) : return rearrange(x, "... c h w -> ... (c h w)")
+    def unflat(self, x) : return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
+
+    def __init__(self, projectors, template, v_0, capacity, decay_rate):
+        self.projectors = projectors[0]
+        self.template = template
+        self.v_0 = v_0
+        self.inv_projectors = torch.linalg.pinv(self.projectors)
+        self.device = template.device
+        self.dtype = template.dtype
+        self.capacity = capacity
+        self.decay_rate = decay_rate
+
+    def __call__(self, x, t):
+        diff_projected = ((self.flat(x) - self.flat(self.template)) @ self.projectors.T) @ self.inv_projectors.T
+        dxs = self.capacity * torch.sigmoid(self.decay_rate * (t - self.v_0)) * diff_projected/t
+        dx = self.unflat(dxs[0])
         return dx
 
 
@@ -229,7 +247,7 @@ def run_diffusion_for_schedule(schedule_params):
         # setup additive template-derived score 
         dim_data = template.shape[-1] * template.shape[-2] * template.shape[-3] 
         
-        projectors = torch.randn((n_projectors, dim_projector, dim_data), device=device, dtype=torch.float64)
+        projectors = torch.randn((n_projectors, dim_projector, dim_data), device=device, dtype=template.dtype)
         score_template = LinearLatentGradient(
             projectors = projectors,
             template = template,
@@ -282,15 +300,15 @@ def run_diffusion_for_schedule(schedule_params):
 
 if __name__ == "__main__":
 
-    fname = "imgs/results_feature_imgnet.pkl"
+    fname = "imgs/results_multi_feature_imgnet.pkl"
     if True:
         schedules = {
             "mod": {
-                "sched_capacity_template": [0.125, 1],
-                "sched_v0": np.linspace(15, 18, 1),
+                "sched_capacity_template": [0.125, 1.0],
+                "sched_v0": [12],
                 "sched_decay_rate": [1.0],
-                "sched_n_projectors": np.linspace(4, 64, 7).astype(int),
-                "sched_dim_projector": np.linspace(32, 128, 5).astype(int),
+                "sched_n_projectors": [1],
+                "sched_dim_projector": np.linspace(64 * 3, 64 * 8 * 3, 5).astype(int)
             },
             # "og": {
             #     "sched_capacity_template": [0],
@@ -304,10 +322,7 @@ if __name__ == "__main__":
             all_results[name] = run_diffusion_for_schedule(params)
         
         with open(fname, "wb") as f:
-            pickle.dump(all_results, f)
-
-
-    # with open("imgs/results_afhq_all.pkl", "rb") as f:
+            pickle.dump(all_results, f) # with open("imgs/results_afhq_all.pkl", "rb") as f:
     with open(fname, "rb") as f:
         loaded_results = pickle.load(f)
     with open("imgs/results_imgnet_all.pkl", "rb") as f:
@@ -321,16 +336,14 @@ if __name__ == "__main__":
 
     # define the ordering of scheduler dimensions (should match generation order)
     scheduler_order = ["sched_capacity_template", "sched_v0", "sched_decay_rate", "sched_n_projectors", "sched_dim_projector"]
-    raw_data_2d_mod = vis.transform_raw_data(data_mod["raw_data"], ["sched_n_projectors", "sched_dim_projector"], scheduler_order)
+    raw_data_2d_mod = vis.transform_raw_data(data_mod["raw_data"], ["sched_capacity_template", "sched_dim_projector"], scheduler_order)
     raw_data_2d_og = vis.transform_raw_data(data_og["raw_data"], ["sched_capacity_template", "sched_v0"], scheduler_order[:3])
-    print(raw_data_2d_mod.shape)
-    print(raw_data_2d_og.shape)
     
     data_mod["raw_data"] = raw_data_2d_mod
     data_og["raw_data"] = raw_data_2d_og
     
     # visualization 
-    vis.plot_condition_by_condition(data_mod, "sched_n_projectors", "sched_dim_projector", data_og)
+    vis.plot_condition_by_condition(data_mod, "sched_capacity_template", "sched_dim_projector", data_og)
     vis.plot(data_mod)
 
 
