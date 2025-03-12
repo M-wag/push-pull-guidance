@@ -48,8 +48,8 @@ def test_attention_highest_for_closest_mean(setup_attention):
         f"Attention max index {max_idx} != closest mean index {closest_idx}"
     )
 
-def test_attention_becomes_uniform_as_noise_increase(setup_attention):
+def test_attention_becomes_uniform_as_noise_increases(setup_attention):
     means, stds, mix_weights, _, x = setup_attention
     attention_fn = AttentionMixture(means, stds, mix_weights)
 
-    # TODO: calculate KL divergence as T increase and ensure it's monotonic
+    # TODO: calculate KL divergence as noise increase and ensure it's monotonic
