@@ -51,5 +51,8 @@ def test_attention_highest_for_closest_mean(setup_attention):
 def test_attention_becomes_uniform_as_noise_increases(setup_attention):
     means, stds, mix_weights, _, x = setup_attention
     attention_fn = AttentionMixture(means, stds, mix_weights)
-
+    raise NotImplementedError
     # TODO: calculate KL divergence as noise increase and ensure it's monotonic
+
+def test_batched_attention_of_singles_is_ones():
+    reaise NotImplementedError

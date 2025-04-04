@@ -72,8 +72,6 @@ def generate_image_grid(
 
         # template score
         d_template = score_template(x_hat, t_hat)
-        # d_template =  capacity_template * torch.sigmoid(decay_rate * (t_hat - v_0)) * (x_hat - x_template)/t_hat
-        # d_template =  capacity_template * t_hat / (t_hat**2 + v_0 ** 2 ) * (x_hat - x_template)
 
         # model score
         denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
@@ -93,71 +91,48 @@ def generate_image_grid(
 
 
 
+import torch
+from einops import rearrange
+
 class AttentionMixture:
     def __init__(self, means, stds, mix_weights):
+        # means: (N, D), stds: (N,), mix_weights: (N,)
         self.means = means
-        self.mix_weights = mix_weights
         self.stds = stds 
+        self.mix_weights = mix_weights
         self.D = means.size(-1)
 
-    def __call__(self, x, std_noise) -> torch.Tensor :
-        # make noised covariance matrix 
+    def __call__(self, x, std_noise) -> torch.Tensor:
+        # x is now batched: (B, D)
+        # Compute the covariance factor for each mixture component.
         cov_factor = self.stds**2 + std_noise**2  # shape (N,)
         cov_factor = rearrange(cov_factor, 'n -> n 1 1')  # shape (N, 1, 1)
-        cov_mats = cov_factor * torch.eye(self.D, device=self.means.device)  # shape (N, D, D)
+        # Build a covariance matrix for each component: (N, D, D)
+        cov_mats = cov_factor * torch.eye(self.D, device=self.means.device)
+        
+        # Compute the log mixture weights (to avoid log(0), add a small epsilon)
+        log_mix_weights = torch.log(self.mix_weights + 1e-12)  # shape (N,)
 
-        # Add small epsilon to avoid log(0)
-        log_mix_weights = torch.log(self.mix_weights + 1e-12)
-
-        # Construct batch of multivariate Gaussians
-        mvns = torch.distributions.MultivariateNormal(loc=self.means, covariance_matrix=cov_mats)
-        # Compute log-likelihoods: shape (N,)
+        # Create a batch of multivariate Gaussians for the N mixture components.
+        mvns = torch.distributions.MultivariateNormal(loc=self.means, covariance_matrix=cov_mats) 
+        
+        # Expand x to (B, 1, D) so that broadcasting computes a log probability
+        # for each mixture component.
+        x_expanded = x.unsqueeze(1)  # (B, 1, D)
+        # Compute log-likelihoods for each mixture component for every x.
+        # The resulting shape will be (B, N)
         log_gauss = mvns.log_prob(x)
-
-        # Weighted log densities: log p_i(x) + log w_i
-        log_densities = log_mix_weights + log_gauss
-
-        # Log-sum-exp trick for numerical stability
-        max_log = torch.max(log_densities)
-        exp_shifted = torch.exp(log_densities - max_log)
-        attention = exp_shifted / exp_shifted.sum()
-
+        
+        # Compute the weighted log densities for each mixture component.
+        log_densities = log_gauss + log_mix_weights  # (B, N)
+        
+        # Use the log-sum-exp trick to normalize per batch element.
+        max_log, _ = torch.max(log_densities, dim=1, keepdim=True)  # (B, 1)
+        exp_shifted = torch.exp(log_densities - max_log)  # (B, N)
+        attention = exp_shifted / exp_shifted.sum(dim=1, keepdim=True)  # (B, N)
+        
         return attention
 
-class LinearLatentGradientB:
-    def __init__(self, projectors, template, v_0, capacity, decay_rate):
-        self.projectors = projectors
-        self.template = template
-        self.inv_projectors = torch.linalg.pinv(projectors)
-        self.templates_feature = projectors @ rearrange(self.template, "c h w -> (c h w)")# (n_proj, n_template)
-        self.n_projectors = projectors.shape[0]
-        self.device = template.device
-        self.dtype = template.dtype
-        self.v_0 = torch.ones(self.n_projectors, dtype=self.dtype, device=self.device) * v_0
-        self.capacity = capacity
-        self.decay_rate = decay_rate
-
-        self.attention = AttentionMixture(
-            means = self.templates_feature,
-            stds = self.v_0,
-            mix_weights = torch.ones(self.n_projectors, device=self.device) / self.n_projectors, # uniform weighting of components
-        )
-
-    def flat(self, x) : return rearrange(x, "... c h w -> ... (c h w)")
-    def unflat(self, x) : return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
-
-    def __call__(self, x, t):
-        features = torch.einsum("nfd, bd -> bnf", self.projectors, self.flat(x))
-        # calculation spatial attention and temporal attention
-        # weights_spatial = self.attention(features, t) # (b, n_proj)
-        weights_spatial = torch.ones((9, self.n_projectors), device=self.device, dtype=self.dtype) / self.n_projectors
-        weights_temporal = torch.sigmoid(self.decay_rate * (t - self.v_0)) # (n_proj)
-        # get projection of differences
-        diff_projected = torch.einsum("ndf, bnf -> bnd", self.inv_projectors, features)
-        # scale each delta by its temporal weight and take weighted sum using spatial weights
-        dxs = self.capacity * rearrange(weights_temporal, "n -> 1 n 1")  * diff_projected
-        dx = self.unflat(torch.einsum("bn,bnd->bd", weights_spatial, dxs))
-        return dx
 
 class LinearLatentGradient:
     def flat(self, x) : return rearrange(x, "... c h w -> ... (c h w)")
@@ -166,19 +141,30 @@ class LinearLatentGradient:
     def __init__(self, projectors, template, v_0, capacity, decay_rate):
         self.projectors = projectors
         self.template = template
+        self.features_template = torch.einsum("nFD, D -> nF", self.projectors, self.flat(self.template))
         self.v_0 = v_0
         self.inv_projectors = torch.linalg.pinv(self.projectors)
         self.device = template.device
         self.dtype = template.dtype
         self.capacity = capacity
         self.decay_rate = decay_rate
+        self.n_projectors = projectors.shape[0]
+
+        self.attention = AttentionMixture(
+            means = self.features_template,
+            stds = torch.ones(self.n_projectors, device=self.device) * self.v_0,
+            mix_weights = torch.ones(self.n_projectors, device=self.device) / self.n_projectors, # uniform weighting of components
+        )
 
     def __call__(self, x, t):
-        diff_features = torch.einsum("nFD, bD -> nbF", self.projectors, ((self.flat(x) - self.flat(self.template))))
-        diffs_projected = torch.einsum("nDF, nbF -> nbD", self.inv_projectors, diff_features)
-        diff_projected = torch.einsum("nbD -> bD", diffs_projected)
-        print(diffs_projected.shape)
-        # (B, D)
+        features = torch.einsum("nFD, bD -> bnF", self.projectors, self.flat(x) )
+        diff_features = features - self.features_template[None, :, :] # (bnd)
+        diffs_projected = torch.einsum("nDF, bnF -> bnD", self.inv_projectors, diff_features) 
+
+        # weights = torch.ones((x.shape[0], self.n_projectors), dtype=self.dtype, device=self.device)/self.n_projectors
+        weights = self.attention(features,t).to(self.dtype) # -> (n)
+        # print(weights)
+        diff_projected = torch.einsum("bn, bnD -> bD", weights, diffs_projected)
         dxs = self.capacity * torch.sigmoid(self.decay_rate * (t - self.v_0)) * diff_projected/t
         dx = self.unflat(dxs[0])
         return dx
@@ -205,7 +191,7 @@ def run_diffusion_for_schedule(schedule_params):
     # Simulations parameters
     grid_h = 3
     grid_w = 3
-    num_steps = 32
+    num_steps = 256
     seed=0
 
     # Load network.
@@ -246,8 +232,8 @@ def run_diffusion_for_schedule(schedule_params):
         capacity_template = current_sched.get("sched_capacity_template", None)
         decay_rate = current_sched.get("sched_decay_rate", None)
         v_0 = current_sched.get("sched_v0", None)
-        n_projectors = current_sched.get("sched_n_projectors", None)
-        dim_projector = current_sched.get("sched_dim_projector", None)
+        n_projectors = current_sched.get("sched_n_projectors", 1)
+        dim_projector = current_sched.get("sched_dim_projector", 1)
 
         # setup additive template-derived score 
         dim_data = template.shape[-1] * template.shape[-2] * template.shape[-3] 
@@ -297,30 +283,26 @@ def run_diffusion_for_schedule(schedule_params):
     }
     return data_dict
 
-
-
-
-
 #----------------------------------------------------------------------------
 
 if __name__ == "__main__":
 
     fname = "imgs/test.pkl"
-    if True:
+    if False:
         schedules = {
+            "og": {
+                "sched_capacity_template": [0],
+                "sched_v0": [0],
+                "sched_decay_rate": [0],
+            },
             "mod": {
                 "sched_capacity_template": [1.0],
                 "sched_v0": [12],
                 "sched_decay_rate": [1.0],
-                "sched_n_projectors": [1],
-                "sched_dim_projector": [1250]
-                # "sched_dim_projector": np.concatenate((np.linspace(192, 864, 3), np.linspace(928, 1536, 6))).astype(int),
+                "sched_n_projectors": [8, ],
+                "sched_dim_projector": np.linspace(192, 864, 3).astype(int),
+                #"sched_dim_projector": np.concatenate((np.linspace(192, 864, 3), np.linspace(928, 1536, 6))).astype(int),
             },
-            # "og": {
-            #     "sched_capacity_template": [0],
-            #     "sched_v0": [0],
-            #     "sched_decay_rate": [0],
-            # },
         }
         
         all_results = {}
@@ -340,16 +322,18 @@ if __name__ == "__main__":
     data_mod = loaded_results['mod']
     data_og = loaded_results['og']
 
+    print(data_og['scheduler_keys'])
     # define the ordering of scheduler dimensions (should match generation order)
     scheduler_order = ["sched_capacity_template", "sched_v0", "sched_decay_rate", "sched_n_projectors", "sched_dim_projector"]
-    raw_data_2d_mod = vis.transform_raw_data(data_mod["raw_data"], ["sched_capacity_template", "sched_dim_projector"], scheduler_order)
+    # raw_data_2d_mod = vis.transform_raw_data(data_mod["raw_data"], ["sched_n_projectors", "sched_dim_projector"], scheduler_order)
+    raw_data_2d_mod = vis.transform_raw_data(data_mod["raw_data"], ["sched_capacity_template", "sched_v0"], scheduler_order)
     raw_data_2d_og = vis.transform_raw_data(data_og["raw_data"], ["sched_capacity_template", "sched_v0"], scheduler_order[:3])
     
     data_mod["raw_data"] = raw_data_2d_mod
     data_og["raw_data"] = raw_data_2d_og
     
     # visualization 
-    vis.plot_condition_by_condition(data_mod, "sched_capacity_template", "sched_dim_projector", data_og)
+    vis.plot_condition_by_condition(data_mod, "sched_n_projectors", "sched_dim_projector", data_og)
 
 
 #----------------------------------------------------------------------------
