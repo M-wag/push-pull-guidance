@@ -142,22 +142,21 @@ class NonLinearGradient:
     def flat(self, x) : return rearrange(x, "... c h w -> ... (c h w)")
     def unflat(self, x) : return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
 
-    def __init__(self):
+    def __init__(self, template, v_0, decay_rate, latent, latent_inv):
         self.template = template
-        self.features_template = torch.einsum("nFD, D -> nF", self.projectors, self.flat(self.template))
         self.v_0 = v_0
-        self.inv_projectors = torch.linalg.pinv(self.projectors)
         self.device = template.device
         self.dtype = template.dtype
         self.decay_rate = decay_rate
         self.latent = latent
         self.latent_inv = latent_inv
-        self.delta_t = delta_t
+
+        self.features_template = latent(template)
 
     def __call__(self, x, t):
-        features = self.latent(self.flat(x))
-        score_latent = torch.sigmoid(self.decay_rate * (t - self.v_0)) * (self.features_template - features)/t
-        score = jvp(self.latent_inv, x, score_latent, strict=True)
+        features = self.latent(x)
+        score_latent = torch.sigmoid(self.decay_rate * (t - self.v_0)) * (self.features_template - features) / t
+        _, score = jvp(self.latent_inv, features, score_latent, strict=True)
         return score
 
 
@@ -195,24 +194,44 @@ class LinearLatentGradient:
         return dx
 
 
-def construct_vector_field_template(template, n_projectors, dim_projector, v_0, decay_rate, device, **kwargs):
-    dim_data = template.shape[-1] * template.shape[-2] * template.shape[-3] 
-    projectors = torch.randn((n_projectors, dim_projector, dim_data), device=device, dtype=template.dtype)
-    vector_field_template = LinearLatentGradient(
-        projectors = projectors,
-        template = template[0],
-        v_0 = v_0,
-        decay_rate = decay_rate,
-    )
+# TODO: general input of feautre parameters
+def construct_vector_field_template(template, v_0, decay_rate, device, **kwargs):
+    if False: 
+        dim_data = template.shape[-1] * template.shape[-2] * template.shape[-3] 
+        projectors = torch.randn((n_projectors, dim_projector, dim_data), device=device, dtype=template.dtype)
+        vector_field_template = LinearLatentGradient(
+            projectors = projectors,
+            template = template[0],
+            v_0 = v_0,
+            decay_rate = decay_rate,
+        )
 
-    description = f"""
-    vf_type         = Linear 
-    n_templates     = {template.shape[0]}
-    n_projectors    = {n_projectors}
-    dim_data        = {dim_data} 
-    dim_projector   = {dim_projector} 
-    """
-    
+        description = f"""
+        vf_type         = Linear 
+        n_templates     = {template.shape[0]}
+        n_projectors    = {n_projectors}
+        dim_data        = {dim_data} 
+        dim_projector   = {dim_projector} 
+        """
+    else:
+        from diffusers import AutoencoderKL
+        vae = AutoencoderKL.from_pretrained("stabilityai/sd-turbo", subfolder="vae", use_safetensors=True)
+        vae = vae.to(device=template.device, dtype=template.dtype)
+        
+        print(template.shape)
+        vector_field_template = NonLinearGradient(
+            template = template,
+            v_0 = v_0,
+            decay_rate = decay_rate,
+            latent = lambda x : vae.encode(x).latent_dist.sample(),
+            latent_inv = lambda x: vae.decode(x).sample
+        )
+
+        description = f"""
+        vf_type         = NonLinear
+        n_templates     = {template.shape[0]}
+        """
+
     print(description)
 
     return vector_field_template
