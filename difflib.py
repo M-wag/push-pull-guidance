@@ -14,6 +14,7 @@ from PIL import Image
 import visualization as vis
 from einops import rearrange, repeat
 from torchvision.io import read_image
+from torch.autograd.functional import jvp
 
 
 #----------------------------------------------------------------------------
@@ -136,6 +137,28 @@ class AttentionMixture:
         attention = exp_shifted / exp_shifted.sum(dim=1, keepdim=True)  # (B, N)
         
         return attention
+
+class NonLinearGradient:
+    def flat(self, x) : return rearrange(x, "... c h w -> ... (c h w)")
+    def unflat(self, x) : return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
+
+    def __init__(self):
+        self.template = template
+        self.features_template = torch.einsum("nFD, D -> nF", self.projectors, self.flat(self.template))
+        self.v_0 = v_0
+        self.inv_projectors = torch.linalg.pinv(self.projectors)
+        self.device = template.device
+        self.dtype = template.dtype
+        self.decay_rate = decay_rate
+        self.latent = latent
+        self.latent_inv = latent_inv
+        self.delta_t = delta_t
+
+    def __call__(self, x, t):
+        features = self.latent(self.flat(x))
+        score_latent = torch.sigmoid(self.decay_rate * (t - self.v_0)) * (self.features_template - features)/t
+        score = jvp(self.latent_inv, x, score_latent, strict=True)
+        return score
 
 
 class LinearLatentGradient:
