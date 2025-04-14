@@ -138,60 +138,54 @@ class AttentionMixture:
         
         return attention
 
-class NonLinearGradient:
+class PullBackGradient:
     def flat(self, x) : return rearrange(x, "... c h w -> ... (c h w)")
     def unflat(self, x) : return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
 
-    def __init__(self, template, v_0, decay_rate, latent, latent_inv):
+    def __init__(self, template, v_0, decay_rate, latent, latent_inv, flatten_input=False):
         self.template = template
         self.v_0 = v_0
-        self.device = template.device
-        self.dtype = template.dtype
         self.decay_rate = decay_rate
         self.latent = latent
         self.latent_inv = latent_inv
 
-        self.features_template = latent(template)
+        self.flatten_input = flatten_input
+        self.features_template = latent(self.flat(self.template) if self.flatten_input else self.template)
+        self.device = template.device
+        self.dtype = template.dtype
 
     def __call__(self, x, t):
+        x = self.flat(x) if self.flatten_input else x 
         features = self.latent(x)
         score_latent = torch.sigmoid(self.decay_rate * (t - self.v_0)) * (self.features_template - features) / t
         _, score = jvp(self.latent_inv, features, score_latent, strict=True)
+        score = self.unflat(score) if self.flatten_input else score
         return score
 
 
-class LinearLatentGradient:
-    def flat(self, x) : return rearrange(x, "... c h w -> ... (c h w)")
-    def unflat(self, x) : return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
-
-    def __init__(self, projectors, template, v_0, decay_rate):
-        self.projectors = projectors
+class LinearPullBackGradient(PullBackGradient):
+    def __init__(self, template, v_0, decay_rate, feature_mat, flatten_input=True):
         self.template = template
-        self.features_template = torch.einsum("nFD, D -> nF", self.projectors, self.flat(self.template))
         self.v_0 = v_0
-        self.inv_projectors = torch.linalg.pinv(self.projectors)
+        self.decay_rate = decay_rate
+        self.A = feature_mat
+        self.A_inv = torch.linalg.pinv(feature_mat)
+
+        self.flatten_input = flatten_input
+        if self.flatten_input:
+            self.features_template = self.flat(self.template) @ self.A.T 
+        else:
+            self.features_template = self.template @ self.A.T 
         self.device = template.device
         self.dtype = template.dtype
-        self.decay_rate = decay_rate
-        self.n_projectors = projectors.shape[0]
-
-        self.attention = AttentionMixture(
-            means = self.features_template,
-            stds = torch.ones(self.n_projectors, device=self.device) * self.v_0,
-            mix_weights = torch.ones(self.n_projectors, device=self.device) / self.n_projectors, # uniform weighting of components
-        )
 
     def __call__(self, x, t):
-        features = torch.einsum("nFD, bD -> bnF", self.projectors, self.flat(x) )
-        diff_features = features - self.features_template[None, :, :] # (bnd)
-        diffs_projected = torch.einsum("nDF, bnF -> bnD", self.inv_projectors, diff_features) 
-
-        # weights = torch.ones((x.shape[0], self.n_projectors), dtype=self.dtype, device=self.device)/self.n_projectors
-        weights = self.attention(features,t).to(self.dtype) # -> (n)
-        diff_projected = torch.einsum("bn, bnD -> bD", weights, diffs_projected)
-        dxs = torch.sigmoid(self.decay_rate * (t - self.v_0)) * diff_projected/t
-        dx = self.unflat(dxs[0])
-        return dx
+        x = self.flat(x) if self.flatten_input else x 
+        diff_features = self.features_template - (x@ self.A.T)
+        diff_projected = (diff_features @ self.A_inv.T)
+        score = torch.sigmoid(self.decay_rate * (t - self.v_0)) * diff_projected / t
+        score = self.unflat(score) if self.flatten_input else score
+        return score
 
 
 # TODO: general input of feautre parameters
