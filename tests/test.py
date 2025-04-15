@@ -91,4 +91,7 @@ def test_pb_grad_linear_pb_grad_equivalence(setup_pullback_gradients):
             "Gradients for the (general) PullBackGradient and LinearPullBackGradient when accepting the same feature matrix" 
 
 
+if __name__ == "__main__":
+    pass
+
 
