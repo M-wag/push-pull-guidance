@@ -15,7 +15,10 @@ import visualization as vis
 from einops import rearrange, repeat
 from torchvision.io import read_image
 from torch.autograd.functional import jvp
-
+from dataclasses import dataclass, asdict
+from typing import List, Any
+import torch
+from einops import rearrange
 
 #----------------------------------------------------------------------------
 
@@ -94,9 +97,6 @@ def generate_image_grid(
 #----------------------------------------------------------------------------
 
 
-
-import torch
-from einops import rearrange
 
 class AttentionMixture:
     def __init__(self, means, stds, mix_weights):
@@ -230,6 +230,80 @@ def construct_vector_field_template(template, v_0, decay_rate, device, **kwargs)
 
     return vector_field_template
     
+
+
+@dataclass
+class SimulationConfig:
+    network_pkl: str
+
+    scale_template_score: List[float] 
+    decay_rate: List[float]
+    v_0: List[float]
+    n_projectors: List[int]
+    dim_projector: List[int]
+    template: Any  = None,
+    scale_model_score: List[float] = 1.0
+
+    seed: int = 0
+    num_steps: int = 32
+    grid_h: int = 3
+    grid_w: int = 3
+
+    sigma_min: float = 0.002  
+    sigma_max: float = 80
+    rho: float = 7
+    S_churn: float = 0.0
+    S_min: float = 0.0
+    S_max: float = float('inf')
+    S_noise: float = 1
+
+
+    def __post_init__(self):
+        # For validation
+        pass
+
+    def to_dict(self):
+        return asdict(self)
+
+    def __str__(self):
+        lines = []
+        max_key_len = max(len(k) for k in self.__dataclass_fields__)
+
+        for key in self.__dataclass_fields__:
+            value = getattr(self, key)
+            if value is None:
+                continue
+            formatted_value = (
+                f"[{', '.join(map(str, value))}]" if isinstance(value, list)
+                else repr(value)
+            )
+            lines.append(f"{key:<{max_key_len}} = {formatted_value}")
+        return "\n".join(lines)
+
+def schedule_diffusion(prms : SimulationConfig):
+    # Set seed
+    torch.manual_seed(prms.seed)
+    # Load network
+    print(f'Loading network from "{network_pkl}"...')
+    with dnnlib.util.open_url(prms.network_pkl) as f:
+        net = pickle.load(f)['ema'].to(prms.device)
+    # Load template data
+    if os.path.isfile(prms.template_path):
+        templates = None
+    elif os.path.isdir(prms.template_path):
+        templates = None
+    else:
+        assert False, "Template path must be directory or file"
+    # Setup parameter schedule
+
+    # Iterate through each combination of scheduling parameters
+    for idx_data, prm_dif in None:
+        # Generate guidance vectorfield
+        vf_guide = None
+        xs, ts = generate_image_grid(net, vf_guide)
+
+        raw_data[idx_data] = (xs * 127.5 + 128) / 255
+
 
 
 def run_diffusion_for_schedule(
