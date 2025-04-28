@@ -4,49 +4,43 @@
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
 # You should have received a copy of the license along with this
 # work. If not, see http://creativecommons.org/licenses/by-nc-sa/4.0/
-
 import tqdm
 import pickle
 import numpy as np
 import torch
+import os
 import dnnlib
 from PIL import Image
-import visualization as vis
 from einops import rearrange, repeat
 from torchvision.io import read_image
 from torch.autograd.functional import jvp
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from typing import List, Any
 import torch
 from einops import rearrange
 
 #----------------------------------------------------------------------------
-
 def generate_image_grid(
     net, 
-    vf_template,                                # Vector field induced by temlate and features      
-    seed                = 0, 
-    grid_w               = 2, 
-    grid_h               = 2,  
-    device              = torch.device('cuda'),
-    num_steps           = 18, 
-    sigma_min           = 0.002, 
-    sigma_max           = 80, 
-    rho                 = 7,
-    S_churn             = 0, 
-    S_min               = 0, 
-    S_max               = float('inf'), 
-    S_noise             = 1,
-    save_all_timesteps  =True,
-    scale_model_score   =1.0,
-    scale_template_score=0.0,
-    **kwargs,
+    vf_template,         # Vector field induced by temlate and features      
+    seed                : int , 
+    device              ,
+    batch_size          : int,
+    num_steps           : int, 
+    sigma_min           : float,
+    sigma_max           : float, 
+    rho                 : float, 
+    S_churn             : float, 
+    S_min               : float, 
+    S_max               : float,
+    S_noise             : float, 
+    scale_model_score   : float, 
+    save_all_timesteps  : bool = True,
 ):
-    batch_size = grid_w * grid_h
-    torch.manual_seed(seed)
+    if seed is not None:
+        torch.manual_seed(seed)
 
     # Pick latents and labels.
-    print(f'Generating {batch_size} images...')
     latents = torch.randn([batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device)
     class_labels = None
     if net.label_dim:
@@ -79,7 +73,7 @@ def generate_image_grid(
         x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
 
         # template score
-        d_template = scale_template_score * vf_template(x_hat, t_hat)
+        d_template = vf_template(x_hat, t_hat)
 
         # model score
         denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
@@ -96,172 +90,8 @@ def generate_image_grid(
 
 #----------------------------------------------------------------------------
 
-
-
-class AttentionMixture:
-    def __init__(self, means, stds, mix_weights):
-        # means: (N, D), stds: (N,), mix_weights: (N,)
-        self.means = means
-        self.stds = stds 
-        self.mix_weights = mix_weights
-        self.D = means.size(-1)
-
-    def __call__(self, x, std_noise) -> torch.Tensor:
-        # TODO Refactor to use softmax
-        # x is now batched: (B, D)
-        # Compute the covariance factor for each mixture component.
-        cov_factor = self.stds**2 + std_noise**2  # shape (N,)
-        cov_factor = rearrange(cov_factor, 'n -> n 1 1')  # shape (N, 1, 1)
-        # Build a covariance matrix for each component: (N, D, D)
-        cov_mats = cov_factor * torch.eye(self.D, device=self.means.device)
-        
-        # Compute the log mixture weights (to avoid log(0), add a small epsilon)
-        log_mix_weights = torch.log(self.mix_weights + 1e-12)  # shape (N,)
-
-        # Create a batch of multivariate Gaussians for the N mixture components.
-        mvns = torch.distributions.MultivariateNormal(loc=self.means, covariance_matrix=cov_mats) 
-        
-        # Expand x to (B, 1, D) so that broadcasting computes a log probability
-        # for each mixture component.
-        x_expanded = x.unsqueeze(1)  # (B, 1, D)
-        # Compute log-likelihoods for each mixture component for every x.
-        # The resulting shape will be (B, N)
-        log_gauss = mvns.log_prob(x)
-        
-        # Compute the weighted log densities for each mixture component.
-        log_densities = log_gauss + log_mix_weights  # (B, N)
-        
-        # Use the log-sum-exp trick to normalize per batch element.
-        max_log, _ = torch.max(log_densities, dim=1, keepdim=True)  # (B, 1)
-        exp_shifted = torch.exp(log_densities - max_log)  # (B, N)
-        attention = exp_shifted / exp_shifted.sum(dim=1, keepdim=True)  # (B, N)
-        
-        return attention
-
-class PullBackGradient:
-    def flat(self, x) : return rearrange(x, "... c h w -> ... (c h w)")
-    def unflat(self, x) : return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
-
-    def __init__(self, template, v_0, decay_rate, latent, latent_inv, flatten_input=False):
-        self.template = template
-        self.v_0 = v_0
-        self.decay_rate = decay_rate
-        self.latent = latent
-        self.latent_inv = latent_inv
-
-        self.flatten_input = flatten_input
-        self.features_template = latent(self.flat(self.template) if self.flatten_input else self.template)
-        self.device = template.device
-        self.dtype = template.dtype
-
-    def __call__(self, x, t):
-        x = self.flat(x) if self.flatten_input else x 
-        features = self.latent(x)
-        score_latent = torch.sigmoid(self.decay_rate * (t - self.v_0)) * (self.features_template - features) / t
-        _, score = jvp(self.latent_inv, features, score_latent, strict=True)
-        score = self.unflat(score) if self.flatten_input else score
-        return score
-
-
-class LinearPullBackGradient(PullBackGradient):
-    def __init__(self, template, v_0, decay_rate, feature_mat, flatten_input=True):
-        self.template = template
-        self.v_0 = v_0
-        self.decay_rate = decay_rate
-        self.A = feature_mat
-        self.A_inv = torch.linalg.pinv(feature_mat)
-
-        self.flatten_input = flatten_input
-        if self.flatten_input:
-            self.features_template = self.flat(self.template) @ self.A.T 
-        else:
-            self.features_template = self.template @ self.A.T 
-        self.device = template.device
-        self.dtype = template.dtype
-
-    def __call__(self, x, t):
-        x = self.flat(x) if self.flatten_input else x 
-        diff_features = self.features_template - (x@ self.A.T)
-        diff_projected = (diff_features @ self.A_inv.T)
-        score = torch.sigmoid(self.decay_rate * (t - self.v_0)) * diff_projected / t
-        score = self.unflat(score) if self.flatten_input else score
-        return score
-
-
-# TODO: general input of feautre parameters
-def construct_vector_field_template(template, v_0, decay_rate, device, **kwargs):
-    if False: 
-        dim_data = template.shape[-1] * template.shape[-2] * template.shape[-3] 
-        projectors = torch.randn((n_projectors, dim_projector, dim_data), device=device, dtype=template.dtype)
-        vector_field_template = LinearLatentGradient(
-            projectors = projectors,
-            template = template[0],
-            v_0 = v_0,
-            decay_rate = decay_rate,
-        )
-
-        description = f"""
-        vf_type         = Linear 
-        n_templates     = {template.shape[0]}
-        n_projectors    = {n_projectors}
-        dim_data        = {dim_data} 
-        dim_projector   = {dim_projector} 
-        """
-    else:
-        from diffusers import AutoencoderKL
-        vae = AutoencoderKL.from_pretrained("stabilityai/sd-turbo", subfolder="vae", use_safetensors=True)
-        vae = vae.to(device=template.device, dtype=template.dtype)
-        
-        print(template.shape)
-        vector_field_template = NonLinearGradient(
-            template = template,
-            v_0 = v_0,
-            decay_rate = decay_rate,
-            latent = lambda x : vae.encode(x).latent_dist.sample(),
-            latent_inv = lambda x: vae.decode(x).sample
-        )
-
-        description = f"""
-        vf_type         = NonLinear
-        n_templates     = {template.shape[0]}
-        """
-
-    print(description)
-
-    return vector_field_template
-    
-
-
-@dataclass
-class SimulationConfig:
-    network_pkl: str
-
-    scale_template_score: List[float] 
-    decay_rate: List[float]
-    v_0: List[float]
-    n_projectors: List[int]
-    dim_projector: List[int]
-    template: Any  = None,
-    scale_model_score: List[float] = 1.0
-
-    seed: int = 0
-    num_steps: int = 32
-    grid_h: int = 3
-    grid_w: int = 3
-
-    sigma_min: float = 0.002  
-    sigma_max: float = 80
-    rho: float = 7
-    S_churn: float = 0.0
-    S_min: float = 0.0
-    S_max: float = float('inf')
-    S_noise: float = 1
-
-
-    def __post_init__(self):
-        # For validation
-        pass
-
+@dataclass(frozen=True)
+class Config:
     def to_dict(self):
         return asdict(self)
 
@@ -279,86 +109,110 @@ class SimulationConfig:
             )
             lines.append(f"{key:<{max_key_len}} = {formatted_value}")
         return "\n".join(lines)
+    
+    def __call__(self, **kwargs) -> 'Config':
+        """  eturn a new instance of this Config with specified fields replaced."""
+        invalid  = set(kwargs) - set(self.__dataclass_fields__)
+        if invalid:
+            raise AttributeError(f"Unknown fields for {type(self).__name__}: {invalid}")
+        return replace(self, **kwargs)
 
-def schedule_diffusion(prms : SimulationConfig):
-    # Set seed
-    torch.manual_seed(prms.seed)
-    # Load network
-    print(f'Loading network from "{network_pkl}"...')
-    with dnnlib.util.open_url(prms.network_pkl) as f:
-        net = pickle.load(f)['ema'].to(prms.device)
-    # Load template data
-    if os.path.isfile(prms.template_path):
-        templates = None
-    elif os.path.isdir(prms.template_path):
-        templates = None
+
+@dataclass(frozen=True)
+class ConfigGuidanceVF(Config):
+    scale_template_score:   float | list[float] | None
+    decay_rate:             float | list[float] | None
+    v_0:                    float | list[float] | None
+    n_projectors:           float | list[int] | None
+    dim_projector:          float | list[int] | None
+    template_path:          str | None
+
+@dataclass(frozen=True)
+class ConfigDiffusion(Config):
+    scale_model_score:  float = 1.0
+    batch_size :        float = 9
+    num_steps:          int = 32
+    sigma_min:          float = 0.002  
+    sigma_max:          float = 80
+    rho:                float = 7
+    S_churn:            float = 0.0
+    S_min:              float = 0.0
+    S_max:              float = float('inf')
+    S_noise:            float = 1
+
+@dataclass(frozen=True)
+class ConfigSimulation(Config):
+    network_pkl:    str
+    device:         str 
+    seed:           int | None 
+    input_shape:    tuple[int]
+    guidance_vf:    ConfigGuidanceVF 
+    diffusion:      ConfigDiffusion 
+
+def create_guidance_vf(prms : ConfigGuidanceVF):
+    if prms:
+        raise NotImplementedError
     else:
-        assert False, "Template path must be directory or file"
-    # Setup parameter schedule
+        vf = lambda x, t: torch.zeros_like(x)
+    return vf
 
-    # Iterate through each combination of scheduling parameters
-    for idx_data, prm_dif in None:
-        # Generate guidance vectorfield
-        vf_guide = None
-        xs, ts = generate_image_grid(net, vf_guide)
-
-        raw_data[idx_data] = (xs * 127.5 + 128) / 255
-
-
-
-def run_diffusion_for_schedule(
-    network_pkl,
-    seed            = 0,
-    device          = torch.device('cuda'),
-    grid_h          = 3,
-    grid_w          = 3,
-    num_steps       = 32,
-    **sched_kwargs,
-):
-
-    torch.manual_seed(seed)
+def schedule_diffusion(cnfg : ConfigSimulation):
+    # Set seed
+    if cnfg.seed is not None:
+        torch.manual_seed(cnfg.seed)
+        print(f"Setting config seed {cnfg.seed}")
 
     # Load network
-    print(f'Loading network from "{network_pkl}"...')
-    with dnnlib.util.open_url(network_pkl) as f:
-        net = pickle.load(f)['ema'].to(device)
+    print(f'Loading network from "{cnfg.network_pkl}"...')
+    with dnnlib.util.open_url(cnfg.network_pkl) as f:
+        net = pickle.load(f)['ema'].to(cnfg.device)
 
-    # Convert template to torch
-    sched_kwargs["template"]  = [(template.to(device).to(torch.float64) - 128) / 127.5 for template in sched_kwargs["template"]]  #IF YOU DON't DO torch.float64 you get numerical instability
-    sched_keys = sched_kwargs.keys()
-    sched_values = sched_kwargs.values()
-    sched_shape = np.array([1 if (isinstance(vals, float) or isinstance(vals, int)) else len(vals)
-                         for vals in sched_values], dtype=int)
-    sched_shape_no_ones = sched_shape[np.where(sched_shape != 1)] 
-
-    # Initialize an empty array of shape [conditons !=] x [t, B, 3, H, W]
-    raw_data = np.empty(
-        (*sched_shape_no_ones , num_steps, grid_h * grid_w, net.img_channels, net.img_resolution, net.img_resolution)
-    )
-
-
-    # Iterate over all combinations of scheduling parameters.
-    for idx, idx_no_ones in tqdm.tqdm(zip(np.ndindex(*sched_shape), np.ndindex(*sched_shape_no_ones)), unit="scheduler", position=0):
-        # Create dict for current schedule
-        current_sched = {k: (vals if (isinstance(vals, float) or isinstance(vals, int))  else vals[i])
-                         for k, vals, i in zip(sched_keys, sched_values, idx)}
-
-        # Construct the template-derived vector field
-        if current_sched['scale_template_score'] == 0: 
-            vf_template = lambda x, t: torch.zeros_like(x)
+    # Load template data
+    if isinstance(cnfg.guidance_vf, type(None)):
+        templates=None
+    elif os.path.isfile(cnfg.guidance_vf.template_path):
+        templates = read_image(cnfg.guidance_vf.template_path)
+        templates = (templates.to(device=cnfg.device, dtype=torch.float64) - 128) / 127.5 
+    elif os.path.isdir(cnfg.guidance_vf.template_path):
+        templatess = []
+        for fname in sorted(os.listdir(cnfg.guidance_vf.template_path)): # iterate through each file in directory
+            fpath = os.path.join(cnfg.guidance_vf.template_path, fname)
+            if not os.path.isfile(fpath): continue
+            templates.append(read_file(fpath))
+        if len(templates)==0:
+            templates = None
         else:
-            vf_template = construct_vector_field_template(device=device, **current_sched)
+            templates = torch.stack(templates)
+    else:
+        assert False, "Template path must be directory or file or None"
 
-        # Run Diffusion Process
-        xs, t_steps, = generate_image_grid(net, vf_template, 
-                                           seed=seed, device=device, grid_h=grid_h, grid_w=grid_w, num_steps=num_steps, # if you dont specify these will use default
-                                           **current_sched) 
-        raw_data[idx_no_ones] = (xs * 127.5 + 128) / 255
+    # Setup parameter schedule
+    keys_schd = cnfg.diffusion.to_dict().keys()
+    vals_schd = cnfg.diffusion.to_dict().values()
+    shape_schd = np.array([1 if (isinstance(vals, float) or isinstance(vals, int)) else len(vals)
+                         for vals in vals_schd], dtype=int)
+    shape_no_ones_schd = shape_schd[np.where(shape_schd != 1)] 
 
-    data_dict = {
-        "sched_kwargs": sched_kwargs,
-        "raw_data": raw_data,
-    }
-    return data_dict
+    # Only a single set of parameters
+    if len(shape_no_ones_schd) ==0:
+        raw_data = np.empty((1, 1, cnfg.diffusion.num_steps, cnfg.diffusion.batch_size, *cnfg.input_shape))
+        vf_guide = create_guidance_vf(cnfg.guidance_vf)
+        xs, ts = generate_image_grid(net, vf_guide, cnfg.seed, cnfg.device,
+                                     **cnfg.diffusion.to_dict())
+        raw_data[0] = (xs * 127.5 + 128) / 255
 
+    # Multiple sets of parameters
+    else:
+        # Iterate through each combination of scheduling parameters
+        for idx_data, prm_dif in None:
+            # Generate current schedule
+            schd_current = {k: (vals if (isinstance(vals, float) or isinstance(vals, int))  else vals[i])
+                             for k, vals, i in zip(sched_keys, sched_values, idx)}
+
+            # Generate guidance vectorfield
+            vf_guide = None
+            xs, ts = generate_image_grid(net, vf_guide, **schd_current)
+            raw_data[idx_data] = (xs * 127.5 + 128) / 255
+
+    return raw_data 
 
