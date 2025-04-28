@@ -178,3 +178,5 @@ cython_debug/
 
 # Ignore contents of data input and output
 data/output/*
+!data/output/.gitgnore
+data/input/*
