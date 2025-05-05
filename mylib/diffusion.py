@@ -9,12 +9,13 @@ import pickle
 import numpy as np
 import torch
 import os
+import itertools
 import dnnlib
 from PIL import Image
 from einops import rearrange, repeat
 from torchvision.io import read_image
 from torch.autograd.functional import jvp
-from dataclasses import dataclass, asdict, replace
+from dataclasses import dataclass, asdict, replace, fields
 from typing import List, Any
 import torch
 from einops import rearrange
@@ -117,6 +118,27 @@ class Config:
             raise AttributeError(f"Unknown fields for {type(self).__name__}: {invalid}")
         return replace(self, **kwargs)
 
+    def split(self):
+        # Split fields based on whether they contains lists
+        fields_list = {}
+        fields_no_list = {}
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if isinstance(value, list):
+                fields_list[field.name] = value
+            else:
+                fields_no_list[field.name] = value
+
+        # Make every combination of values and make new configs
+        combinations = [dict(zip(fields_list.keys(), vals)) for vals in itertools.product(*fields_list.values())]
+        cnfgs_split = []
+        for combo in combinations:
+            cnfgs_split.append(type(self)(**combo, **fields_no_list))
+
+        return cnfgs_split 
+
+        
+
 
 @dataclass(frozen=True)
 class ConfigGuidanceVF(Config):
@@ -149,13 +171,70 @@ class ConfigSimulation(Config):
     guidance_vf:    ConfigGuidanceVF 
     diffusion:      ConfigDiffusion 
 
-def create_guidance_vf(prms : ConfigGuidanceVF):
-    if prms:
-        raise NotImplementedError
-    else:
-        vf = lambda x, t: torch.zeros_like(x)
-    return vf
+# Guidance Vector Fields
+class GuidanceVF:
+    def flat(self, x) : return rearrange(x, "... c h w -> ... (c h w)")
+    def unflat(self, x) : return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
 
+    def __init__(self, template, v_0, decay_rate, latent, latent_inv, flatten_input=False):
+        self.template = template
+        self.v_0 = v_0
+        self.decay_rate = decay_rate
+        self.latent = latent
+        self.latent_inv = latent_inv
+
+        self.flatten_input = flatten_input
+        self.features_template = latent(self.flat(self.template) if self.flatten_input else self.template)
+        self.device = template.device
+        self.dtype = template.dtype
+
+    def __call__(self, x, t):
+        raise NotImplementedError
+
+class PixelGuidanceVF(GuidanceVF):
+    def __call__(self, x, t):
+        x = self.flat(x) if self.flatten_input else x 
+        score = torch.sigmoid(self.decay_rate * (t - self.v_0)) * (self.template - x) / t
+        score = self.unflat(score) if self.flatten_input else score
+        return score
+
+class LinearGuidanceVF(GuidanceVF):
+    def __init__(self, template, v_0, decay_rate, feature_mat, flatten_input=True):
+        self.template = template
+        self.v_0 = v_0
+        self.decay_rate = decay_rate
+        self.A = feature_mat
+        self.A_inv = torch.linalg.pinv(feature_mat)
+
+        self.flatten_input = flatten_input
+        if self.flatten_input:
+            self.features_template = self.flat(self.template) @ self.A.T 
+        else:
+            self.features_template = self.template @ self.A.T 
+        self.device = template.device
+        self.dtype = template.dtype
+
+    def __call__(self, x, t):
+        x = self.flat(x) if self.flatten_input else x 
+        diff_features = self.features_template - (x@ self.A.T)
+        diff_projected = (diff_features @ self.A_inv.T)
+        score = torch.sigmoid(self.decay_rate * (t - self.v_0)) * diff_projected / t
+        score = self.unflat(score) if self.flatten_input else score
+        return score
+
+
+def create_guidance_vf(prms : ConfigGuidanceVF):
+    if prms is None:
+        vf = lambda x, t: torch.zeros_like(x)
+        return vf
+    if prms.feature_type == "linear":
+        if (prms.template.shape == prms.dim_projector):
+            assert prms.n_projectors == 1, "Having more then one then [] is useless"
+            vf = PixelGuidanceVF(prms)
+        else: 
+            raise NotImplementedError
+
+# SCHEDULER
 def schedule_diffusion(cnfg : ConfigSimulation):
     # Set seed
     if cnfg.seed is not None:
@@ -194,7 +273,7 @@ def schedule_diffusion(cnfg : ConfigSimulation):
     shape_no_ones_schd = shape_schd[np.where(shape_schd != 1)] 
 
     # Only a single set of parameters
-    if len(shape_no_ones_schd) ==0:
+    if len(shape_no_ones_schd) == 0:
         raw_data = np.empty((1, 1, cnfg.diffusion.num_steps, cnfg.diffusion.batch_size, *cnfg.input_shape))
         vf_guide = create_guidance_vf(cnfg.guidance_vf)
         xs, ts = generate_image_grid(net, vf_guide, cnfg.seed, cnfg.device,
@@ -204,15 +283,15 @@ def schedule_diffusion(cnfg : ConfigSimulation):
     # Multiple sets of parameters
     else:
         # Iterate through each combination of scheduling parameters
+        raw_data = np.empty((*shape_no_ones_sched, cnfg.diffusion.num_steps, cnfg.diffusion.batch_size, *cnfg.input_shape))
         for idx_data, prm_dif in None:
             # Generate current schedule
             schd_current = {k: (vals if (isinstance(vals, float) or isinstance(vals, int))  else vals[i])
                              for k, vals, i in zip(sched_keys, sched_values, idx)}
 
-            # Generate guidance vectorfield
-            vf_guide = None
-            xs, ts = generate_image_grid(net, vf_guide, **schd_current)
-            raw_data[idx_data] = (xs * 127.5 + 128) / 255
+            vf_guide = create_guidance_vf(cnfg.guidance_vf)
+            xs, ts = generate_image_grid(net, vf_guide, cnfg.seed, cnfg.device, **schd_current)
+            raw_data[0] = (xs * 127.5 + 128) / 255
 
     return raw_data 
 
