@@ -157,14 +157,22 @@ class Config:
 
 @dataclass(frozen=True)
 class ConfigGuidanceVF(Config):
+    # Core
     vf_type:                Literal["pixel", "linear", "hf"]
+    template_path:          str | None = None
     scale_template_score:   float | list[float] | None  = 1.0
     decay_rate:             float | list[float] | None = None
     v_0:                    float | list[float] | None = None
+    # Linear
     n_projectors:           float | list[int] | None = None
     dim_projector:          float | list[int] | None = None
-    template_path:          str | None = None
+    # Hugging Face
     hf_url:                 str = None
+    # Optional
+    flatten_input:          bool | None = False
+    threshold_weight:       float | list[float] = None
+    threshold_time_min:     float | list[float] | None = None
+    threshold_time_max:     float | list[float] | None = None
 
 @dataclass(frozen=True)
 class ConfigDiffusion(Config):
@@ -191,81 +199,81 @@ class ConfigSimulation(Config):
 ### Guidance Vector Fields
 
 class GuidanceVF:
-    def flat(self, x) : return rearrange(x, "... c h w -> ... (c h w)")
-    def unflat(self, x) : return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
+    def flat(self, x):
+        return rearrange(x, "... c h w -> ... (c h w)")
+    
+    def unflat(self, x):
+        return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
 
-    def __init__(self, template, scale, v_0, decay_rate, latent, latent_inv, *, flatten_input=False):
+    def __init__(self, template, scale, v_0, decay_rate, latent, latent_inv, *,
+                 flatten_input=False,
+                 threshold_weight=None,
+                 threshold_time_min=None,
+                 threshold_time_max=None):
+
+        # Core parameters
         self.template = template
         self.scale = scale
         self.v_0 = v_0
         self.decay_rate = decay_rate
         self.latent = latent
         self.latent_inv = latent_inv
-
+        # Optional features
         self.flatten_input = flatten_input
-        self.features_template = latent(self.flat(self.template) if self.flatten_input else self.template)
+        self.threshold_weight = threshold_weight
+        self.threshold_time_min = threshold_time_min
+        self.threshold_time_max = threshold_time_max
+        # Pre-process template 
+        self.features_template = latent(self.flat(template)) if flatten_input else latent(template)
+        # Device and type tracking
         self.device = template.device
         self.dtype = template.dtype
 
     def __call__(self, x, t):
-        raise NotImplementedError
+        x = self.flat(x) if self.flatten_input else x
+        weight = torch.sigmoid(self.decay_rate * (t - self.v_0)) * self.scale
+        
+        apply_score = True
+        # Check weight threshold
+        if self.threshold_weight is not None and weight < self.threshold_weight:
+            apply_score = False
+        # Check time thresholds
+        if self.threshold_time_min is not None and t < self.threshold_time_min:
+            apply_score = False
+        if self.threshold_time_max is not None and t > self.threshold_time_max:
+            apply_score = False
+        
+        if apply_score:
+            dirac_score = self._dirac_score(x, t)
+            score = weight * dirac_score
+        else:
+            score = torch.zeros_like(x)
+        
+        score = self.unflat(score) if self.flatten_input else score
+        return score
+
+    def _dirac_score(self, x, t):
+        raise NotImplementedError("Subclasses must implement this method")
 
 class PixelGuidanceVF(GuidanceVF):
-    def __init__(self, template, scale, v_0, decay_rate, *, flatten_input=False):
-        super().__init__(
-            template = template,
-            scale = scale,
-            v_0 = v_0,
-            decay_rate = decay_rate,
-            latent = lambda x  : x,
-            latent_inv = lambda x : x,
-            flatten_input=flatten_input,
-    )
+    def __init__(self, *args, **kwargs):
+        # Override latent mappings while passing through other params
+        super().__init__(*args, **kwargs, latent=lambda x: x, latent_inv=lambda x: x)
 
-    def __call__(self, x, t):
-        x = self.flat(x) if self.flatten_input else x 
-        weight = torch.sigmoid(self.decay_rate * (t - self.v_0)) * self.scale
-        score =  weight * -(self.template - x) / t
-        score = self.unflat(score) if self.flatten_input else score
-        return score
-
-class LinearGuidanceVF(GuidanceVF):
-    def __init__(self, template, v_0, decay_rate, feature_mat, flatten_input=True):
-        self.template = template
-        self.v_0 = v_0
-        self.decay_rate = decay_rate
-        self.A = feature_mat
-        self.A_inv = torch.linalg.pinv(feature_mat)
-
-        self.flatten_input = flatten_input
-        if self.flatten_input:
-            self.features_template = self.flat(self.template) @ self.A.T 
-        else:
-            self.features_template = self.template @ self.A.T 
-        self.device = template.device
-        self.dtype = template.dtype
-
-    def __call__(self, x, t):
-        x = self.flat(x) if self.flatten_input else x 
-        diff_features = self.features_template - (x@ self.A.T)
-        diff_projected = (diff_features @ self.A_inv.T)
-        score = torch.sigmoid(self.decay_rate * (t - self.v_0)) * diff_projected / t
-        score = self.unflat(score) if self.flatten_input else score
-        return score
+    def _dirac_score(self, x, t):
+        dirac_score =  -(self.template - x) / t
+        return dirac_score
 
 class JVPGuidanceVP(GuidanceVF):
-    def __call__(self, x, t):
-        x = self.flat(x) if self.flatten_input else x 
+    def _dirac_score(self, x, t):
         features = self.latent(x)
-        weight = torch.sigmoid(self.decay_rate * (t - self.v_0)) * self.scale
-        score_latent = weight * -(self.features_template - features) / t
-        _, score = jvp(self.latent_inv, features, score_latent, strict=True)
-        score = self.unflat(score) if self.flatten_input else score
+        dirac_score_latent =  -(self.features_template - features) / t
+        _, dirac_score = jvp(self.latent_inv, features, score_latent, strict=True)
         return score
 
 def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
     if verbose: 
-        print(f"\n {prms}")
+        print(f"\n{prms}")
 
     # Check if vector field is defined
     if prms is None:
@@ -289,6 +297,7 @@ def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
 
             vf = JVPGuidanceVP(
                     template = templates,
+                    scale = prms.scale_template_score,
                     v_0 = prms.v_0,
                     decay_rate = prms.decay_rate,
                     latent = lambda x : vae.encode(x).latent_dist.sample(),
@@ -308,7 +317,7 @@ def load_templates(cnfg : ConfigSimulation):
     if isinstance(cnfg.guidance_vf, type(None)):
         templates=None
     elif os.path.isfile(cnfg.guidance_vf.template_path):
-        img = torch.unsqeeze(read_image(cnfg.guidance_vf.template_path), 0)
+        img = torch.unsqueeze(read_image(cnfg.guidance_vf.template_path), 0)
         templates = (img.to(device=cnfg.device, dtype=torch.float64) - 128) / 127.5 
 
     elif os.path.isdir(cnfg.guidance_vf.template_path):
