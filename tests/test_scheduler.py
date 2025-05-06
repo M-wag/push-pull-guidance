@@ -94,3 +94,15 @@ def test_config_shape_combination():
         f"Expected shape_combination (3, 2, 1), got {cnfg.shape_combination}"
     )
 
+
+def test_config_shape_combination_nested():
+    cnfg = ConfigTest(
+            x=[1, 2, 3, 4], 
+            y=2,
+            z=ConfigNested(a=[1, 2], b=[2, 3, 4])
+    )
+
+    assert cnfg.shape_combination == (4, 2, 3), (
+        f"Expected shape_combination (4, 2, 3), got {cnfg.shape_combination}"
+    )
+

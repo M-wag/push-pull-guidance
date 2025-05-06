@@ -16,7 +16,7 @@ from einops import rearrange, repeat
 from torchvision.io import read_image
 from torch.autograd.functional import jvp
 from dataclasses import dataclass, asdict, replace, fields
-from typing import List, Any
+from typing import List, Any, Literal
 import torch
 from einops import rearrange
 
@@ -140,16 +140,25 @@ class Config:
         return cnfgs_split 
 
     @property
-    def shape_combination(self):
-        return tuple(
-                len(getattr(self, field.name))
-                for field in fields(self)
-                if isinstance(getattr(self, field.name), list)
-        )
+    def shape_combination(self) -> tuple[int]:
+
+        def collect_dims(cfg) -> list[int]:
+            dims = []
+            for field in fields(cfg):
+                val = getattr(cfg, field.name)
+                if isinstance(val, list):
+                    dims.append(len(val))
+                elif isinstance(val, Config):
+                    dims.extend(collect_dims(val))
+            return dims
+
+        return tuple(collect_dims(self))
+
 
 @dataclass(frozen=True)
 class ConfigGuidanceVF(Config):
-    scale_template_score:   float | list[float] | None  = None
+    vf_type:                Literal["pixel", "linear", "hf"]
+    scale_template_score:   float | list[float] | None  = 1.0
     decay_rate:             float | list[float] | None = None
     v_0:                    float | list[float] | None = None
     n_projectors:           float | list[int] | None = None
@@ -178,7 +187,8 @@ class ConfigSimulation(Config):
     guidance_vf:    ConfigGuidanceVF 
     diffusion:      ConfigDiffusion 
 
-# Guidance Vector Fields
+### Guidance Vector Fields
+
 class GuidanceVF:
     def flat(self, x) : return rearrange(x, "... c h w -> ... (c h w)")
     def unflat(self, x) : return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
@@ -199,6 +209,15 @@ class GuidanceVF:
         raise NotImplementedError
 
 class PixelGuidanceVF(GuidanceVF):
+    def __init__(self, template, v_0, decay_rate):
+        super().__init__(
+            template = template,
+            v_0 = v_0,
+            decay_rate = decay_rate,
+            latent = lambda x  : x,
+            latent_inv = lambda x : x,
+    )
+
     def __call__(self, x, t):
         x = self.flat(x) if self.flatten_input else x 
         score = torch.sigmoid(self.decay_rate * (t - self.v_0)) * (self.template - x) / t
@@ -229,30 +248,54 @@ class LinearGuidanceVF(GuidanceVF):
         score = self.unflat(score) if self.flatten_input else score
         return score
 
+class JVPGuidanceVP(GuidanceVF):
+    def __call__(self, x, t):
+        features = self.latent(x)
+        score_latent = torch.sigmoid(self.decay_rate * (t - self.v_0)) * (self.features_template - features) / t
+        _, score = jvp(self.latent_inv, features, score_latent, strict=True)
+        return score
 
-def create_guidance_vf(prms : ConfigGuidanceVF):
+def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
+    if verbose: 
+        print("\n")
+        print(prms)
+
+    # Check if vector field is defined
     if prms is None:
         vf = lambda x, t: torch.zeros_like(x)
         return vf
-    if prms.feature_type == "linear":
-        if (prms.template.shape == prms.dim_projector):
-            assert prms.n_projectors == 1, "Having more then one then [] is useless"
-            vf = PixelGuidanceVF(prms)
-        else: 
-            raise NotImplementedError
 
-# SCHEDULER
-def schedule_diffusion(cnfg : ConfigSimulation):
-    # Set seed
-    if cnfg.seed is not None:
-        torch.manual_seed(cnfg.seed)
-        print(f"Setting config seed {cnfg.seed}")
+    # Match specicic type of vector field
+    match prms.vf_type:
+        case "pixel":
+            vf = PixelGuidanceVF(
+                    template = templates,
+                    v_0 = prms.v_0,
+                    decay_rate = prms.decay_rate,
+            )
 
-    # Load network
-    print(f'Loading network from "{cnfg.network_pkl}"...')
-    with dnnlib.util.open_url(cnfg.network_pkl) as f:
-        net = pickle.load(f)['ema'].to(cnfg.device)
+        case "hf":
+            from diffusers import AutoencoderKL
+            vae = AutoencoderKL.from_pretrained("stabilityai/sd-turbo", subfolder="vae", use_safetensors=True)
+            vae = vae.to(device=templates.device, dtype=templates.dtype)
 
+            vf = JVPGuidanceVP(
+                    template = templates,
+                    v_0 = prms.v_0,
+                    decay_rate = prms.decay_rate,
+                    latent = lambda x : vae.encode(x).latent_dist.sample(),
+                    latent_inv = lambda x: vae.decode(x).sample
+            )
+
+        case _:
+            raise ValueError(f"Received unexepcted vector field type: {prvs.vf_type}")
+
+    return vf
+
+
+### SCHEDULER ###
+
+def load_templates(cnfg : ConfigSimulation):
     # Load template data
     if isinstance(cnfg.guidance_vf, type(None)):
         templates=None
@@ -273,13 +316,26 @@ def schedule_diffusion(cnfg : ConfigSimulation):
         raise ValueError(
             f"Template path must be an existing file, directory, or None; "
             f"got {cnfg.guidance_vf.template_path!r} (type {type(cnfg.guidance_vf.template_path).__name__})"
-        )
+    )
+    return templates
+
+def schedule_diffusion(cnfg : ConfigSimulation):
+    # Set seed
+    if cnfg.seed is not None:
+        torch.manual_seed(cnfg.seed)
+        print(f"Setting config seed {cnfg.seed}")
+
+    # Load network
+    print(f'Loading network from "{cnfg.network_pkl}"...')
+    with dnnlib.util.open_url(cnfg.network_pkl) as f:
+        net = pickle.load(f)['ema'].to(cnfg.device)
 
     # Iterate through combinations of parameters
     raw_data = np.empty((len(cnfg.split()), cnfg.diffusion.num_steps, cnfg.diffusion.batch_size, *cnfg.input_shape)) # (N_combs, t, B, C, H, W)
     assert len(raw_data.shape) == 6, f"raw_data should have rank 6, got shape : {raw_data.shape}"
     for idx, cnfg_split in enumerate(cnfg.split()):
-        vf_guide = create_guidance_vf(cnfg.guidance_vf)
+        templates = load_templates(cnfg_split)
+        vf_guide = create_guidance_vf(cnfg_split.guidance_vf, templates)
         xs, ts = generate_image_grid(net, vf_guide, cnfg.seed, cnfg.device,
                                      **cnfg.diffusion.to_dict())
         raw_data[idx] = (xs * 127.5 + 128) / 255
