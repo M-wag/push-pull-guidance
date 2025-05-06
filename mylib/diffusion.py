@@ -124,7 +124,9 @@ class Config:
         fields_no_list = {}
         for field in fields(self):
             value = getattr(self, field.name)
-            if isinstance(value, list):
+            if isinstance(value, Config):
+                fields_list[field.name] = value.split()
+            elif isinstance(value, list):
                 fields_list[field.name] = value
             else:
                 fields_no_list[field.name] = value
@@ -137,17 +139,22 @@ class Config:
 
         return cnfgs_split 
 
-        
-
+    @property
+    def shape_combination(self):
+        return tuple(
+                len(getattr(self, field.name))
+                for field in fields(self)
+                if isinstance(getattr(self, field.name), list)
+        )
 
 @dataclass(frozen=True)
 class ConfigGuidanceVF(Config):
-    scale_template_score:   float | list[float] | None
-    decay_rate:             float | list[float] | None
-    v_0:                    float | list[float] | None
-    n_projectors:           float | list[int] | None
-    dim_projector:          float | list[int] | None
-    template_path:          str | None
+    scale_template_score:   float | list[float] | None  = None
+    decay_rate:             float | list[float] | None = None
+    v_0:                    float | list[float] | None = None
+    n_projectors:           float | list[int] | None = None
+    dim_projector:          float | list[int] | None = None
+    template_path:          str | None = None
 
 @dataclass(frozen=True)
 class ConfigDiffusion(Config):
@@ -250,48 +257,32 @@ def schedule_diffusion(cnfg : ConfigSimulation):
     if isinstance(cnfg.guidance_vf, type(None)):
         templates=None
     elif os.path.isfile(cnfg.guidance_vf.template_path):
-        templates = read_image(cnfg.guidance_vf.template_path)
-        templates = (templates.to(device=cnfg.device, dtype=torch.float64) - 128) / 127.5 
+        img = read_image(cnfg.guidance_vf.template_path)
+        templates = (img.to(device=cnfg.device, dtype=torch.float64) - 128) / 127.5 
+
     elif os.path.isdir(cnfg.guidance_vf.template_path):
-        templatess = []
+        imgs = []
         for fname in sorted(os.listdir(cnfg.guidance_vf.template_path)): # iterate through each file in directory
             fpath = os.path.join(cnfg.guidance_vf.template_path, fname)
-            if not os.path.isfile(fpath): continue
-            templates.append(read_file(fpath))
-        if len(templates)==0:
-            templates = None
-        else:
-            templates = torch.stack(templates)
+            if not os.path.isfile(fpath): 
+                continue
+            imgs.append(read_file(fpath))
+        templates = torch.stack(imgs) if imgs else None
+
     else:
-        assert False, "Template path must be directory or file or None"
+        raise ValueError(
+            f"Template path must be an existing file, directory, or None; "
+            f"got {cnfg.guidance_vf.template_path!r} (type {type(cnfg.guidance_vf.template_path).__name__})"
+        )
 
-    # Setup parameter schedule
-    keys_schd = cnfg.diffusion.to_dict().keys()
-    vals_schd = cnfg.diffusion.to_dict().values()
-    shape_schd = np.array([1 if (isinstance(vals, float) or isinstance(vals, int)) else len(vals)
-                         for vals in vals_schd], dtype=int)
-    shape_no_ones_schd = shape_schd[np.where(shape_schd != 1)] 
-
-    # Only a single set of parameters
-    if len(shape_no_ones_schd) == 0:
-        raw_data = np.empty((1, 1, cnfg.diffusion.num_steps, cnfg.diffusion.batch_size, *cnfg.input_shape))
+    # Iterate through combinations of parameters
+    raw_data = np.empty((len(cnfg.split()), cnfg.diffusion.num_steps, cnfg.diffusion.batch_size, *cnfg.input_shape)) # (N_combs, t, B, C, H, W)
+    assert len(raw_data.shape) == 6, f"raw_data should have rank 6, got shape : {raw_data.shape}"
+    for idx, cnfg_split in enumerate(cnfg.split()):
         vf_guide = create_guidance_vf(cnfg.guidance_vf)
         xs, ts = generate_image_grid(net, vf_guide, cnfg.seed, cnfg.device,
                                      **cnfg.diffusion.to_dict())
-        raw_data[0] = (xs * 127.5 + 128) / 255
-
-    # Multiple sets of parameters
-    else:
-        # Iterate through each combination of scheduling parameters
-        raw_data = np.empty((*shape_no_ones_sched, cnfg.diffusion.num_steps, cnfg.diffusion.batch_size, *cnfg.input_shape))
-        for idx_data, prm_dif in None:
-            # Generate current schedule
-            schd_current = {k: (vals if (isinstance(vals, float) or isinstance(vals, int))  else vals[i])
-                             for k, vals, i in zip(sched_keys, sched_values, idx)}
-
-            vf_guide = create_guidance_vf(cnfg.guidance_vf)
-            xs, ts = generate_image_grid(net, vf_guide, cnfg.seed, cnfg.device, **schd_current)
-            raw_data[0] = (xs * 127.5 + 128) / 255
-
-    return raw_data 
+        raw_data[idx] = (xs * 127.5 + 128) / 255
+    
+    return raw_data
 
