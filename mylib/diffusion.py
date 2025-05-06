@@ -164,6 +164,7 @@ class ConfigGuidanceVF(Config):
     n_projectors:           float | list[int] | None = None
     dim_projector:          float | list[int] | None = None
     template_path:          str | None = None
+    hf_url:                 str = None
 
 @dataclass(frozen=True)
 class ConfigDiffusion(Config):
@@ -193,8 +194,9 @@ class GuidanceVF:
     def flat(self, x) : return rearrange(x, "... c h w -> ... (c h w)")
     def unflat(self, x) : return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
 
-    def __init__(self, template, v_0, decay_rate, latent, latent_inv, flatten_input=False):
+    def __init__(self, template, scale, v_0, decay_rate, latent, latent_inv, *, flatten_input=False):
         self.template = template
+        self.scale = scale
         self.v_0 = v_0
         self.decay_rate = decay_rate
         self.latent = latent
@@ -209,18 +211,21 @@ class GuidanceVF:
         raise NotImplementedError
 
 class PixelGuidanceVF(GuidanceVF):
-    def __init__(self, template, v_0, decay_rate):
+    def __init__(self, template, scale, v_0, decay_rate, *, flatten_input=False):
         super().__init__(
             template = template,
+            scale = scale,
             v_0 = v_0,
             decay_rate = decay_rate,
             latent = lambda x  : x,
             latent_inv = lambda x : x,
+            flatten_input=flatten_input,
     )
 
     def __call__(self, x, t):
         x = self.flat(x) if self.flatten_input else x 
-        score = torch.sigmoid(self.decay_rate * (t - self.v_0)) * (self.template - x) / t
+        weight = torch.sigmoid(self.decay_rate * (t - self.v_0)) * self.scale
+        score =  weight * -(self.template - x) / t
         score = self.unflat(score) if self.flatten_input else score
         return score
 
@@ -250,15 +255,17 @@ class LinearGuidanceVF(GuidanceVF):
 
 class JVPGuidanceVP(GuidanceVF):
     def __call__(self, x, t):
+        x = self.flat(x) if self.flatten_input else x 
         features = self.latent(x)
-        score_latent = torch.sigmoid(self.decay_rate * (t - self.v_0)) * (self.features_template - features) / t
+        weight = torch.sigmoid(self.decay_rate * (t - self.v_0)) * self.scale
+        score_latent = weight * -(self.features_template - features) / t
         _, score = jvp(self.latent_inv, features, score_latent, strict=True)
+        score = self.unflat(score) if self.flatten_input else score
         return score
 
 def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
     if verbose: 
-        print("\n")
-        print(prms)
+        print(f"\n {prms}")
 
     # Check if vector field is defined
     if prms is None:
@@ -268,15 +275,16 @@ def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
     # Match specicic type of vector field
     match prms.vf_type:
         case "pixel":
-            vf = PixelGuidanceVF(
+            vf = PixelGuidanceVF( 
                     template = templates,
+                    scale = prms.scale_template_score,
                     v_0 = prms.v_0,
                     decay_rate = prms.decay_rate,
             )
 
         case "hf":
             from diffusers import AutoencoderKL
-            vae = AutoencoderKL.from_pretrained("stabilityai/sd-turbo", subfolder="vae", use_safetensors=True)
+            vae = AutoencoderKL.from_pretrained(prms.hf_url, subfolder="vae", use_safetensors=True)
             vae = vae.to(device=templates.device, dtype=templates.dtype)
 
             vf = JVPGuidanceVP(
