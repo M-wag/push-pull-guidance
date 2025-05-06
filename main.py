@@ -35,6 +35,17 @@ CNFG_SCALE_AND_V0 = ConfigSimulation(
         diffusion       = ConfigDiffusion(num_steps=32),
         )
 
+def plot_each_condition(data, batch_size)
+    n_cols = math.ceil(math.sqrt(batch_size))
+    n_rows = math.ceil(batch_size / n_cols)
+
+    fig, axes = plt.subplots(n_rows, n_cols, squeeze=False)
+    for idx, (row, col) in enumerate(np.ndindex((n_rows, n_cols))):
+        if idx == batch_size:
+            break
+        axes[row, col].imshow(data[idx])
+
+    plt.show()
 
 def run_no_guidance(exp_name, cnfg):
     # Set output destination
@@ -65,8 +76,10 @@ def run_no_guidance(exp_name, cnfg):
     return path_exp
 
 if __name__ == "__main__":
+    # USER DEFINED
     RUN_FRESH = True
 
+    # USER DEFINED
     if RUN_FRESH:
         cnfg = CNFG_SCALE_AND_V0(
                 diffusion = CNFG_SCALE_AND_V0.diffusion(num_steps=32, batch_size=3)
@@ -94,6 +107,7 @@ if __name__ == "__main__":
         shape_comb = cnfg_sim.shape_combination 
 
     # Pick combination index, time index and batch index
+    # USER DEFINED
     idx_combinations = (slice(None), slice(None))
     idx_time = (-1, )
     idx_batch = (slice(None),)
@@ -103,18 +117,8 @@ if __name__ == "__main__":
     data = data[idx_combinations + idx_time + idx_batch]
     assert len(data.shape) == 6, f"data should have rank 5, got shape: {data.shape}"
     data = rearrange(data, "p1 p2 b C H W -> b (p1 H) (p2 W) C", p1=shape_comb[0], p2=shape_comb[1])
-
-    print(data.shape)
     
-    # Make subplot layout
-    n_cols = math.ceil(math.sqrt(cnfg_sim.diffusion.batch_size))
-    n_rows = math.ceil(cnfg_sim.diffusion.batch_size / n_cols)
+    plot_each_condition(data, cnfg.diffusion.batch_size)
 
-    fig, axes = plt.subplots(n_rows, n_cols, squeeze=False)
-    for idx, (row, col) in enumerate(np.ndindex((n_rows, n_cols))):
-        if idx == cnfg_sim.diffusion.batch_size:
-            break
-        axes[row, col].imshow(data[idx])
-
-    plt.show()
     
+
