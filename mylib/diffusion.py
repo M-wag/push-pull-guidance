@@ -308,7 +308,7 @@ def load_templates(cnfg : ConfigSimulation):
     if isinstance(cnfg.guidance_vf, type(None)):
         templates=None
     elif os.path.isfile(cnfg.guidance_vf.template_path):
-        img = read_image(cnfg.guidance_vf.template_path)
+        img = torch.unsqeeze(read_image(cnfg.guidance_vf.template_path), 0)
         templates = (img.to(device=cnfg.device, dtype=torch.float64) - 128) / 127.5 
 
     elif os.path.isdir(cnfg.guidance_vf.template_path):
