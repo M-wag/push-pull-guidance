@@ -205,9 +205,7 @@ class GuidanceVF:
     def unflat(self, x):
         return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
 
-    def __init__(self, template, scale, v_0, decay_rate, latent, latent_inv, *,
-                 flatten_input=False,
-                 threshold_weight=None,
+    def __init__(self, template, scale, v_0, decay_rate, latent, latent_inv, *, flatten_input=False, threshold_weight=None,
                  threshold_time_min=None,
                  threshold_time_max=None):
 
@@ -223,11 +221,16 @@ class GuidanceVF:
         self.threshold_weight = threshold_weight
         self.threshold_time_min = threshold_time_min
         self.threshold_time_max = threshold_time_max
+
         # Pre-process template 
         self.features_template = latent(self.flat(template)) if flatten_input else latent(template)
         # Device and type tracking
         self.device = template.device
         self.dtype = template.dtype
+        # For testing
+        self.history_weight = []
+        self.history_apply_score = []
+
 
     def __call__(self, x, t):
         x = self.flat(x) if self.flatten_input else x
@@ -250,6 +253,9 @@ class GuidanceVF:
             score = torch.zeros_like(x)
         
         score = self.unflat(score) if self.flatten_input else score
+
+        self.history_weight.append(weight)
+        self.history_apply_score.append(apply_score)
         return score
 
     def _dirac_score(self, x, t):
@@ -268,8 +274,24 @@ class JVPGuidanceVP(GuidanceVF):
     def _dirac_score(self, x, t):
         features = self.latent(x)
         dirac_score_latent =  -(self.features_template - features) / t
-        _, dirac_score = jvp(self.latent_inv, features, score_latent, strict=True)
-        return score
+        # Jacobian vector product 
+        _, dirac_score = jvp(self.latent_inv, features, dirac_score_latent, strict=True)
+        return dirac_score
+
+class NumericalGuidanceVP(GuidanceVF):
+    def __init__(self, *args, epsilon=1e-3, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.epsilon = epsilon  # Step size for finite differences
+
+    def _dirac_score(self, x, t):
+        features = self.latent(x)
+        dirac_score_latent = -(self.features_template - features) / t
+        # Numerical differentiation
+        perturbed_features = features + self.epsilon * dirac_score_latent
+        f_perturbed = self.latent_inv(perturbed_features)
+        f_original = self.latent_inv(features)
+        
+        return (f_perturbed - f_original) / self.epsilon  
 
 def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
     if verbose: 
@@ -283,23 +305,29 @@ def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
     # Match specicic type of vector field
     match prms.vf_type:
         case "pixel":
-            vf = PixelGuidanceVF( 
-                    template = templates,
-                    scale = prms.scale_template_score,
-                    v_0 = prms.v_0,
-                    decay_rate = prms.decay_rate,
-            )
+            kwargs_filtered = {
+                k: v
+                for k, v in prms.to_dict().items()
+                if k not in ("vf_type", "template_path") and v is not None
+            }
+            kwargs_filtered['scale'] = kwargs_filtered.pop('scale_template_score')
+            vf = PixelGuidanceVF(**kwargs_filtered, template=templates)
 
         case "hf":
             from diffusers import AutoencoderKL
             vae = AutoencoderKL.from_pretrained(prms.hf_url, subfolder="vae", use_safetensors=True)
             vae = vae.to(device=templates.device, dtype=templates.dtype)
 
+            kwargs_filtered = {
+                k: v
+                for k, v in prms.to_dict().items()
+                if k not in ("vf_type", "template_path") and v is not None
+            }
+            kwargs_filtered['scale'] = kwargs_filtered.pop('scale_template_score')
+
             vf = JVPGuidanceVP(
-                    template = templates,
-                    scale = prms.scale_template_score,
-                    v_0 = prms.v_0,
-                    decay_rate = prms.decay_rate,
+                    **kwargs_filtered,
+                    template=templates,
                     latent = lambda x : vae.encode(x).latent_dist.sample(),
                     latent_inv = lambda x: vae.decode(x).sample
             )
