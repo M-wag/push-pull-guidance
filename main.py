@@ -101,23 +101,6 @@ def run_no_guidance(cnfg, path_exp):
 
     return path_exp
 
-def create_figure(batch_size, n_conditions, img_shape, dpi=100):
-    """Create figure with properly scaled subplots"""
-    # Calculate dimensions
-    tile_width = base_tile_size * img_shape[1] / max(img_shape)  # Normalize by image aspect ratio
-    tile_height = base_tile_size * img_shape[0] / max(img_shapeTrue
-    
-    # Total figure size calculation
-    fig_width = ((n_conditions + 2) * tile_width) 
-    fig_height = max(batch_size, 1) * tile_height  # Height determined by middle plot
-    
-    # Create figure with 3 subplots using GridSpec
-    fig = plt.figure(figsize=(fig_width, fig_height), constrained_layout=True)
-    gs = GridSpec(1, 3, figure=fig, width_ratios=[1, n_conditions, 1],
-                  wspace=0.05, hspace=0)
-    
-    return fig, gs
-
 def create_figure(batch_size, n_conditions, img_hw, dpi=100):
     """Create figure with pixel-perfect layout"""
     # Convert image dimensions to inches
@@ -131,27 +114,35 @@ def create_figure(batch_size, n_conditions, img_hw, dpi=100):
     # Create figure with exact dimensions
     fig = plt.figure(figsize=(fig_width, fig_height), dpi=dpi)
     fig.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
-            
+    
     return fig
 
-def plot_condition(ax, data, grid_shape):
-    n_rows, n_cols = grid_shape
-    ax.set_axis_off()
-    sub_gs = ax.get_subplotspec().subgridspec(n_rows, n_cols,
-                                              wspace=0, hspace=0,
-                                              width_ratios = [1] * n_cols,
-                                              height_ratios = [1] * n_rows)
-
+def plot_condition(fig, position, data, img_hw):
+    """Add images to specific grid position"""
+    img_h, img_w = img_hw
+    n_rows, n_cols = data.shape[:2]
+    
+    # Calculate grid bounds
+    left = position[0] * img_w / (2 + n_conditions)
+    bottom = 0
+    width = n_cols * img_w / (2 + n_conditions)
+    height = n_rows * img_h
+    
+    # Create dedicated grid
+    sub_gs = fig.add_gridspec(n_rows, n_cols,
+                             left=left,
+                             right=left + width,
+                             bottom=bottom,
+                             top=height,
+                             wspace=0,
+                             hspace=0)
+    
+    # Plot images
     for i in range(n_rows):
         for j in range(n_cols):
-            img = data[i, j]
-
-            sub_ax = plt.Subplot(ax.figure, sub_gs[i, j])
-            sub_ax.imshow(img)
-            sub_ax.set_axis_off()
-            ax.figure.add_subplot(sub_ax)
-            sub_ax.margins(0, 0)
-
+            ax = fig.add_subplot(sub_gs[i, j])
+            ax.imshow(data[i, j])
+            ax.axis('off')
 def plot_comparison(data_dict, img_shape):
     """Main plotting function for comparison visualization"""
     # Extract data dimensions
