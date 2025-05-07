@@ -278,7 +278,7 @@ class JVPGuidanceVP(GuidanceVF):
         features = self.latent(x)
         dirac_score_latent =  -(self.features_template - features) / t
         # Jacobian vector product 
-        _, dirac_score = jvp(self.latent_inv, features, dirac_score_latent, strict=True)
+        _, dirac_score = jvp(self.latent_inv, features, dirac_score_latent, strict=False)
         return dirac_score
 
 class NumericalGuidanceVP(GuidanceVF):
