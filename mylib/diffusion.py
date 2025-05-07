@@ -158,7 +158,8 @@ class Config:
 @dataclass(frozen=True)
 class ConfigGuidanceVF(Config):
     # Core
-    vf_type:                Literal["pixel", "linear", "hf"]
+    type_latent:            Literal["pixel", "linear", "hf"]
+    type_eval:              Literal["jvp", "numdiff"] | None = None
     template_path:          str | None = None
     scale_template_score:   float | list[float] | None  = 1.0
     decay_rate:             float | list[float] | None = None
@@ -270,7 +271,7 @@ class PixelGuidanceVF(GuidanceVF):
         dirac_score =  -(self.template - x) / t
         return dirac_score
 
-class JVPGuidanceVP(GuidanceVF):
+class JVPGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
         # Override latent mappings while passing through other params
         super().__init__(*args, **kwargs)
@@ -281,7 +282,7 @@ class JVPGuidanceVP(GuidanceVF):
         _, dirac_score = jvp(self.latent_inv, features, dirac_score_latent, strict=False)
         return dirac_score
 
-class NumericalGuidanceVP(GuidanceVF):
+class NumericalGuidanceVF(GuidanceVF):
     def __init__(self, *args, epsilon=1e-3, **kwargs):
         super().__init__(*args, **kwargs)
         self.epsilon = epsilon  # Step size for finite differences
@@ -306,12 +307,12 @@ def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
         return vf
 
     # Match specicic type of vector field
-    match prms.vf_type:
+    match prms.type_latent:
         case "pixel":
             kwargs_filtered = {
                 k: v
                 for k, v in prms.to_dict().items()
-                if k not in ("vf_type", "template_path") and v is not None
+                if k not in ("type_latent", "template_path") and v is not None
             }
             kwargs_filtered['scale'] = kwargs_filtered.pop('scale_template_score')
             vf = PixelGuidanceVF(**kwargs_filtered, template=templates)
@@ -324,11 +325,17 @@ def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
             kwargs_filtered = {
                 k: v
                 for k, v in prms.to_dict().items()
-                if k not in ("vf_type", "template_path", "hf_url") and v is not None
+                if k not in ("type_latent", "type_eval", "template_path", "hf_url") and v is not None
             }
             kwargs_filtered['scale'] = kwargs_filtered.pop('scale_template_score')
 
-            vf = JVPGuidanceVP(
+            match prms.type_eval:
+                case "numdiff":
+                    VF = NumericalGuidanceVF
+                case "jvp":
+                    VF = JVPGuidanceVF
+
+            vf = VF(
                     **kwargs_filtered,
                     template=templates,
                     latent = lambda x : vae.encode(x).latent_dist.sample(),
@@ -336,7 +343,7 @@ def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
             )
 
         case _:
-            raise ValueError(f"Received unexepcted vector field type: {prvs.vf_type}")
+            raise ValueError(f"Received unexepcted vector field type: {prvs.type_latent}")
 
     return vf
 

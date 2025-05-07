@@ -9,7 +9,7 @@ def test_weight_thresholding():
     template = torch.randn(1, 3, 2, 2, device=device, dtype=dtype)
     
     prms = ConfigGuidanceVF(
-        vf_type="pixel",
+        type_latent="pixel",
         scale_template_score=1.0,
         v_0=40.0,
         decay_rate=1.0,
@@ -40,7 +40,7 @@ def test_time_thresholding():
     template = torch.randn(1, 3, 2, 2, device=device, dtype=dtype)
     
     prms = ConfigGuidanceVF(
-        vf_type="pixel",
+        type_latent="pixel",
         scale_template_score=1.0,
         v_0=40.0,
         decay_rate=1.0,

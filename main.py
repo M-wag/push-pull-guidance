@@ -12,7 +12,7 @@ import math
 MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
 
 VF_PIXEL_SCALE_AND_V0 = ConfigGuidanceVF(
-        vf_type = "pixel",
+        type_latent = "pixel",
         decay_rate = 1.0,
         v_0 = [15, 30],
         scale_template_score = [0.0, 0.1],
@@ -20,7 +20,18 @@ VF_PIXEL_SCALE_AND_V0 = ConfigGuidanceVF(
         )
 
 VF_VAE_JVP = ConfigGuidanceVF(
-        vf_type = "hf",
+        type_latent = "hf",
+        type_eval = "jvp",
+        hf_url = "stabilityai/sd-turbo",
+        decay_rate = 1.0,
+        v_0 = [15, 30],
+        scale_template_score = [0.5, 1.0],
+        template_path = "data/input/cat.jpg",
+        )
+
+VF_VAE_JVP = ConfigGuidanceVF(
+        type_latent = "hf",
+        type_eval = "numdiff",
         hf_url = "stabilityai/sd-turbo",
         decay_rate = 1.0,
         v_0 = [15, 30],
@@ -76,7 +87,7 @@ if __name__ == "__main__":
                 device          = "cuda" if torch.cuda.is_available() else "cpu",
                 seed            = 0,
                 input_shape     = (3, 64, 64),
-                guidance_vf     = VF_VAE_JVP(threshold_weight=0.1),
+                guidance_vf     = VF_PIXEL_SCALE_AND_V0 (threshold_weight=0.1),
                 diffusion       = ConfigDiffusion(num_steps=16),
                 )
 
