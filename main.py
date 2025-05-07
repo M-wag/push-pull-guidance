@@ -101,7 +101,7 @@ def run_no_guidance(cnfg, path_exp):
 
     return path_exp
 
-def create_figure(batch_size, n_conditions, img_hw, dpi=100):
+def create_figure(batch_size, n_conditions, img_hw, dpi=10):
     """Create figure with pixel-perfect layout"""
     # Convert image dimensions to inches
     img_h, img_w = img_hw
@@ -121,6 +121,8 @@ def plot_condition(fig, position, data, img_hw):
     """Add images to specific grid position"""
     img_h, img_w = img_hw
     n_rows, n_cols = data.shape[:2]
+
+    n_conditions = data.shape[0]
     
     # Calculate grid bounds
     left = position[0] * img_w / (2 + n_conditions)
@@ -222,5 +224,5 @@ if __name__ == "__main__":
     }
     
     # Create and show plot
-    fig = plot_comparison(data_dict, image_shape)
+    fig = plot_comparison(data_dict, image_shape[:2])
     plt.show()
