@@ -3,12 +3,14 @@ import time
 from typing import List, Dict
 import argparse
 from torch.cuda import Event
+from mylib.diffusion import ConfigGuidanceVF, create_guidance_vf
 
 class GuidanceBenchmark:
     def __init__(self, 
                  configs: List[ConfigGuidanceVF],
                  input_shape: tuple = (3, 256, 256),
                  batch_size: int = 8,
+                 num_templates: int = 1,
                  num_warmup: int = 10,
                  num_runs: int = 100):
         """
@@ -26,15 +28,15 @@ class GuidanceBenchmark:
         self.configs = configs
         self.batch_size = batch_size
         self.input_shape = input_shape
+        self.num_templates = num_templates
         self.num_warmup = num_warmup
         self.num_runs = num_runs
         
     def _prepare_config(self, config: ConfigGuidanceVF, device: torch.device):
         """Initialize configuration on target device"""
-        template = torch.randn(self.batch_size, *self.input_shape, 
-                             device=device, dtype=torch.float16)
-        x = torch.randn_like(template)
-        t = torch.linspace(0, 1, self.batch_size, device=device)
+        template = torch.randn(num_templates,  *self.input_shape, device=device, dtype=torch.float16)
+        x = torch.rand((self.batch_size, *self.inputshape), device=device, dtype=torch.float16)
+        t = torch.linspace(0, 80, device=device)
         
         vf = create_guidance_vf(config, template, verbose=False)
         return vf, x, t
