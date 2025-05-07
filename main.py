@@ -16,8 +16,9 @@ VF_NONE = ConfigGuidanceVF(None, None, None, None, None)
 VF_PIXEL= ConfigGuidanceVF(
         type_latent = "pixel",
         decay_rate = 1.0,
-        v_0 = [60, 45, 30, 15, 5] ,
-        scale_template_score = 0.5,
+        #v_0 = [60, 45, 30, 15, 5] ,
+        v_0 = [60, 45, 30, 15] ,
+        scale_template_score = 0.1,
         template_path = "data/input/cat.jpg",
         )
 
@@ -95,7 +96,6 @@ def run(exp_name, cnfg):
 def run_no_guidance(path_exp):
     # Pass to scheduler
     raw_data = schedule_diffusion(cnfg)
-
     # Save result
     raw_data_path = os.path.join(path_exp, "raw_data_og.pkl")
 
@@ -120,7 +120,7 @@ if __name__ == "__main__":
     # USER DEFINED
     if RUN_FRESH:
         path_exp = run("gamma_and_v0", cnfg_sim)
-        run("gamma_and_v0", cnfg_sim)
+        run_no_guidance(path_exp)
     else:
         path_exp = os.path.join(os.getcwd(), "data", "output", "gamma_and_v0_30")
 
