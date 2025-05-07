@@ -29,15 +29,7 @@ VF_VAE_JVP = ConfigGuidanceVF(
         template_path = "data/input/cat.jpg",
         )
 
-VF_VAE_JVP = ConfigGuidanceVF(
-        type_latent = "hf",
-        type_eval = "numdiff",
-        hf_url = "stabilityai/sd-turbo",
-        decay_rate = 1.0,
-        v_0 = [15, 30],
-        scale_template_score = [0.5, 1.0],
-        template_path = "data/input/cat.jpg",
-        )
+VF_VAE_NUMDIFF = VF_VAE_JVP(type_val="numdiff")
 
 def plot_each_condition(data, batch_size):
     n_cols = math.ceil(math.sqrt(batch_size))
