@@ -34,9 +34,9 @@ class GuidanceBenchmark:
         
     def _prepare_config(self, config: ConfigGuidanceVF, device: torch.device):
         """Initialize configuration on target device"""
-        template = torch.randn(num_templates,  *self.input_shape, device=device, dtype=torch.float16)
-        x = torch.rand((self.batch_size, *self.inputshape), device=device, dtype=torch.float16)
-        t = torch.linspace(0, 80, device=device)
+        template = torch.randn(self.num_templates,  *self.input_shape, device=device, dtype=torch.float16)
+        x = torch.rand((self.batch_size, *self.input_shape), device=device, dtype=torch.float16)
+        t = torch.rand(1, device=device)
         
         vf = create_guidance_vf(config, template, verbose=False)
         return vf, x, t
@@ -76,7 +76,7 @@ class GuidanceBenchmark:
         ) as prof:
             _ = vf(x, t)
             
-        return prof.key_averages().total_average().self_cuda_time_total
+        return prof.key_averages().total_average().self_cpu_time_total
 
     def run(self) -> Dict:
         """Distribute benchmarking across available GPUs"""
