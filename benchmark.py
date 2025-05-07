@@ -116,7 +116,7 @@ if __name__ == "__main__":
             scale_template_score=1.0,
             v_0=30.0,
             decay_rate=1.0,
-            hf_url="stabilityai/stable-diffusion-2-1"
+            hf_url = "stabilityai/sd-turbo",
         )
     ]
 
