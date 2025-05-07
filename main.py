@@ -11,11 +11,19 @@ import math
 
 MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
 
+VF_PIXEL= ConfigGuidanceVF(
+        type_latent = "pixel",
+        decay_rate = 1.0,
+        v_0 = 40,
+        scale_template_score = 0.5,
+        template_path = "data/input/cat.jpg",
+        )
+
 VF_PIXEL_SCALE_AND_V0 = ConfigGuidanceVF(
         type_latent = "pixel",
         decay_rate = 1.0,
         v_0 = [15, 30],
-        scale_template_score = [0.0, 0.1],
+        scale_template_score = [0.1, 0.5],
         template_path = "data/input/cat.jpg",
         )
 
@@ -24,12 +32,12 @@ VF_VAE_JVP = ConfigGuidanceVF(
         type_eval = "jvp",
         hf_url = "stabilityai/sd-turbo",
         decay_rate = 1.0,
-        v_0 = [15, 30],
-        scale_template_score = [0.5, 1.0],
+        v_0 = [15, 30, 45 ],
+        scale_template_score = 1.0,
         template_path = "data/input/cat.jpg",
         )
 
-VF_VAE_NUMDIFF = VF_VAE_JVP(type_val="numdiff")
+VF_VAE_NUMDIFF = VF_VAE_JVP(type_eval="numdiff")
 
 def plot_each_condition(data, batch_size):
     n_cols = math.ceil(math.sqrt(batch_size))
@@ -79,7 +87,7 @@ if __name__ == "__main__":
                 device          = "cuda" if torch.cuda.is_available() else "cpu",
                 seed            = 0,
                 input_shape     = (3, 64, 64),
-                guidance_vf     = VF_PIXEL_SCALE_AND_V0 (threshold_weight=0.1),
+                guidance_vf     = VF_PIXEL(threshold_weight=0.1),
                 diffusion       = ConfigDiffusion(num_steps=16),
                 )
 

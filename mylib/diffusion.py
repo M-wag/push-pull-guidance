@@ -18,6 +18,7 @@ from torch.autograd.functional import jvp
 from dataclasses import dataclass, asdict, replace, fields
 from typing import List, Any, Literal
 import torch
+import torch.nn.functional as F
 from einops import rearrange
 
 #----------------------------------------------------------------------------
@@ -198,6 +199,44 @@ class ConfigSimulation(Config):
     diffusion:      ConfigDiffusion 
 
 ### Guidance Vector Fields
+class AttentionMixture:
+    def __init__(self, means, stds, weights_mixture):
+        # means: (N, D), stds: (N,), weights_mixture: (N,)
+        self.means = means
+        self.stds = stds
+        self.weights_mixture = weights_mixture
+        self.D = means.size(-1)  # Dimension of the data
+
+        # Validate that mixture weights sum to 1.0
+        if not torch.isclose(torch.sum(weights_mixture), torch.tensor(1.0, dtype=weights_mixture.dtype), atol=1e-6):
+            raise ValueError(f"weights_mixture must sum to 1.0, got sum={torch.sum(weights_mixture).item():.4f}")
+
+    def __call__(self, x, T=1.0):
+        """
+        Args:
+            x: Input tensor of shape (B, D) where B is batch size
+            T: Temperature parameter (>0) controlling softmax sharpness
+        Returns:
+            weights_attention : Attention assocciated with gradient of log-density of mixture model, shape (B, D)
+        """
+        B, D = x.shape
+        N, _ = self.means.shape
+
+        # Compute squared distances between x and all means (B, N)
+        diff = self.means.unsqueeze(0) - x.unsqueeze(1)  # (1, N, D) - (B, 1, D) → (B, N, D)
+        squared_dist = (diff ** 2).sum(dim=-1)  # (B, N)
+        half_scaled_dist = -0.5 * (squared_dist / (self.stds.unsqueeze(0) ** 2))  # (B,N)
+
+        # Compute log terms for each component 
+        log_weights = torch.log(self.weights_mixture + 1e-8)                     # (N,)
+        log_std_term = -self.D * torch.log(self.stds + 1e-8)                    # (N,)
+
+        # Combine, drop the constant -(D/2)*ln(2π) 
+        exponents = half_scaled_dist + log_weights.unsqueeze(0) + log_std_term.unsqueeze(0)  # (B,N)
+
+        # Apply temperature and compute attention weights (B, N)
+        weights_attn = F.softmax(T * exponents, dim=-1)
+        return weights_attn
 
 class GuidanceVF:
     def flat(self, x):
@@ -300,6 +339,7 @@ class NumericalGuidanceVF(GuidanceVF):
 def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
     if verbose: 
         print(f"\n{prms}")
+        print(f"\ntemplates_shape \t= {tuple(templates.shape)}")
 
     # Check if vector field is defined
     if prms is None:
@@ -342,6 +382,8 @@ def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
                     latent_inv = lambda x: vae.decode(x).sample
             )
 
+        case "vae-linear":
+            pass
         case _:
             raise ValueError(f"Received unexepcted vector field type: {prvs.type_latent}")
 

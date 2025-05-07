@@ -1,7 +1,8 @@
 import pytest
 import torch
-from mylib.diffusion import ConfigGuidanceVF, create_guidance_vf
+from mylib.diffusion import ConfigGuidanceVF, create_guidance_vf, AttentionMixture
 
+#-------Thresholding-------
 
 def test_weight_thresholding():
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -68,3 +69,59 @@ def test_time_thresholding():
     score_within = vf(x, torch.tensor(t_within, dtype=dtype, device=device))
     assert vf.history_apply_score[-1] == True
 
+#------- Attention ------- 
+
+@pytest.fixture
+def setup_attention():
+    torch.manual_seed(42)
+    N = 5  
+    D = 3   
+    batch_size = 4
+
+    means = torch.randn(N, D)
+    stds = torch.ones(N) * 0.5
+    mix_weights = torch.ones(N) # TODO: all tests assume that all components are equally weighted
+    mix_weights /= mix_weights.sum()  
+    std_noise = 0.1
+    x = torch.randn(batch_size, means.shape[1])
+
+    return means, stds, mix_weights, std_noise, x 
+
+def test_attention_sum_to_one(setup_attention):
+    means, stds, mix_weights, std_noise, x = setup_attention
+    attention_fn = AttentionMixture(means, stds, mix_weights)
+    attn = attention_fn(x, std_noise)
+
+    assert torch.allclose(attn.sum(axis=-1), torch.tensor(1.0), atol=1e-5), "Attention weights do not sum to 1"
+
+def test_attention_less_than_one(setup_attention):
+    means, stds, mix_weights, std_noise, x = setup_attention
+    attention_fn = AttentionMixture(means, stds, mix_weights)
+    attn = attention_fn(x, std_noise)
+
+    assert torch.all(attn < 1.0), "Some attention weights are not strictly less than 1"
+
+def test_attention_highest_for_closest_mean(setup_attention):
+    means, _, mix_weights, std_noise, x = setup_attention
+    stds = torch.ones(means.shape[0]) * 0.5 # make sure stds are equal
+    attention_fn = AttentionMixture(means, stds, mix_weights)
+    attn = attention_fn(x, std_noise)
+
+    # Identify index of closest mean
+    diff = torch.norm(means.unsqueeze(0) - x.unsqueeze(1), dim=2)
+    closest_idx = diff.argmin(axis=-1)
+
+    # Check that the closest mean gets the highest attention
+    max_idx = attn.argmax(axis=-1)
+    assert torch.all(max_idx == closest_idx), (
+        f"Attention max index {max_idx} != closest mean index {closest_idx}"
+    )
+
+def test_attention_becomes_uniform_as_noise_increases(setup_attention):
+    means, stds, mix_weights, _, x = setup_attention
+    attention_fn = AttentionMixture(means, stds, mix_weights)
+    pass
+    # TODO: calculate KL divergence as noise increase and ensure it's monotonic
+
+def test_batched_attention_of_singles_is_ones():
+    pass
