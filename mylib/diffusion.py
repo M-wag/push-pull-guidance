@@ -159,7 +159,7 @@ class Config:
 @dataclass(frozen=True)
 class ConfigGuidanceVF(Config):
     # Core
-    type_latent:            Literal["pixel", "linear", "hf"]
+    type_latent:            Literal["pixel", "linear", "hf"] = None
     type_eval:              Literal["jvp", "numdiff"] | None = None
     template_path:          str | None = None
     scale_template_score:   float | list[float] | None  = 1.0
@@ -392,13 +392,12 @@ def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
 
 ### SCHEDULER ###
 
-def load_templates(cnfg : ConfigSimulation):
+def load_templates(cnfg : ConfigSimulation, for_torch=True):
     # Load template data
     if isinstance(cnfg.guidance_vf, type(None)):
         templates=None
     elif os.path.isfile(cnfg.guidance_vf.template_path):
-        img = torch.unsqueeze(read_image(cnfg.guidance_vf.template_path), 0)
-        templates = (img.to(device=cnfg.device, dtype=torch.float64) - 128) / 127.5 
+        templates = torch.unsqueeze(read_image(cnfg.guidance_vf.template_path), 0)
 
     elif os.path.isdir(cnfg.guidance_vf.template_path):
         imgs = []
@@ -414,6 +413,8 @@ def load_templates(cnfg : ConfigSimulation):
             f"Template path must be an existing file, directory, or None; "
             f"got {cnfg.guidance_vf.template_path!r} (type {type(cnfg.guidance_vf.template_path).__name__})"
     )
+    if for_torch:
+        templates = (templates.to(device=cnfg.device, dtype=torch.float64) - 128) / 127.5 
     return templates
 
 def schedule_diffusion(cnfg : ConfigSimulation):
