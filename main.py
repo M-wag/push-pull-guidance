@@ -143,26 +143,18 @@ def plot_condition(fig, position, data, img_hw):
             ax = fig.add_subplot(sub_gs[i, j])
             ax.imshow(data[i, j])
             ax.axis('off')
-def plot_comparison(data_dict, img_shape):
-    """Main plotting function for comparison visualization"""
-    # Extract data dimensions
-    batch_size = data_dict['middle'].shape[0]
-    n_conditions = data_dict['middle'].shape[1]
+
+def plot_comparison(data_dict, img_hw, dpi=100):
+    """Pixel-perfect comparison plot"""
+    fig = create_figure(*data_dict['middle'].shape[:2], img_hw, dpi)
     
-    # Create figure and gridspec
-    fig, gs = create_figure(batch_size, n_conditions, img_shape)
-    
-    # Create main axes
-    axes = {
-        'left': fig.add_subplot(gs[0]),
-        'middle': fig.add_subplot(gs[1]),
-        'right': fig.add_subplot(gs[2])
-    }
-    
-    # Plot each condition
-    plot_condition(axes['left'], data_dict['left'], (batch_size, 1))
-    plot_condition(axes['middle'], data_dict['middle'], (batch_size, n_conditions))
-    plot_condition(axes['right'], data_dict['right'], (batch_size, 1))
+    # Left plot (batch_size x 1)
+    plot_condition(fig, (0, 0), data_dict['left'], img_hw)
+    # Middle plot (batch_size x n_conditions)
+    plot_condition(fig, (1, 0), data_dict['middle'], img_hw)
+    # Right plot (batch_size x 1)
+    plot_condition(fig, (2 + data_dict['middle'].shape[1] - 1, 0), 
+                  data_dict['right'], img_hw)
     
     return fig
 
