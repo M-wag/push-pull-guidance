@@ -1,6 +1,9 @@
 import numpy as np
+import numpy as np
 import itertools
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+from matplotlib.gridspec import GridSpecFromSubplotSpec
 import os 
 import torch
 import pickle
@@ -10,8 +13,6 @@ from mylib.diffusion import schedule_diffusion, ConfigSimulation, ConfigDiffusio
 import math 
 
 MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
-
-VF_NONE = ConfigGuidanceVF(None, None, None, None, None)
 
 VF_PIXEL= ConfigGuidanceVF(
         type_latent = "pixel",
@@ -60,10 +61,6 @@ def plot_two_conditions(data, batch_size, shape_comb):
 
     plt.show()
 
-def plot_one_condition(ax, data, batch_size, shape_comb):
-    assert len(data.shape) == 6, f"data should have rank 5, got shape: {data.shape}"
-    data = rearrange(data, "p1 p2 b C H W -> (p1 p2 H) (b W) C", p1=shape_comb[0], p2=shape_comb[1])
-    ax.imshow(data)
 
 def run(exp_name, cnfg):
     # Set output destination
@@ -93,9 +90,9 @@ def run(exp_name, cnfg):
 
     return path_exp
 
-def run_no_guidance(path_exp):
+def run_no_guidance(cnfg, path_exp):
     # Pass to scheduler
-    raw_data = schedule_diffusion(cnfg)
+    raw_data = schedule_diffusion(cnfg(guidance_vf=None))
     # Save result
     raw_data_path = os.path.join(path_exp, "raw_data_og.pkl")
 
@@ -104,36 +101,103 @@ def run_no_guidance(path_exp):
 
     return path_exp
 
+def create_figure(batch_size, n_conditions, img_shape, base_tile_size=1):
+    """Create figure with properly scaled subplots"""
+    # Calculate dimensions
+    tile_width = base_tile_size * img_shape[1] / max(img_shape)  # Normalize by image aspect ratio
+    tile_height = base_tile_size * img_shape[0] / max(img_shape)
+    
+    # Total figure size calculation
+    fig_width = (batch_size * tile_width) * 3  # 3 columns
+    fig_height = max(n_conditions, 1) * tile_height  # Height determined by middle plot
+    
+    # Create figure with 3 subplots using GridSpec
+    fig = plt.figure(figsize=(fig_width, fig_height))
+    gs = GridSpec(1, 3, figure=fig, width_ratios=[batch_size, batch_size, batch_size],
+                  wspace=0.05, hspace=0)
+    
+    return fig, gs
+
+def plot_condition(ax, data, grid_shape):
+    n_rows, n_cols = grid_shape
+    ax.set_axis_off()
+
+    # Create subgrid directly from the Axes’ SubplotSpec
+    sub_gs = ax.get_subplotspec().subgridspec(n_rows, n_cols,
+                                              wspace=0, hspace=0)
+
+    for i in range(n_rows):
+        for j in range(n_cols):
+            try:
+                img = data[i, j]
+            except IndexError:
+                continue
+
+            sub_ax = plt.Subplot(ax.figure, sub_gs[i, j])
+            sub_ax.imshow(img)
+            sub_ax.set_axis_off()
+            ax.figure.add_subplot(sub_ax)
+
+def plot_comparison(data_dict, img_shape):
+    """Main plotting function for comparison visualization"""
+    # Extract data dimensions
+    batch_size = data_dict['left'].shape[1]
+    n_conditions = data_dict['middle'].shape[0]
+    
+    # Create figure and gridspec
+    fig, gs = create_figure(batch_size, n_conditions, img_shape)
+    
+    # Create main axes
+    axes = {
+        'left': fig.add_subplot(gs[0]),
+        'middle': fig.add_subplot(gs[1]),
+        'right': fig.add_subplot(gs[2])
+    }
+    
+    # Plot each condition
+    plot_condition(axes['left'], data_dict['left'], (1, batch_size))
+    plot_condition(axes['middle'], data_dict['middle'], (n_conditions, batch_size))
+    plot_condition(axes['right'], data_dict['right'], (1, batch_size))
+    
+    plt.tight_layout()
+    return fig
+
+# Usage example in main block
 if __name__ == "__main__":
     # USER DEFINED
-    RUN_FRESH = True
+    RUN_FRESH = False
     cnfg_sim = ConfigSimulation( 
                 network_pkl     = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl', 
                 device          = "cuda" if torch.cuda.is_available() else "cpu",
                 seed            = 0,
                 input_shape     = (3, 64, 64),
                 guidance_vf     = VF_PIXEL(threshold_weight=0.1),
-                diffusion       = ConfigDiffusion(num_steps=16),
+                diffusion       = ConfigDiffusion(num_steps=1),
                 )
 
 
     # USER DEFINED
     if RUN_FRESH:
         path_exp = run("gamma_and_v0", cnfg_sim)
-        run_no_guidance(path_exp)
+        run_no_guidance(cnfg_sim, path_exp)
     else:
-        path_exp = os.path.join(os.getcwd(), "data", "output", "gamma_and_v0_30")
+        path_exp = os.path.join(os.getcwd(), "data", "output", "gamma_and_v0_49")
+
 
     raw_data_path = os.path.join(path_exp, "raw_data.pkl")
-    raw_data_og = os.path.join(path_exp, "raw_data_og.pkl")
+    raw_data_og_path = os.path.join(path_exp, "raw_data_og.pkl")
     cnfg_sim_path = os.path.join(path_exp, "cnfg_sim.pkl")
 
     with open(raw_data_path, "rb") as f:
         raw_data = pickle.load(f)
     with open(cnfg_sim_path, "rb") as f:
         cnfg_sim = pickle.load(f)
+    with open(raw_data_og_path, "rb") as f:
+        raw_data_og = pickle.load(f)
     assert len(raw_data.shape) == 6, f"raw_data should have rank 6, got shape : {raw_data.shape}"
 
+    batch_size = cnfg_sim.diffusion.batch_size
+    image_shape = cnfg_sim.input_shape
     # Reshape to be able to pick combination
     if len(cnfg_sim.shape_combination) == 0:
         shape_comb = (1, 1)
@@ -149,13 +213,18 @@ if __name__ == "__main__":
     # Reshape data for visualize 
     data = raw_data.reshape(shape_comb + raw_data.shape[1:])
     data = data[idx_combinations + idx_time + idx_batch]
-
-    fig, axes = plt.subplots(3)
-
-    # Plot all conditions in the middle 
-    plot_one_condition(axes[0], data_og, cnfg_sim.diffusion.batch_size, shape_comb)
-    plot_one_condition(axes[1], data, cnfg_sim.diffusion.batch_size, shape_comb)
+    data_og = raw_data_og.reshape((1,1) + raw_data.shape[1:])
+    data_og = data_og[(slice(None), slice(None)) + idx_time + idx_batch]
+    data_og = rearrange(data_og, "p1 p2 b h w c -> (b p1) p2 1 h w c")
     template = load_templates(cnfg_sim, for_torch=False)
-    axes[2].imshow(repeat("h w c -> (b h) w c", b=cnfg_sim.diffusion.batch_size))
 
+    data_dict = {
+        'left' : repeat(data_og, "p1 p2 b c h w -> (b p1 p2) 1 h w c"),
+        'middle' : repeat(data, "p1 p2 b c h w -> (p1 p2) b h w c"),
+        'right': repeat(template, "1 c h w -> b 1 h w c", b=cnfg_sim.diffusion.batch_size)
+    }
+    
+    print
+    # Create and show plot
+    fig = plot_comparison(data_dict, image_shape)
     plt.show()

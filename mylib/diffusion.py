@@ -395,7 +395,7 @@ def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
 def load_templates(cnfg : ConfigSimulation, for_torch=True):
     # Load template data
     if isinstance(cnfg.guidance_vf, type(None)):
-        templates=None
+        return np.array([0])
     elif os.path.isfile(cnfg.guidance_vf.template_path):
         templates = torch.unsqueeze(read_image(cnfg.guidance_vf.template_path), 0)
 
