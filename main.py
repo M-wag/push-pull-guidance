@@ -101,48 +101,62 @@ def run_no_guidance(cnfg, path_exp):
 
     return path_exp
 
-def create_figure(batch_size, n_conditions, img_shape, base_tile_size=1):
+def create_figure(batch_size, n_conditions, img_shape, dpi=100):
     """Create figure with properly scaled subplots"""
     # Calculate dimensions
     tile_width = base_tile_size * img_shape[1] / max(img_shape)  # Normalize by image aspect ratio
-    tile_height = base_tile_size * img_shape[0] / max(img_shape)
+    tile_height = base_tile_size * img_shape[0] / max(img_shapeTrue
     
     # Total figure size calculation
-    fig_width = (batch_size * tile_width) * 3  # 3 columns
-    fig_height = max(n_conditions, 1) * tile_height  # Height determined by middle plot
+    fig_width = ((n_conditions + 2) * tile_width) 
+    fig_height = max(batch_size, 1) * tile_height  # Height determined by middle plot
     
     # Create figure with 3 subplots using GridSpec
-    fig = plt.figure(figsize=(fig_width, fig_height))
-    gs = GridSpec(1, 3, figure=fig, width_ratios=[batch_size, batch_size, batch_size],
+    fig = plt.figure(figsize=(fig_width, fig_height), constrained_layout=True)
+    gs = GridSpec(1, 3, figure=fig, width_ratios=[1, n_conditions, 1],
                   wspace=0.05, hspace=0)
     
     return fig, gs
 
+def create_figure(batch_size, n_conditions, img_hw, dpi=100):
+    """Create figure with pixel-perfect layout"""
+    # Convert image dimensions to inches
+    img_h, img_w = img_hw
+    px_to_inch = 1 / dpi
+    
+    # Calculate figure dimensions
+    fig_width = (2*img_w + n_conditions*img_w) * px_to_inch
+    fig_height = batch_size * img_h * px_to_inch
+    
+    # Create figure with exact dimensions
+    fig = plt.figure(figsize=(fig_width, fig_height), dpi=dpi)
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+            
+    return fig
+
 def plot_condition(ax, data, grid_shape):
     n_rows, n_cols = grid_shape
     ax.set_axis_off()
-
-    # Create subgrid directly from the Axes’ SubplotSpec
     sub_gs = ax.get_subplotspec().subgridspec(n_rows, n_cols,
-                                              wspace=0, hspace=0)
+                                              wspace=0, hspace=0,
+                                              width_ratios = [1] * n_cols,
+                                              height_ratios = [1] * n_rows)
 
     for i in range(n_rows):
         for j in range(n_cols):
-            try:
-                img = data[i, j]
-            except IndexError:
-                continue
+            img = data[i, j]
 
             sub_ax = plt.Subplot(ax.figure, sub_gs[i, j])
             sub_ax.imshow(img)
             sub_ax.set_axis_off()
             ax.figure.add_subplot(sub_ax)
+            sub_ax.margins(0, 0)
 
 def plot_comparison(data_dict, img_shape):
     """Main plotting function for comparison visualization"""
     # Extract data dimensions
-    batch_size = data_dict['left'].shape[1]
-    n_conditions = data_dict['middle'].shape[0]
+    batch_size = data_dict['middle'].shape[0]
+    n_conditions = data_dict['middle'].shape[1]
     
     # Create figure and gridspec
     fig, gs = create_figure(batch_size, n_conditions, img_shape)
@@ -155,11 +169,10 @@ def plot_comparison(data_dict, img_shape):
     }
     
     # Plot each condition
-    plot_condition(axes['left'], data_dict['left'], (1, batch_size))
-    plot_condition(axes['middle'], data_dict['middle'], (n_conditions, batch_size))
-    plot_condition(axes['right'], data_dict['right'], (1, batch_size))
+    plot_condition(axes['left'], data_dict['left'], (batch_size, 1))
+    plot_condition(axes['middle'], data_dict['middle'], (batch_size, n_conditions))
+    plot_condition(axes['right'], data_dict['right'], (batch_size, 1))
     
-    plt.tight_layout()
     return fig
 
 # Usage example in main block
@@ -172,8 +185,8 @@ if __name__ == "__main__":
                 seed            = 0,
                 input_shape     = (3, 64, 64),
                 guidance_vf     = VF_PIXEL(threshold_weight=0.1),
-                diffusion       = ConfigDiffusion(num_steps=1),
-                )
+                diffusion       = ConfigDiffusion(num_steps=16),
+    )
 
 
     # USER DEFINED
@@ -198,6 +211,7 @@ if __name__ == "__main__":
 
     batch_size = cnfg_sim.diffusion.batch_size
     image_shape = cnfg_sim.input_shape
+
     # Reshape to be able to pick combination
     if len(cnfg_sim.shape_combination) == 0:
         shape_comb = (1, 1)
@@ -220,11 +234,10 @@ if __name__ == "__main__":
 
     data_dict = {
         'left' : repeat(data_og, "p1 p2 b c h w -> (b p1 p2) 1 h w c"),
-        'middle' : repeat(data, "p1 p2 b c h w -> (p1 p2) b h w c"),
+        'middle' : repeat(data, "p1 p2 b c h w -> b (p1 p2) h w c"),
         'right': repeat(template, "1 c h w -> b 1 h w c", b=cnfg_sim.diffusion.batch_size)
     }
     
-    print
     # Create and show plot
     fig = plot_comparison(data_dict, image_shape)
     plt.show()
