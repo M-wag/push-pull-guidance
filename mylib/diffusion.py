@@ -271,6 +271,9 @@ class PixelGuidanceVF(GuidanceVF):
         return dirac_score
 
 class JVPGuidanceVP(GuidanceVF):
+    def __init__(self, *args, **kwargs):
+        # Override latent mappings while passing through other params
+        super().__init__(*args, **kwargs)
     def _dirac_score(self, x, t):
         features = self.latent(x)
         dirac_score_latent =  -(self.features_template - features) / t
@@ -321,7 +324,7 @@ def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
             kwargs_filtered = {
                 k: v
                 for k, v in prms.to_dict().items()
-                if k not in ("vf_type", "template_path") and v is not None
+                if k not in ("vf_type", "template_path", "hf_url") and v is not None
             }
             kwargs_filtered['scale'] = kwargs_filtered.pop('scale_template_score')
 
