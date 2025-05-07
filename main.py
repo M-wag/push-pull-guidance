@@ -101,11 +101,11 @@ def run_no_guidance(cnfg, path_exp):
 
     return path_exp
 
-def create_figure(batch_size, n_conditions, img_shape, dpi=100):
+def create_figure(batch_size, n_conditions, img_shape, base_tile_size=1):
     """Create figure with properly scaled subplots"""
     # Calculate dimensions
     tile_width = base_tile_size * img_shape[1] / max(img_shape)  # Normalize by image aspect ratio
-    tile_height = base_tile_size * img_shape[0] / max(img_shapeTrue
+    tile_height = base_tile_size * img_shape[0] / max(img_shape)
     
     # Total figure size calculation
     fig_width = ((n_conditions + 2) * tile_width) 
@@ -117,22 +117,6 @@ def create_figure(batch_size, n_conditions, img_shape, dpi=100):
                   wspace=0.05, hspace=0)
     
     return fig, gs
-
-def create_figure(batch_size, n_conditions, img_hw, dpi=100):
-    """Create figure with pixel-perfect layout"""
-    # Convert image dimensions to inches
-    img_h, img_w = img_hw
-    px_to_inch = 1 / dpi
-    
-    # Calculate figure dimensions
-    fig_width = (2*img_w + n_conditions*img_w) * px_to_inch
-    fig_height = batch_size * img_h * px_to_inch
-    
-    # Create figure with exact dimensions
-    fig = plt.figure(figsize=(fig_width, fig_height), dpi=dpi)
-    fig.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
-            
-    return fig
 
 def plot_condition(ax, data, grid_shape):
     n_rows, n_cols = grid_shape
