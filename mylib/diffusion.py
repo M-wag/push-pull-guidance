@@ -275,8 +275,6 @@ class GuidanceVF:
         self.history_weight = []
         self.history_apply_score = []
         
-
-
     def __call__(self, x, t):
         x = self.flat(x) if self.flatten_input else x
         weight = torch.sigmoid(self.decay_rate * (t - self.v_0)) * self.scale
@@ -343,10 +341,11 @@ class JVPGuidanceVF(GuidanceVF):
         # Override latent mappings while passing through other params
         super().__init__(*args, **kwargs)
     def _dirac_score(self, x, t):
-        features = self.latent(x)
-        dirac_score_latent =  -(self.features_template - features) / t
-        # Jacobian vector product 
-        _, dirac_score = jvp(self.latent_inv, features, dirac_score_latent, strict=False)
+        with torch.no_grad():
+            features = self.latent(x)
+            dirac_score_latent =  -(self.features_template - features) / t
+            # Jacobian vector product 
+            _, dirac_score = jvp(self.latent_inv, features, dirac_score_latent, strict=False)
         return dirac_score
 
 class NumericalGuidanceVF(GuidanceVF):

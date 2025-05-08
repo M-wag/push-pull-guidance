@@ -187,7 +187,78 @@ def plot_comparison(data_dict, img_shape, labels=None):
     
     return fig
 
-if __name__ == "__main__":
+def visualize_from_path(path_exp, title=None):
+    """
+    Load data and config from a given experiment path, then call plot_comparison.
+
+    Args:
+        path_exp (str): Path to the experiment directory containing raw_data.pkl,
+                        raw_data_og.pkl, and cnfg_sim.pkl.
+
+    Returns:
+        matplotlib.figure.Figure: The resulting comparison figure.
+    """
+    # Build file paths
+    raw_data_path    = os.path.join(path_exp, "raw_data.pkl")
+    raw_data_og_path = os.path.join(path_exp, "raw_data_og.pkl")
+    cnfg_sim_path    = os.path.join(path_exp, "cnfg_sim.pkl")
+
+    # Load data
+    with open(raw_data_path, "rb") as f:
+        raw_data = pickle.load(f)
+    with open(cnfg_sim_path, "rb") as f:
+        cnfg_sim = pickle.load(f)
+    with open(raw_data_og_path, "rb") as f:
+        raw_data_og = pickle.load(f)
+
+    assert len(raw_data.shape) == 6, \
+        f"raw_data should have rank 6, got shape: {raw_data.shape}"
+
+    # Extract shapes
+    batch_size = cnfg_sim.diffusion.batch_size
+    image_shape = cnfg_sim.input_shape
+
+    # Determine shape combination
+    if not cnfg_sim.shape_combination:
+        shape_comb = (1, 1)
+    elif len(cnfg_sim.shape_combination) == 1:
+        shape_comb = tuple(cnfg_sim.shape_combination) + (1,)
+    else:
+        shape_comb = tuple(cnfg_sim.shape_combination)
+
+    # Indices for last timestep and full batch
+    idx_combinations = (slice(None), slice(None))
+    idx_time = (-1,)
+    idx_batch = (slice(None),)
+
+    # Reshape and select data
+    data = raw_data.reshape(shape_comb + raw_data.shape[1:])
+    data = data[idx_combinations + idx_time + idx_batch]
+
+    data_og = raw_data_og.reshape((1,1) + raw_data.shape[1:])
+    data_og = data_og[(slice(None), slice(None)) + idx_time + idx_batch]
+    data_og = rearrange(data_og, "p1 p2 b h w c -> (b p1) p2 1 h w c")
+
+    # Load template images
+    template = load_templates(cnfg_sim, for_torch=False)
+
+    # Prepare dictionary for plotting
+    data_dict = {
+        'left':   repeat(data_og, "p1 p2 b c h w -> (b p1 p2) 1 h w c"),
+        'middle': repeat(data,    "p1 p2 b c h w -> b (p1 p2) h w c"),
+        'right':  repeat(template, "1 c h w -> b 1 h w c", b=batch_size)
+    }
+
+    # Create and return figure
+    labels = [rf"$\nu_0 =$" + "\n" rf"${x:.3f}$" for x in cnfg_sim.guidance_vf.v_0]
+    fig = plot_comparison(data_dict, image_shape, labels=labels)
+    if title:
+        fig.suptitle(title)
+    else:
+        fig.suptitle(os.path.basename(path_exp))
+    return fig
+
+def main():
     # USER DEFINED
     RUN_FRESH = False
     exp_name = "linear"
@@ -251,7 +322,16 @@ if __name__ == "__main__":
     }
     
     # Create and show plot
-    fig = plot_comparison(data_dict, image_shape, labels=cnfg_sim.guidance_vf.v_0)
+    labels = [r"\nu_0 \n: {x}" for x in cnfg_sim.guidance_vf.v_0]
+    fig = plot_comparison(data_dict, image_shape, labels)
     fig.suptitle(f"{exp_name}")
 
     plt.show()
+
+if __name__ == "__main__":
+    visualize_from_path("data/present/pixel_scale_tenth", f"Pixel Difference \n Scale: 0.1" )
+    visualize_from_path("data/present/pixel_scale_full", f"Pixel Difference \n Scale: 1.0" )
+    visualize_from_path("data/present/numdiff", f"Numerical Differentation \n Latent: Stable Diffusion Turbo" )
+    visualize_from_path("data/present/jvp", f"Jacobian-Vector Product \n Latent: Stable Diffusion Turbo" )
+    plt.show()
+
