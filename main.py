@@ -3,7 +3,6 @@ import numpy as np
 import itertools
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
-from matplotlib.gridspec import GridSpecFromSubplotSpec
 import os 
 import torch
 import pickle
@@ -36,7 +35,7 @@ VF_VAE_JVP = ConfigGuidanceVF(
         type_eval = "jvp",
         hf_url = "stabilityai/sd-turbo",
         decay_rate = 1.0,
-        v_0 = [15, 30, 45 ],
+        v_0 = [45, 30, 15],
         scale_template_score = 1.0,
         template_path = "data/input/cat.jpg",
         )
@@ -168,7 +167,7 @@ if __name__ == "__main__":
                 device          = "cuda" if torch.cuda.is_available() else "cpu",
                 seed            = 0,
                 input_shape     = (3, 64, 64),
-                guidance_vf     = VF_PIXEL(threshold_weight=0.1),
+                guidance_vf     = VF_VAE_NUMDIFF(threshold_weight=0.1),
                 diffusion       = ConfigDiffusion(num_steps=16),
     )
 

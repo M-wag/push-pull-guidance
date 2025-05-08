@@ -327,12 +327,13 @@ class NumericalGuidanceVF(GuidanceVF):
         self.epsilon = epsilon  # Step size for finite differences
 
     def _dirac_score(self, x, t):
-        features = self.latent(x)
-        dirac_score_latent = -(self.features_template - features) / t
-        # Numerical differentiation
-        perturbed_features = features + self.epsilon * dirac_score_latent
-        f_perturbed = self.latent_inv(perturbed_features)
-        f_original = self.latent_inv(features)
+        with torch.no_grad():
+            features = self.latent(x)
+            dirac_score_latent = -(self.features_template - features) / t
+            # Numerical differentiation
+            perturbed_features = features + self.epsilon * dirac_score_latent
+            f_perturbed = self.latent_inv(perturbed_features)
+            f_original = self.latent_inv(features)
         
         return (f_perturbed - f_original) / self.epsilon  
 
