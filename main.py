@@ -162,19 +162,20 @@ def plot_comparison(data_dict, img_shape):
 if __name__ == "__main__":
     # USER DEFINED
     RUN_FRESH = False
+    exp_name = "jvp"
     cnfg_sim = ConfigSimulation( 
                 network_pkl     = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl', 
                 device          = "cuda" if torch.cuda.is_available() else "cpu",
                 seed            = 0,
                 input_shape     = (3, 64, 64),
-                guidance_vf     = VF_VAE_NUMDIFF(threshold_weight=0.1),
+                guidance_vf     = VF_VAE_JVP(threshold_weight=0.1),
                 diffusion       = ConfigDiffusion(num_steps=16),
     )
 
 
     # USER DEFINED
     if RUN_FRESH:
-        path_exp = run("gamma_and_v0", cnfg_sim)
+        path_exp = run(exp_name, cnfg_sim)
         run_no_guidance(cnfg_sim, path_exp)
     else:
         path_exp = os.path.join(os.getcwd(), "data", "output", "gamma_and_v0_49")
