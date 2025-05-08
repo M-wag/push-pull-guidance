@@ -167,10 +167,13 @@ class ConfigGuidanceVF(Config):
     decay_rate:             float | list[float] | None = None
     v_0:                    float | list[float] | None = None
     # Linear
-    n_projectors:           float | list[int] | None = None
-    dim_projector:          float | list[int] | None = None
+    n_features:             float | list[int] | None = None
+    dim_feature:            float | list[int] | None = None
+    seed_mat:               int | None = None
+    T:                      int | list[int] = 1.0
     # Hugging Face
     hf_url:                 str = None
+
     # Optional
     flatten_input:          bool | None = False
     threshold_weight:       float | list[float] = None
@@ -271,6 +274,7 @@ class GuidanceVF:
         # For testing
         self.history_weight = []
         self.history_apply_score = []
+        
 
 
     def __call__(self, x, t):
@@ -288,7 +292,10 @@ class GuidanceVF:
             apply_score = False
         
         if apply_score:
-            dirac_score = self._dirac_score(x, t)
+            if self.features_template.shape[0] == 1:
+                dirac_score = self._dirac_score(x, t)
+            else:
+                dirac_score = self._dirac_score_attention(x, t)
             score = weight * dirac_score
         else:
             score = torch.zeros_like(x)
@@ -302,6 +309,9 @@ class GuidanceVF:
     def _dirac_score(self, x, t):
         raise NotImplementedError("Subclasses must implement this method")
 
+    def _dirac_score_attention(self, x, t):
+        raise NotImplementedError("Subclasses must implement this method")
+
 class PixelGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
         # Override latent mappings while passing through other params
@@ -309,6 +319,23 @@ class PixelGuidanceVF(GuidanceVF):
 
     def _dirac_score(self, x, t):
         dirac_score =  -(self.template - x) / t
+        return dirac_score
+
+class LinearGuidanceVF(GuidanceVF):
+    def __init__(self, *args, **kwargs):
+        # Override latent mappings while passing through other params
+        super().__init__(*args, **kwargs)
+
+    def _dirac_score(self, x, t):
+        features = self.latent(x)
+        dirac_score =  -self.latent_inv((self.features_template - features).unsqueeze(1)) / t
+        return dirac_score
+
+    def _dirac_score_attention(self, x, t):
+        features = self.latent(x)
+        dirac_score_per_feature =  -self.latent_inv(self.features_template.unsqueeze(0) - features.unsqueeze(1)) / t # (1, N, D) - (B, 1, D) = (B, N ,D)
+        weights_attention = self.attention(x, t, T=self.T)
+        dirac_score = torch.einsum("BND, N -> BD", dirac_score_per_feature, weights_atention)
         return dirac_score
 
 class JVPGuidanceVF(GuidanceVF):
@@ -384,8 +411,45 @@ def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
                     latent_inv = lambda x: vae.decode(x).sample
             )
 
-        case "vae-linear":
-            pass
+        case "linear":
+
+            g = torch.Generator(device=templates.device).manual_seed(prms.seed_mat)
+            template_dim = int(torch.prod(torch.tensor(templates.shape[1:])))
+            mat_latent = torch.randn(
+                (prms.n_features, prms.dim_feature, template_dim),
+                generator=g,
+                device=templates.device,
+                dtype=templates.dtype
+            )
+            mat_latent_inv = torch.linalg.pinv(mat_latent)
+
+            kwargs_filtered = {
+                k: v for k, v in prms.to_dict().items()
+                if k not in ("type_latent", "type_eval", "template_path", "n_features", "dim_feature", "seed_mat", "T") and v is not None
+            }
+            kwargs_filtered['scale'] = kwargs_filtered.pop('scale_template_score')
+
+            vf = LinearGuidanceVF(
+                **kwargs_filtered,
+                template=templates,
+                latent=lambda x: torch.einsum("nld,bd->bl", mat_latent, x),  
+                latent_inv=lambda x: torch.einsum("ndl,bnl->bd", mat_latent_inv, x)
+            )
+
+
+            if templates.shape[0] > 1:
+                # Calculate attention parameters
+                means_attention = vf.latent(templates)
+                std_attention = torch.ones_like(means_attention) * self.v_0
+                weights_mixture = torch.ones(templates.shape[0]) / templates.shape[0]
+                weights_mixture = weights_mixture.to(device=self.device)
+                
+                # Assign to instance not class
+                vf.attention = AttentionMixture(
+                    means_attention,
+                    std_attention,
+                    weights_mixture
+                )
         case _:
             raise ValueError(f"Received unexepcted vector field type: {prvs.type_latent}")
 
