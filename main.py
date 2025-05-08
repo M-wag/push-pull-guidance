@@ -16,9 +16,8 @@ MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
 VF_PIXEL= ConfigGuidanceVF(
         type_latent = "pixel",
         decay_rate = 1.0,
-        #v_0 = [60, 45, 30, 15, 5] ,
-        v_0 = [60, 50, 40, 30, 20, 10] ,
-        scale_template_score = 0.1,
+        v_0 = [40, 20, 10 , 5],
+        scale_template_score = 1.0,
         template_path = "data/input/cat.jpg",
         )
 
@@ -35,7 +34,8 @@ VF_VAE_JVP = ConfigGuidanceVF(
         type_eval = "jvp",
         hf_url = "stabilityai/sd-turbo",
         decay_rate = 1.0,
-        v_0 = [45, 30, 15],
+        v_0 = [40, 20, 10 , 5],
+        # v_0 = [45, , 40, 30, 20, 10] ,
         scale_template_score = 1.0,
         template_path = "data/input/cat.jpg",
         )
@@ -161,14 +161,14 @@ def plot_comparison(data_dict, img_shape):
 # Usage example in main block
 if __name__ == "__main__":
     # USER DEFINED
-    RUN_FRESH = False
-    exp_name = "jvp"
+    RUN_FRESH = True
+    exp_name = "pixel_scale_full"
     cnfg_sim = ConfigSimulation( 
                 network_pkl     = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl', 
                 device          = "cuda" if torch.cuda.is_available() else "cpu",
                 seed            = 0,
                 input_shape     = (3, 64, 64),
-                guidance_vf     = VF_VAE_JVP(threshold_weight=0.1),
+                guidance_vf     = VF_PIXEL(threshold_weight=0.1),
                 diffusion       = ConfigDiffusion(num_steps=24),
     )
 
@@ -178,7 +178,7 @@ if __name__ == "__main__":
         path_exp = run(exp_name, cnfg_sim)
         run_no_guidance(cnfg_sim, path_exp)
     else:
-        path_exp = os.path.join(os.getcwd(), "data", "output", "gamma_and_v0_49")
+        path_exp = os.path.join(os.getcwd(), "data", "output", "jvp_2")
 
 
     raw_data_path = os.path.join(path_exp, "raw_data.pkl")
@@ -224,6 +224,6 @@ if __name__ == "__main__":
     
     # Create and show plot
     fig = plot_comparison(data_dict, image_shape)
-    fig.sup_title("exp_name")
+    fig.suptitle("exp_name")
 
     plt.show()
