@@ -57,7 +57,7 @@ VF_LINEAR = ConfigGuidanceVF(
         scale_template_score = 1.0,
         template_path = "data/input/cat.jpg",
         seed_mat = 0,
-        n_features = 8,
+        n_features = 4,
         dim_feature = 64,
         T = 1.0,
         flatten_input=True,
@@ -139,51 +139,57 @@ def create_figure(batch_size, n_conditions, img_shape, base_tile_size=1):
     
     return fig, gs
 
-def plot_condition(ax, data, grid_shape):
+
+def plot_condition(ax, data, grid_shape, labels=None):
     n_rows, n_cols = grid_shape
     ax.set_axis_off()
-    sub_gs = ax.get_subplotspec().subgridspec(n_rows, n_cols,
-                                              wspace=0, hspace=0,
-                                              width_ratios = [1] * n_cols,
-                                              height_ratios = [1] * n_rows)
+    sub_gs = ax.get_subplotspec().subgridspec(
+        n_rows, n_cols, wspace=0, hspace=0,
+        width_ratios=[1]*n_cols, height_ratios=[1]*n_rows,
+    )
 
     for i in range(n_rows):
         for j in range(n_cols):
             img = data[i, j]
 
+            # create & attach the subplot
             sub_ax = plt.Subplot(ax.figure, sub_gs[i, j])
+            ax.figure.add_subplot(sub_ax)
+
+            # show image, remove axes
             sub_ax.imshow(img)
             sub_ax.set_axis_off()
-            ax.figure.add_subplot(sub_ax)
             sub_ax.margins(0, 0)
 
-def plot_comparison(data_dict, img_shape):
+            # set title only on first row
+            if labels is not None and i == 0:
+                sub_ax.set_title(labels[j], pad=2)
+
+def plot_comparison(data_dict, img_shape, labels=None):
     """Main plotting function for comparison visualization"""
-    # Extract data dimensions
     batch_size = data_dict['middle'].shape[0]
     n_conditions = data_dict['middle'].shape[1]
     
-    # Create figure and gridspec
+    # Create figure and a 1×3 GridSpec for left/middle/right
     fig, gs = create_figure(batch_size, n_conditions, img_shape)
     
-    # Create main axes
     axes = {
-        'left': fig.add_subplot(gs[0]),
-        'middle': fig.add_subplot(gs[1]),
-        'right': fig.add_subplot(gs[2])
+        name: fig.add_subplot(sub_gs)
+        for name, sub_gs in zip(
+            ['left','middle','right'], 
+            [gs[0], gs[1], gs[2]]
+        )
     }
-    
-    # Plot each condition
-    plot_condition(axes['left'], data_dict['left'], (batch_size, 1))
-    plot_condition(axes['middle'], data_dict['middle'], (batch_size, n_conditions))
-    plot_condition(axes['right'], data_dict['right'], (batch_size, 1))
+
+    plot_condition(axes['left'],   data_dict['left'],   (batch_size, 1))
+    plot_condition(axes['middle'], data_dict['middle'], (batch_size, n_conditions), labels)
+    plot_condition(axes['right'],  data_dict['right'],  (batch_size, 1))
     
     return fig
 
-# Usage example in main block
 if __name__ == "__main__":
     # USER DEFINED
-    RUN_FRESH = True
+    RUN_FRESH = False
     exp_name = "linear"
     cnfg_sim = ConfigSimulation( 
                 network_pkl     = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl', 
@@ -200,7 +206,7 @@ if __name__ == "__main__":
         path_exp = run(exp_name, cnfg_sim)
         run_no_guidance(cnfg_sim, path_exp)
     else:
-        path_exp = os.path.join(os.getcwd(), "data", "output", "jvp_2")
+        path_exp = os.path.join(os.getcwd(), "data", "output", "gamma_and_v0_49")
 
 
     raw_data_path = os.path.join(path_exp, "raw_data.pkl")
@@ -245,7 +251,7 @@ if __name__ == "__main__":
     }
     
     # Create and show plot
-    fig = plot_comparison(data_dict, image_shape)
-    fig.suptitle("exp_name")
+    fig = plot_comparison(data_dict, image_shape, labels=cnfg_sim.guidance_vf.v_0)
+    fig.suptitle(f"{exp_name}")
 
     plt.show()
