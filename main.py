@@ -16,8 +16,7 @@ MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
 VF_PIXEL= ConfigGuidanceVF(
         type_latent = "pixel",
         decay_rate = 1.0,
-        #v_0 = [60, 45, 30, 15, 5] ,
-        v_0 = [60, 50, 40, 30, 20, 10] ,
+        v_0 = [40, 20, 10 , 5],
         scale_template_score = 1.0,
         template_path = "data/input/cat.jpg",
         )
@@ -35,7 +34,8 @@ VF_VAE_JVP = ConfigGuidanceVF(
         type_eval = "jvp",
         hf_url = "stabilityai/sd-turbo",
         decay_rate = 1.0,
-        v_0 = [45, 30, 15],
+        v_0 = [40, 20, 10 , 5],
+        # v_0 = [45, , 40, 30, 20, 10] ,
         scale_template_score = 1.0,
         template_path = "data/input/cat.jpg",
         )
@@ -200,7 +200,7 @@ if __name__ == "__main__":
         path_exp = run(exp_name, cnfg_sim)
         run_no_guidance(cnfg_sim, path_exp)
     else:
-        path_exp = os.path.join(os.getcwd(), "data", "output", "gamma_and_v0_49")
+        path_exp = os.path.join(os.getcwd(), "data", "output", "jvp_2")
 
 
     raw_data_path = os.path.join(path_exp, "raw_data.pkl")
