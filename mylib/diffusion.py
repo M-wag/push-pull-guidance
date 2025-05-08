@@ -5,6 +5,7 @@
 # You should have received a copy of the license along with this
 # work. If not, see http://creativecommons.org/licenses/by-nc-sa/4.0/
 import tqdm
+import time
 import pickle
 import numpy as np
 import torch
@@ -432,12 +433,15 @@ def schedule_diffusion(cnfg : ConfigSimulation):
     # Iterate through combinations of parameters
     raw_data = np.empty((len(cnfg.split()), cnfg.diffusion.num_steps, cnfg.diffusion.batch_size, *cnfg.input_shape)) # (N_combs, t, B, C, H, W)
     assert len(raw_data.shape) == 6, f"raw_data should have rank 6, got shape : {raw_data.shape}"
+    start_time = time.time()
     for idx, cnfg_split in enumerate(cnfg.split()):
         templates = load_templates(cnfg_split)
         vf_guide = create_guidance_vf(cnfg_split.guidance_vf, templates)
         xs, ts = generate_image_grid(net, vf_guide, cnfg.seed, cnfg.device,
                                      **cnfg.diffusion.to_dict())
         raw_data[idx] = (xs * 127.5 + 128) / 255
+    total_time = time.time() - start_time
+    print(f"Total schedule_diffusion time: {total_time:.2f} s")
     
     return raw_data
 

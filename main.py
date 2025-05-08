@@ -17,7 +17,7 @@ VF_PIXEL= ConfigGuidanceVF(
         type_latent = "pixel",
         decay_rate = 1.0,
         #v_0 = [60, 45, 30, 15, 5] ,
-        v_0 = [60, 45, 30, 15] ,
+        v_0 = [60, 50, 40, 30, 20, 10] ,
         scale_template_score = 0.1,
         template_path = "data/input/cat.jpg",
         )
@@ -169,7 +169,7 @@ if __name__ == "__main__":
                 seed            = 0,
                 input_shape     = (3, 64, 64),
                 guidance_vf     = VF_VAE_JVP(threshold_weight=0.1),
-                diffusion       = ConfigDiffusion(num_steps=16),
+                diffusion       = ConfigDiffusion(num_steps=24),
     )
 
 
@@ -224,4 +224,6 @@ if __name__ == "__main__":
     
     # Create and show plot
     fig = plot_comparison(data_dict, image_shape)
+    fig.sup_title("exp_name")
+
     plt.show()
