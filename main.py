@@ -9,6 +9,7 @@ import pickle
 from einops import rearrange, repeat
 from dataclasses import replace
 from mylib.diffusion import schedule_diffusion, ConfigSimulation, ConfigDiffusion, ConfigGuidanceVF, load_templates
+from mylib.visual import visualize_from_path
 import math 
 
 MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
@@ -122,145 +123,8 @@ def run_no_guidance(cnfg, path_exp):
 
     return path_exp
 
-def create_figure(batch_size, n_conditions, img_shape, base_tile_size=1):
-    """Create figure with properly scaled subplots"""
-    # Calculate dimensions
-    tile_width = base_tile_size * img_shape[1] / max(img_shape)  # Normalize by image aspect ratio
-    tile_height = base_tile_size * img_shape[0] / max(img_shape)
-    
-    # Total figure size calculation
-    fig_width = ((n_conditions + 2) * tile_width) 
-    fig_height = max(batch_size, 1) * tile_height  # Height determined by middle plot
-    
-    # Create figure with 3 subplots using GridSpec
-    fig = plt.figure(figsize=(fig_width, fig_height), constrained_layout=True)
-    gs = GridSpec(1, 3, figure=fig, width_ratios=[1, n_conditions, 1],
-                  wspace=0.05, hspace=0)
-    
-    return fig, gs
 
-
-def plot_condition(ax, data, grid_shape, labels=None):
-    n_rows, n_cols = grid_shape
-    ax.set_axis_off()
-    sub_gs = ax.get_subplotspec().subgridspec(
-        n_rows, n_cols, wspace=0, hspace=0,
-        width_ratios=[1]*n_cols, height_ratios=[1]*n_rows,
-    )
-
-    for i in range(n_rows):
-        for j in range(n_cols):
-            img = data[i, j]
-
-            # create & attach the subplot
-            sub_ax = plt.Subplot(ax.figure, sub_gs[i, j])
-            ax.figure.add_subplot(sub_ax)
-
-            # show image, remove axes
-            sub_ax.imshow(img)
-            sub_ax.set_axis_off()
-            sub_ax.margins(0, 0)
-
-            # set title only on first row
-            if labels is not None and i == 0:
-                sub_ax.set_title(labels[j], pad=2)
-
-def plot_comparison(data_dict, img_shape, labels=None):
-    """Main plotting function for comparison visualization"""
-    batch_size = data_dict['middle'].shape[0]
-    n_conditions = data_dict['middle'].shape[1]
-    
-    # Create figure and a 1×3 GridSpec for left/middle/right
-    fig, gs = create_figure(batch_size, n_conditions, img_shape)
-    
-    axes = {
-        name: fig.add_subplot(sub_gs)
-        for name, sub_gs in zip(
-            ['left','middle','right'], 
-            [gs[0], gs[1], gs[2]]
-        )
-    }
-
-    plot_condition(axes['left'],   data_dict['left'],   (batch_size, 1))
-    plot_condition(axes['middle'], data_dict['middle'], (batch_size, n_conditions), labels)
-    plot_condition(axes['right'],  data_dict['right'],  (batch_size, 1))
-    
-    return fig
-
-def visualize_from_path(path_exp, title=None):
-    """
-    Load data and config from a given experiment path, then call plot_comparison.
-
-    Args:
-        path_exp (str): Path to the experiment directory containing raw_data.pkl,
-                        raw_data_og.pkl, and cnfg_sim.pkl.
-
-    Returns:
-        matplotlib.figure.Figure: The resulting comparison figure.
-    """
-    # Build file paths
-    raw_data_path    = os.path.join(path_exp, "raw_data.pkl")
-    raw_data_og_path = os.path.join(path_exp, "raw_data_og.pkl")
-    cnfg_sim_path    = os.path.join(path_exp, "cnfg_sim.pkl")
-
-    # Load data
-    with open(raw_data_path, "rb") as f:
-        raw_data = pickle.load(f)
-    with open(cnfg_sim_path, "rb") as f:
-        cnfg_sim = pickle.load(f)
-    with open(raw_data_og_path, "rb") as f:
-        raw_data_og = pickle.load(f)
-
-    assert len(raw_data.shape) == 6, \
-        f"raw_data should have rank 6, got shape: {raw_data.shape}"
-
-    # Extract shapes
-    batch_size = cnfg_sim.diffusion.batch_size
-    image_shape = cnfg_sim.input_shape
-
-    # Determine shape combination
-    if not cnfg_sim.shape_combination:
-        shape_comb = (1, 1)
-    elif len(cnfg_sim.shape_combination) == 1:
-        shape_comb = tuple(cnfg_sim.shape_combination) + (1,)
-    else:
-        shape_comb = tuple(cnfg_sim.shape_combination)
-
-    # Indices for last timestep and full batch
-    idx_combinations = (slice(None), slice(None))
-    idx_time = (-1,)
-    idx_batch = (slice(None),)
-
-    # Reshape and select data
-    data = raw_data.reshape(shape_comb + raw_data.shape[1:])
-    data = data[idx_combinations + idx_time + idx_batch]
-
-    data_og = raw_data_og.reshape((1,1) + raw_data.shape[1:])
-    data_og = data_og[(slice(None), slice(None)) + idx_time + idx_batch]
-    data_og = rearrange(data_og, "p1 p2 b h w c -> (b p1) p2 1 h w c")
-
-    # Load template images
-    template = load_templates(cnfg_sim, for_torch=False)
-
-    # Prepare dictionary for plotting
-    data_dict = {
-        'left':   repeat(data_og, "p1 p2 b c h w -> (b p1 p2) 1 h w c"),
-        'middle': repeat(data,    "p1 p2 b c h w -> b (p1 p2) h w c"),
-        'right':  repeat(template, "1 c h w -> b 1 h w c", b=batch_size)
-    }
-
-    # Create and return figure
-    labels = [rf"$\nu_0 =$" + "\n" rf"${x:.3f}$" for x in cnfg_sim.guidance_vf.v_0]
-    fig = plot_comparison(data_dict, image_shape, labels=labels)
-    if title:
-        fig.suptitle(title)
-    else:
-        fig.suptitle(os.path.basename(path_exp))
-    return fig
-
-def main():
-    # USER DEFINED
-    RUN_FRESH = False
+def main(visualize=False):
     exp_name = "linear"
     cnfg_sim = ConfigSimulation( 
                 network_pkl     = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl', 
@@ -271,67 +135,13 @@ def main():
                 diffusion       = ConfigDiffusion(num_steps=24),
     )
 
+    path_exp = run(exp_name, cnfg_sim)
+    run_no_guidance(cnfg_sim, path_exp)
 
-    # USER DEFINED
-    if RUN_FRESH:
-        path_exp = run(exp_name, cnfg_sim)
-        run_no_guidance(cnfg_sim, path_exp)
-    else:
-        path_exp = os.path.join(os.getcwd(), "data", "output", "gamma_and_v0_49")
-
-
-    raw_data_path = os.path.join(path_exp, "raw_data.pkl")
-    raw_data_og_path = os.path.join(path_exp, "raw_data_og.pkl")
-    cnfg_sim_path = os.path.join(path_exp, "cnfg_sim.pkl")
-
-    with open(raw_data_path, "rb") as f:
-        raw_data = pickle.load(f)
-    with open(cnfg_sim_path, "rb") as f:
-        cnfg_sim = pickle.load(f)
-    with open(raw_data_og_path, "rb") as f:
-        raw_data_og = pickle.load(f)
-    assert len(raw_data.shape) == 6, f"raw_data should have rank 6, got shape : {raw_data.shape}"
-
-    batch_size = cnfg_sim.diffusion.batch_size
-    image_shape = cnfg_sim.input_shape
-
-    # Reshape to be able to pick combination
-    if len(cnfg_sim.shape_combination) == 0:
-        shape_comb = (1, 1)
-    elif len(cnfg_sim.shape_combination) == 1:
-        shape_comb = cnfg_sim.shape_combination + (1,)
-    else :
-        shape_comb = cnfg_sim.shape_combination 
-
-    idx_combinations = (slice(None), slice(None))
-    idx_time = (-1, )
-    idx_batch = (slice(None),)
-
-    # Reshape data for visualize 
-    data = raw_data.reshape(shape_comb + raw_data.shape[1:])
-    data = data[idx_combinations + idx_time + idx_batch]
-    data_og = raw_data_og.reshape((1,1) + raw_data.shape[1:])
-    data_og = data_og[(slice(None), slice(None)) + idx_time + idx_batch]
-    data_og = rearrange(data_og, "p1 p2 b h w c -> (b p1) p2 1 h w c")
-    template = load_templates(cnfg_sim, for_torch=False)
-
-    data_dict = {
-        'left' : repeat(data_og, "p1 p2 b c h w -> (b p1 p2) 1 h w c"),
-        'middle' : repeat(data, "p1 p2 b c h w -> b (p1 p2) h w c"),
-        'right': repeat(template, "1 c h w -> b 1 h w c", b=cnfg_sim.diffusion.batch_size)
-    }
-    
-    # Create and show plot
-    labels = [r"\nu_0 \n: {x}" for x in cnfg_sim.guidance_vf.v_0]
-    fig = plot_comparison(data_dict, image_shape, labels)
-    fig.suptitle(f"{exp_name}")
-
-    plt.show()
+    if visualize:
+        visualize_from_path(path_exp, exp_name )
 
 if __name__ == "__main__":
-    visualize_from_path("data/present/pixel_scale_tenth", f"Pixel Difference \n Scale: 0.1" )
-    visualize_from_path("data/present/pixel_scale_full", f"Pixel Difference \n Scale: 1.0" )
-    visualize_from_path("data/present/numdiff", f"Numerical Differentation \n Latent: Stable Diffusion Turbo" )
-    visualize_from_path("data/present/jvp", f"Jacobian-Vector Product \n Latent: Stable Diffusion Turbo" )
-    plt.show()
+    main(visualize=True)
+
 
