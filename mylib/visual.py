@@ -24,6 +24,22 @@ def create_figure(batch_size, n_conditions, img_shape, base_tile_size=1):
     return fig, gs
 
 
+def plot_two_conditions(data, batch_size, shape_comb):
+    # USER DEFINED
+    # Pick combination index, time index and batch index
+    assert len(data.shape) == 6, f"data should have rank 5, got shape: {data.shape}"
+    data = rearrange(data, "p1 p2 b C H W -> b (p1 H) (p2 W) C", p1=shape_comb[0], p2=shape_comb[1])
+    
+    plot_two_conditions(data, cnfg_sim.diffusion.batch_size)
+    n_cols = math.ceil(math.sqrt(batch_size))
+    n_rows = math.ceil(batch_size / n_cols)
+
+    fig, axes = plt.subplots(n_rows, n_cols, squeeze=False)
+    for idx, (row, col) in enumerate(np.ndindex((n_rows, n_cols))):
+        if idx == batch_size:
+            break
+        axes[row, col].imshow(data[idx])
+
 def plot_condition(ax, data, grid_shape, labels=None):
     n_rows, n_cols = grid_shape
     ax.set_axis_off()
