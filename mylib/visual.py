@@ -1,5 +1,7 @@
+import os
 import numpy as np
 import matplotlib.pyplot as plt
+from mylib.diffusion import load_templates
 from mpl_toolkits.axes_grid1 import ImageGrid
 from matplotlib.gridspec import GridSpec
 from einops import rearrange, repeat
@@ -87,7 +89,7 @@ def plot_comparison(data_dict, img_shape, labels=None):
     
     return fig
 
-def visualize_from_path(path_exp, title=None):
+def visualize_from_path(path_exp, title=None, labels=None):
     """
     Load data and config from a given experiment path, then call plot_comparison.
 
@@ -150,7 +152,6 @@ def visualize_from_path(path_exp, title=None):
     }
 
     # Create and return figure
-    labels = [rf"$\nu_0 =$" + "\n" rf"${x:.3f}$" for x in cnfg_sim.guidance_vf.v_0]
     fig = plot_comparison(data_dict, image_shape, labels=labels)
     if title:
         fig.suptitle(title)

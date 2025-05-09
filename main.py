@@ -96,13 +96,13 @@ def run_no_guidance(cnfg, path_exp):
 
 
 def main(visualize=False):
-    exp_name = "jvp"
+    exp_name = "none"
     cnfg_sim = ConfigSimulation( 
                 network_pkl     = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl', 
                 device          = "cuda" if torch.cuda.is_available() else "cpu",
                 seed            = 0,
                 input_shape     = (3, 64, 64),
-                guidance_vf     = VF_VAE_JVP(threshold_weight=0.1),
+                guidance_vf     = VF_PIXEL_SCALE_AND_V0,
                 diffusion       = ConfigDiffusion(num_steps=24),
     )
 
@@ -111,6 +111,8 @@ def main(visualize=False):
 
     if visualize:
         visualize_from_path(path_exp, exp_name )
+        plt.show()
 
 if __name__ == "__main__":
     main(visualize=True)
+
