@@ -35,12 +35,11 @@ VF_VAE_JVP = ConfigGuidanceVF(
         hf_url = "stabilityai/sd-turbo",
         decay_rate = 1.0,
         v_0 = [40, 20, 10 , 5],
-        # v_0 = [45, , 40, 30, 20, 10] ,
         scale_template_score = 1.0,
         template_path = "data/input/cat.jpg",
         )
 
-VF_VAE_JVP = ConfigGuidanceVF(
+VF_LINEAR = ConfigGuidanceVF(
         type_latent = "linear",
         type_eval = "jvp",
         hf_url = "stabilityai/sd-turbo",
@@ -260,14 +259,14 @@ def visualize_from_path(path_exp, title=None):
 
 def main():
     # USER DEFINED
-    RUN_FRESH = False
-    exp_name = "linear"
+    RUN_FRESH = True
+    exp_name = "jvp"
     cnfg_sim = ConfigSimulation( 
                 network_pkl     = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl', 
                 device          = "cuda" if torch.cuda.is_available() else "cpu",
                 seed            = 0,
                 input_shape     = (3, 64, 64),
-                guidance_vf     = VF_LINEAR(threshold_weight=0.1),
+                guidance_vf     = VF_VAE_JVP(threshold_weight=0.1),
                 diffusion       = ConfigDiffusion(num_steps=24),
     )
 
@@ -329,9 +328,4 @@ def main():
     plt.show()
 
 if __name__ == "__main__":
-    visualize_from_path("data/present/pixel_scale_tenth", f"Pixel Difference \n Scale: 0.1" )
-    visualize_from_path("data/present/pixel_scale_full", f"Pixel Difference \n Scale: 1.0" )
-    visualize_from_path("data/present/numdiff", f"Numerical Differentation \n Latent: Stable Diffusion Turbo" )
-    visualize_from_path("data/present/jvp", f"Jacobian-Vector Product \n Latent: Stable Diffusion Turbo" )
-    plt.show()
-
+    main()

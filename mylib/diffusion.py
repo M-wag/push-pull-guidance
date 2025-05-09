@@ -170,7 +170,7 @@ class ConfigGuidanceVF(Config):
     n_features:             float | list[int] | None = None
     dim_feature:            float | list[int] | None = None
     seed_mat:               int | None = None
-    T:                      int | list[int] = 1.0
+    T:                      int | list[int] | None = None
     # Hugging Face
     hf_url:                 str = None
 
