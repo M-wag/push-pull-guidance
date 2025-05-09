@@ -5,139 +5,140 @@ from matplotlib.gridspec import GridSpec
 from einops import rearrange, repeat
 import pickle
 
-def transform_raw_data(raw_data, scheduler_keys_to_keep, scheduler_order):
+
+def create_figure(batch_size, n_conditions, img_shape, base_tile_size=1):
+    """Create figure with properly scaled subplots"""
+    # Calculate dimensions
+    tile_width = base_tile_size * img_shape[1] / max(img_shape)  # Normalize by image aspect ratio
+    tile_height = base_tile_size * img_shape[0] / max(img_shape)
+    
+    # Total figure size calculation
+    fig_width = ((n_conditions + 2) * tile_width) 
+    fig_height = max(batch_size, 1) * tile_height  # Height determined by middle plot
+    
+    # Create figure with 3 subplots using GridSpec
+    fig = plt.figure(figsize=(fig_width, fig_height), constrained_layout=True)
+    gs = GridSpec(1, 3, figure=fig, width_ratios=[1, n_conditions, 1],
+                  wspace=0.05, hspace=0)
+    
+    return fig, gs
+
+
+def plot_condition(ax, data, grid_shape, labels=None):
+    n_rows, n_cols = grid_shape
+    ax.set_axis_off()
+    sub_gs = ax.get_subplotspec().subgridspec(
+        n_rows, n_cols, wspace=0, hspace=0,
+        width_ratios=[1]*n_cols, height_ratios=[1]*n_rows,
+    )
+
+    for i in range(n_rows):
+        for j in range(n_cols):
+            img = data[i, j]
+
+            # create & attach the subplot
+            sub_ax = plt.Subplot(ax.figure, sub_gs[i, j])
+            ax.figure.add_subplot(sub_ax)
+
+            # show image, remove axes
+            sub_ax.imshow(img)
+            sub_ax.set_axis_off()
+            sub_ax.margins(0, 0)
+
+            # set title only on first row
+            if labels is not None and i == 0:
+                sub_ax.set_title(labels[j], pad=2)
+
+def plot_comparison(data_dict, img_shape, labels=None):
+    """Main plotting function for comparison visualization"""
+    batch_size = data_dict['middle'].shape[0]
+    n_conditions = data_dict['middle'].shape[1]
+    
+    # Create figure and a 1×3 GridSpec for left/middle/right
+    fig, gs = create_figure(batch_size, n_conditions, img_shape)
+    
+    axes = {
+        name: fig.add_subplot(sub_gs)
+        for name, sub_gs in zip(
+            ['left','middle','right'], 
+            [gs[0], gs[1], gs[2]]
+        )
+    }
+
+    plot_condition(axes['left'],   data_dict['left'],   (batch_size, 1))
+    plot_condition(axes['middle'], data_dict['middle'], (batch_size, n_conditions), labels)
+    plot_condition(axes['right'],  data_dict['right'],  (batch_size, 1))
+    
+    return fig
+
+def visualize_from_path(path_exp, title=None):
     """
-    Given raw_data of shape (sched_1, ..., sched_N, t, B, C, H, W) and an ordered list
-    of scheduler keys (scheduler_order), return data of shape (sched_a, sched_b, t, B, C, H, W)
-    based on the scheduler_keys_to_keep (a list of two keys). All other scheduler dimensions are fixed to index 0.
+    Load data and config from a given experiment path, then call plot_comparison.
+
+    Args:
+        path_exp (str): Path to the experiment directory containing raw_data.pkl,
+                        raw_data_og.pkl, and cnfg_sim.pkl.
+
+    Returns:
+        matplotlib.figure.Figure: The resulting comparison figure.
     """
-    # Build a tuple of slices: if the current scheduler dimension's index (based on scheduler_order)
-    # is in idx_keep, then slice(None) to keep all values; otherwise fix to index 0.
-    idx_keep = [scheduler_order.index(k) for k in scheduler_keys_to_keep]
-    slicer = tuple(slice(None) if i in idx_keep else 0 for i in range(len(scheduler_order)))
-    transformed = raw_data[slicer]
-    return transformed
+    # Build file paths
+    raw_data_path    = os.path.join(path_exp, "raw_data.pkl")
+    raw_data_og_path = os.path.join(path_exp, "raw_data_og.pkl")
+    cnfg_sim_path    = os.path.join(path_exp, "cnfg_sim.pkl")
 
-def plot_condition_by_condition(data, scheduler_key_a, scheduler_key_b, data_og):
-    """
-    Plots a grid of images using scheduler_key_a (rows) and scheduler_key_b (columns)
-    and shows a template and an unmodified (OG) image on the right.
-    
-    Assumes the data dictionary has:
-      - "schedule_params": dict of scheduling parameters.
-      - "raw_data": numpy array with shape 
-            (n1, n2, ..., num_steps, grid_h*grid_w, C, H, W)
-      - "grid_h", "grid_w", "t_steps", "template"
-    
-    For a 2-D grid, if more than two scheduling parameters exist, the extra dimensions are fixed to index 0.
-    """
-    sched_params = data["schedule_params"]
-    cond_a = sched_params.get(scheduler_key_a, None)
-    cond_b = sched_params.get(scheduler_key_b, None)
-    
-    # raw_data is assumed already transformed to only keep the two dimensions we want.
-    raw_data_2d = data["raw_data"]
-    num_rows = len(cond_a) if cond_a is not None else raw_data_2d.shape[0]
-    num_cols = len(cond_b) if cond_b is not None else raw_data_2d.shape[1]
-    t_steps = data["t_steps"]
-    num_steps = len(t_steps)
+    # Load data
+    with open(raw_data_path, "rb") as f:
+        raw_data = pickle.load(f)
+    with open(cnfg_sim_path, "rb") as f:
+        cnfg_sim = pickle.load(f)
+    with open(raw_data_og_path, "rb") as f:
+        raw_data_og = pickle.load(f)
 
-    # Define figure dimensions.
-    template_width = 1.5 
-    grid_width = 3.0 * num_cols
-    grid_height = 3.0 * num_rows
-    total_width = grid_width + template_width
-    total_height = grid_height 
+    assert len(raw_data.shape) == 6, \
+        f"raw_data should have rank 6, got shape: {raw_data.shape}"
 
-    fig = plt.figure(figsize=(total_width, total_height))
-    # Main gridspec: left column for image grid, right column for template and OG images.
-    gs = fig.add_gridspec(2, 2, width_ratios=[grid_width, 3 * template_width], wspace=0.1)
-    gs_right = gs[:, 1].subgridspec(2, 1, height_ratios=[1, 3])
-    
-    # Plot template image.
-    ax_template = fig.add_subplot(gs_right[0])
-    ax_template.imshow(data["template"], aspect='equal')
-    ax_template.set_xticks([]); ax_template.set_yticks([])
-    ax_template.set_title("Template Image")
+    # Extract shapes
+    batch_size = cnfg_sim.diffusion.batch_size
+    image_shape = cnfg_sim.input_shape
 
-    if True:
-        # Plot unmodified (OG) image.
-        ax_og = fig.add_subplot(gs_right[1])
-        data_raw_og = data_og["raw_data"]
-        og_img = rearrange(data_raw_og[0, 0, -1], "(b1 b2) c h w -> (b1 h) (b2 w) c",
-                            b1=data["grid_h"], b2=data["grid_w"])
-        ax_og.imshow(og_img, aspect='equal')
-        ax_og.set_xticks([]); ax_og.set_yticks([])
-        ax_og.set_title("Unmodified Image") 
+    # Determine shape combination
+    if not cnfg_sim.shape_combination:
+        shape_comb = (1, 1)
+    elif len(cnfg_sim.shape_combination) == 1:
+        shape_comb = tuple(cnfg_sim.shape_combination) + (1,)
+    else:
+        shape_comb = tuple(cnfg_sim.shape_combination)
 
-    # Create grid for final images.
-    img_grid = ImageGrid(fig, gs[:, 0], nrows_ncols=(num_rows, num_cols))
-    # Use the final time step.
-    # raw_data_2d shape: (num_rows, num_cols, t, grid_h*grid_w, C, H, W)
-    img_grid_data = rearrange(raw_data_2d[:, :, -1],
-                              "... (b1 b2) C H W -> ... (b1 H) (b2 W) C",
-                              b1=data["grid_h"], b2=data["grid_w"])
-    
-    for i in range(num_rows):
-        for j in range(num_cols):
-            idx = i * num_cols + j
-            img_grid[idx].imshow(img_grid_data[i, j])
-            img_grid[idx].set_xticks([])
-            img_grid[idx].set_yticks([])
-            if cond_a is not None:
-                img_grid[idx].set_ylabel(f"{scheduler_key_a}:\n {cond_a[i]:.3f}")
-            if cond_b is not None and i == 0:
-                img_grid[idx].set_title(f"{scheduler_key_b}: \n {cond_b[j]:.3f}")
-    plt.tight_layout()
-    plt.savefig('test.png')
-    plt.show()
+    # Indices for last timestep and full batch
+    idx_combinations = (slice(None), slice(None))
+    idx_time = (-1,)
+    idx_batch = (slice(None),)
 
+    # Reshape and select data
+    data = raw_data.reshape(shape_comb + raw_data.shape[1:])
+    data = data[idx_combinations + idx_time + idx_batch]
 
-def plot(data):
-    """
-    2-D visualization using two scheduling parameters.
-    If extra scheduling dimensions exist, fix the others to index 0.
-    
-    Expects data dictionary with "schedule_params" and "raw_data".
-    For this example, we assume that the transformed raw_data was built by keeping, say,
-    the last scheduling dimension from the order.
-    """
-    sched_params = data["schedule_params"]
-    # For this example, let's assume we use "sched_capacity_template" and "sched_v0"
-    cond_a = sched_params.get("sched_capacity_template", None)
-    sched_v0 = sched_params.get("sched_v0", None)
-    
-    raw_data_2d = data["raw_data"]
-    grid_h = data["grid_h"]
-    grid_w = data["grid_w"]
-    t_steps = data["t_steps"]
-    
-    def sigmoid(x): 
-        return 1 / (1 + np.exp(-x))
+    data_og = raw_data_og.reshape((1,1) + raw_data.shape[1:])
+    data_og = data_og[(slice(None), slice(None)) + idx_time + idx_batch]
+    data_og = rearrange(data_og, "p1 p2 b h w c -> (b p1) p2 1 h w c")
 
-    total_width = len(t_steps) * grid_w * 0.5 
-    total_height = len(sched_v0) * grid_h * 0.5 
-    fig = plt.figure(figsize=(total_width, total_height))
-    img_grid = ImageGrid(fig, 111, nrows_ncols=(len(sched_v0), 1))
-    
-    # raw_data_2d shape: (len(cond_a), len(sched_v0), t, grid, C, H, W)
-    # Use the final value of the dimension we want to plot.
-    series_data = rearrange(raw_data_2d[-1],
-                              "cond_B t (b1 b2) C H W -> cond_B (b1 H) (t b2 W) C",
-                              b1=grid_h, b2=grid_h)
-    
-    coloring_width = 16
-    for i, (img, v0) in enumerate(zip(series_data, sched_v0)):
-        # Create a red coloring signal based on t_steps and v0.
-        signal_template = sigmoid(np.array(t_steps[:-1]) - v0)[:, None] * np.array([1, 0, 0])
-        coloring_signal = repeat(signal_template, "t c -> height (t repeat) c", 
-                                 repeat=64 * grid_w,
-                                 height=coloring_width)
-        img_with_color = np.concatenate((coloring_signal, img), axis=0)
-        img_grid[i].imshow(img_with_color)
-        img_grid[i].set_xticks([])
-        img_grid[i].set_yticks([])
-    plt.show()
-    plt.savefig('test_time.png')
+    # Load template images
+    template = load_templates(cnfg_sim, for_torch=False)
 
+    # Prepare dictionary for plotting
+    data_dict = {
+        'left':   repeat(data_og, "p1 p2 b c h w -> (b p1 p2) 1 h w c"),
+        'middle': repeat(data,    "p1 p2 b c h w -> b (p1 p2) h w c"),
+        'right':  repeat(template, "1 c h w -> b 1 h w c", b=batch_size)
+    }
+
+    # Create and return figure
+    labels = [rf"$\nu_0 =$" + "\n" rf"${x:.3f}$" for x in cnfg_sim.guidance_vf.v_0]
+    fig = plot_comparison(data_dict, image_shape, labels=labels)
+    if title:
+        fig.suptitle(title)
+    else:
+        fig.suptitle(os.path.basename(path_exp))
+    return fig
 
