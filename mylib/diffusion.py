@@ -21,6 +21,8 @@ from typing import List, Any, Literal
 import torch
 import torch.nn.functional as F
 from einops import rearrange
+from jaxtyping import Array, Float, jaxtyped
+from torch import Tensor
 
 #----------------------------------------------------------------------------
 def generate_image_grid(
@@ -228,19 +230,21 @@ class AttentionMixture:
 
         # Compute squared distances between x and all means (B, N)
         diff = self.means.unsqueeze(0) - x.unsqueeze(1)  # (1, N, D) - (B, 1, D) → (B, N, D)
-        squared_dist = (diff ** 2).sum(dim=-1)  # (B, N)
-        half_scaled_dist = -0.5 * (squared_dist / (self.stds.unsqueeze(0) ** 2))  # (B,N)
+        mahalanobis = (diff ** 2).sum(dim=-1) / self.stds.unsqueeze(0)  # (B, N)
+        energy_maha = -0.5 * mahalanobis  ** 2  # (B,N)
 
         # Compute log terms for each component 
         log_weights = torch.log(self.weights_mixture + 1e-8)                     # (N,)
         log_std_term = -self.D * torch.log(self.stds + 1e-8)                    # (N,)
 
         # Combine, drop the constant -(D/2)*ln(2π) 
-        exponents = half_scaled_dist + log_weights.unsqueeze(0) + log_std_term.unsqueeze(0)  # (B,N)
+        energy = energy_maha + log_weights.unsqueeze(0) + log_std_term.unsqueeze(0)  # (B,N)
 
         # Apply temperature and compute attention weights (B, N)
-        weights_attn = F.softmax(T * exponents, dim=-1)
+        weights_attn = F.softmax(T * energy, dim=-1)
         return weights_attn
+
+
 
 class GuidanceVF:
     def flat(self, x):
@@ -307,8 +311,86 @@ class GuidanceVF:
     def _dirac_score(self, x, t):
         raise NotImplementedError("Subclasses must implement this method")
 
-    def _dirac_score_attention(self, x, t):
+class NewGuidanceVF:
+    def flat(self, x):
+        return rearrange(x, "... c h w -> ... (c h w)")
+    
+    def unflat(self, x):
+        return rearrange(x, "... (c h w) -> ... c h w", c=self.templates.shape[-3], h=self.templates.shape[-2], w=self.templates.shape[-1])
+
+    def __init__(self, templates, scale, v_0, decay_rate, latent, latent_inv, *, flatten_input=False, threshold_weight=None,
+                 threshold_time_min=None,
+                 threshold_time_max=None):
+
+        # Core parameters
+        self.templates              : Float[Tensor, "N *shape"] = templates
+        self.scale                  : float : = scale          
+        self.v_0                    : Float[Tensor, "N"] = v_0
+        self.decay_rate             : Float[Tensor, "N"] = decay_rate
+        # Feature Parametrs
+        self.latent                 = latent
+        self.latent_inv             = latent_inv
+        # Bookkeeping features
+        self.flatten_input = flatten_input
+        self.threshold_weight = threshold_weight
+        self.threshold_time_min = threshold_time_min
+        self.threshold_time_max = threshold_time_max
+
+        # Pre-process templates 
+        
+        features = []
+        for templates in self.templates:
+            features.append(latent(self.flat(templates)) if flatten_input else latent(templates))
+        self.features_templates  = torch.cat(features, dim=0)
+
+        # Device and type tracking
+        self.device = templates.device
+        self.dtype = templates.dtype
+
+        # Tracking information
+        self.history_weight = []
+        self.history_apply_score = []
+        
+    def __call__(self, x: Float[Tensor, "B C *shape" ] , t: float
+     ) -> Float[Tensor, "B C *shape"]:
+
+        x = self.flat(x) if self.flatten_input else x
+        noise = self.noise(t)
+        weight_time = self.temporal_gate(noise) 
+        weight = weight_time * self.scale
+        
+        apply_score = True
+        # Check weight threshold
+        if self.threshold_weight is not None and torch.all(weight < self.threshold_weight):
+            apply_score = False
+        # Check time thresholds
+        if self.threshold_time_min is not None and torch.all(noise < self.threshold_time_min):
+            apply_score = False
+        if self.threshold_time_max is not None and torch.all(noise > self.threshold_time_max):
+            apply_score = False
+        
+        if apply_score:
+            # Calculate attention
+            weights_attention: Float[Tensor, "B N"]  = self.attention(x, t)
+            # Get mean-wise scores
+            dirac_scores: Float[Tensor, "B N *shape"] = self._dirac_score(self, x, t)
+            # Weighted sum
+            score = weight * torch.einsum("BNF, BN -> BF", dirac_scores, weights_attention)
+            
+        else:
+            score = torch.zeros_like(x)
+        
+        score = self.unflat(score) if self.flatten_input else score
+
+        self.history_weight.append(weight)
+        self.history_apply_score.append(apply_score)
+        return score
+
+    def _dirac_score(self, x: Float[Tensor, "B *shape"] , t: float
+    ) -> Float[Tensor, "B N *shape"]:
         raise NotImplementedError("Subclasses must implement this method")
+
+        
 
 class PixelGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
@@ -318,6 +400,7 @@ class PixelGuidanceVF(GuidanceVF):
     def _dirac_score(self, x, t):
         dirac_score =  -(self.template - x) / t
         return dirac_score
+
 
 class LinearGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
