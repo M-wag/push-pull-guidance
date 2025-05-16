@@ -5,10 +5,10 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import os 
 import torch
-import pickle
+import pickle 
 from einops import rearrange, repeat
 from dataclasses import replace
-from mylib.diffusion import schedule_diffusion, ConfigSimulation, ConfigDiffusion, ConfigGuidanceVF, load_templates
+from mylib.diffusion import schedule_diffusion, ConfigSimulation, ConfigDiffusion, ConfigGuidanceVF, load_templates, create_guidance_vf
 from mylib.visual import visualize_from_path
 import math 
 
@@ -52,8 +52,8 @@ VF_LINEAR = ConfigGuidanceVF(
         T = 1.0,
         flatten_input=True,
         )
-VF_VAE_NUMDIFF = VF_VAE_JVP(type_eval="numdiff")
 
+VF_VAE_NUMDIFF = VF_VAE_JVP(type_eval="numdiff")
 
 def run(exp_name, cnfg):
     # Set output destination
@@ -114,5 +114,22 @@ def main(visualize=False):
         plt.show()
 
 if __name__ == "__main__":
-    main(visualize=True)
+    cnfg_sim = ConfigSimulation( 
+                network_pkl     = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl', 
+                device          = "cuda" if torch.cuda.is_available() else "cpu",
+                seed            = 0,
+                input_shape     = (3, 64, 64),
+                # guidance_vf     = VF_LINEAR(template_path="data/input/cat.jpg"),
+                guidance_vf     = VF_LINEAR(template_path="data/input/"),
+                diffusion       = ConfigDiffusion(num_steps=24),
+    )
+    templates = load_templates(cnfg_sim)
+    print(templates.shape)
+
+    vf = create_guidance_vf(cnfg_sim.guidance_vf.split()[0], templates)
+    x =  torch.rand(8, 3, 64, 64)
+    t = torch.tensor(40, device=vf.device, dtype=vf.dtype)
+    
+    vf(x, t)
+
 

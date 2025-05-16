@@ -14,14 +14,14 @@ import itertools
 import dnnlib
 from PIL import Image
 from einops import rearrange, repeat
-from torchvision.io import read_image
+from torchvision.io import read_image, read_file
 from torch.autograd.functional import jvp
 from dataclasses import dataclass, asdict, replace, fields
 from typing import List, Any, Literal
 import torch
 import torch.nn.functional as F
 from einops import rearrange
-from jaxtyping import Array, Float, jaxtyped
+from jaxtyping import Float
 from torch import Tensor
 
 #----------------------------------------------------------------------------
@@ -324,7 +324,7 @@ class NewGuidanceVF:
 
         # Core parameters
         self.templates              : Float[Tensor, "N *shape"] = templates
-        self.scale                  : float : = scale          
+        self.scale                  : float = scale          
         self.v_0                    : Float[Tensor, "N"] = v_0
         self.decay_rate             : Float[Tensor, "N"] = decay_rate
         # Feature Parametrs
@@ -553,7 +553,7 @@ def load_templates(cnfg : ConfigSimulation, for_torch=True):
             fpath = os.path.join(cnfg.guidance_vf.template_path, fname)
             if not os.path.isfile(fpath): 
                 continue
-            imgs.append(read_file(fpath))
+            imgs.append(read_image(fpath))
         templates = torch.stack(imgs) if imgs else None
 
     else:
