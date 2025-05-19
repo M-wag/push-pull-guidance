@@ -71,7 +71,7 @@ if __name__ == "__main__":
             device        = "cuda" if torch.cuda.is_available() else "cpu",
             seed          = 0,
             input_shape   = (3, 64, 64),
-            guidance_vf   = guidance_vf(v_0=10.0),
+            guidance_vf   = guidance_vf,
             diffusion     = ConfigDiffusion(num_steps=24),
         )
 
