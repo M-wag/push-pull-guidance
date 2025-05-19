@@ -272,6 +272,8 @@ class GuidanceVF:
 
         # Pre-process template 
         self.features_template = latent(self.flat(template)) if flatten_input else latent(template)
+        if self.features_template.shape[0] > 1:
+            self.features_template = self.features_template.flatten(0, 1)
         # Device and type tracking
         self.device = template.device
         self.dtype = template.dtype
@@ -414,7 +416,11 @@ class LinearGuidanceVF(GuidanceVF):
 
     def _dirac_score_attention(self, x, t):
         features = self.latent(x)
-        dirac_score_per_feature =  -self.latent_inv(self.features_template.unsqueeze(0) - features.unsqueeze(1)) / t # (1, N, D) - (B, 1, D) = (B, N ,D)
+        print(features.shape)
+        print(self.features_template.shape)
+        # TODO : needs to use noise not time# 
+        # (1, N * F , L) - (B, F, L) = (B, N , F, L)
+        dirac_score_per_feature =  -self.latent_inv(self.features_template.unsqueeze(0) - features) / t 
         weights_attention = self.attention(x, t, T=self.T)
         dirac_score = torch.einsum("BND, N -> BD", dirac_score_per_feature, weights_atention)
         return dirac_score
@@ -504,27 +510,38 @@ def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
                 dtype=templates.dtype
             )
             mat_latent_inv = torch.linalg.pinv(mat_latent)
-
+            print(mat_latent.shape)
+            print(mat_latent_inv.shape)
             kwargs_filtered = {
                 k: v for k, v in prms.to_dict().items()
                 if k not in ("type_latent", "type_eval", "template_path", "n_features", "dim_feature", "seed_mat", "T") and v is not None
             }
             kwargs_filtered['scale'] = kwargs_filtered.pop('scale_template_score')
 
+            # Flatt input for matmul 
+            if len(templates.shape[1:]) > 1 :
+                latent_fn = lambda x: torch.einsum("nld,bd->bnl", mat_latent, x.flatten(start_dim=1))
+                latent_inv_fn = lambda x: torch.einsum("ndl,bnl->bd", mat_latent_inv, x).reshape(templates.shape)
+            else:
+                latent_fn = lambda x: torch.einsum("nld,bd->bl", mat_latent, x),  
+                latent_inv_fn = lambda x: torch.einsum("bdl,bnl->bnd", mat_latent_inv, x)
+
+            
             vf = LinearGuidanceVF(
                 **kwargs_filtered,
                 template=templates,
-                latent=lambda x: torch.einsum("nld,bd->bl", mat_latent, x),  
-                latent_inv=lambda x: torch.einsum("ndl,bnl->bd", mat_latent_inv, x)
+                latent=latent_fn,
+                latent_inv=latent_inv_fn,
             )
 
 
             if templates.shape[0] > 1:
                 # Calculate attention parameters
-                means_attention = vf.latent(templates)
-                std_attention = torch.ones_like(means_attention) * self.v_0
+                #TODO : DOES THIS WORK FOR DIFFERNET V_0s
+                means_attention = vf.latent(templates).flatten(0, 1) #(N, D) -> (N, F, L) -> (N * F, L)
+                std_attention =  vf.v_0
                 weights_mixture = torch.ones(templates.shape[0]) / templates.shape[0]
-                weights_mixture = weights_mixture.to(device=self.device)
+                weights_mixture = weights_mixture.to(device=vf.device)
                 
                 # Assign to instance not class
                 vf.attention = AttentionMixture(
