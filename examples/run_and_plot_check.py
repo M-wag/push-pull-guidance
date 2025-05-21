@@ -19,16 +19,16 @@ VF_PIXEL= ConfigGuidanceVF(
         type_latent = "pixel",
         decay_rate = 1.0,
         v_0 = [40, 20, 10 , 5],
-        scale_template_score = 1.0,
-        template_path = "data/input/cat.jpg",
+        scale = 1.0,
+        template_path = "data/input/cat_1.jpg",
         )
 
 VF_PIXEL_SCALE_AND_V0 = ConfigGuidanceVF(
         type_latent = "pixel",
         decay_rate = 1.0,
         v_0 = [15, 30],
-        scale_template_score = [0.1, 0.5],
-        template_path = "data/input/cat.jpg",
+        scale = [0.1, 0.5],
+        template_path = "data/input/cat_1.jpg",
         )
 
 VF_VAE_JVP = ConfigGuidanceVF(
@@ -37,8 +37,8 @@ VF_VAE_JVP = ConfigGuidanceVF(
         hf_url = "stabilityai/sd-turbo",
         decay_rate = 1.0,
         v_0 = [40, 20, 10 , 5],
-        scale_template_score = 1.0,
-        template_path = "data/input/cat.jpg",
+        scale = 1.0,
+        template_path = "data/input/cat_1.jpg",
         )
 
 VF_VAE_NUMDIFF = VF_VAE_JVP(type_eval="numdiff")
