@@ -1,9 +1,4 @@
-# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-#dirac_score
-# This work is licensed under a Creative Commons
-# Attribution-NonCommercial-ShareAlike 4.0 International License.
-# You should have received a copy of the license along with this
-# work. If not, see http://creativecommons.org/licenses/by-nc-sa/4.0/
+
 import tqdm
 import time
 import pickle
@@ -305,6 +300,7 @@ class GuidanceVF:
             apply_score = False
         
         if apply_score:
+            # TODO : Should be handled by Builder
             if self.features_template.shape[0] == 1:
                 dirac_score = self._dirac_score(x, t)
             else:
@@ -348,7 +344,7 @@ class LinearGuidanceVF(GuidanceVF):
         # (B, F * T)
         attention = self.attention(diff_features, passing_diff=True)
         # (B, D) = (B, F * T) o (B, F * T, D) 
-        dirac_score = torch.einsum("BN, BN... -> B...", attention, recons)
+        dirac_score =  -1/t * torch.einsum("BN, BN... -> B...", attention, recons)
         return dirac_score
 
 class JVPGuidanceVF(GuidanceVF):
@@ -371,7 +367,12 @@ class NumericalGuidanceVF(GuidanceVF):
     def _dirac_score(self, x, t):
         with torch.no_grad():
             features = self.latent(x)
-            dirac_score_latent = -(self.features_template - features) / t
+            # TODO : change  
+            if self.features_template.shape[0] > 1:
+                features_copied = torch.repeat_interleave(features, dim=1, repeats=self.templates.shape[0])
+                dirac_score_latent = -(self.features_template - features) / t
+            else:
+                dirac_score_latent = -(self.features_template - features) / t
             # Numerical differentiation
             perturbed_features = features + self.epsilon * dirac_score_latent
             f_perturbed = self.latent_inv(perturbed_features)
@@ -399,6 +400,23 @@ class BuilderVFBase:
                 if k not in exclusions and v is not None}
 
         return kwargs, templates
+    @classmethod 
+    def _create_attention(cls, prms, templates, latent_fn):
+        """Create attention mechanism when there a multiple feature templates"""
+        means_attention = latent_fn(templates).flatten(start_dim=0, end_dim=1)
+        n_feature_templates = means_attention.shape[0]
+        std_attention =  prms.v_0 * torch.ones(n_feature_templates,
+                                               device=templates.device, 
+                                               dtype=templates.dtype)
+        weights_mixture = (torch.ones(n_feature_templates) / (n_feature_templates)).to(device=templates.device)
+        
+        # Assign to instance not class
+        attention_fn = AttentionMixture(
+            means_attention,
+            std_attention,
+            weights_mixture
+        )
+        return attention_fn
 
 class BuilderPixelVF(BuilderVFBase):
     @classmethod
@@ -446,27 +464,16 @@ class BuilderLinearVF(BuilderVFBase):
             latent_inv_fn = lambda x : torch.unflatten(_orig_latent_inv_fn(x), -1, templates.shape[1:])
             
 
-        # Attention mechanism
-        means_attention = latent_fn(templates).flatten(start_dim=0, end_dim=1)
-        std_attention =  prms.v_0 * torch.ones(n_templates * prms.n_features,
-                                               device=templates.device, 
-                                               dtype=templates.dtype)
-        weights_mixture = (torch.ones(n_templates * prms.n_features) / (n_templates * prms.n_features)).to(device=templates.device)
-        
-        # Assign to instance not class
-        attention = AttentionMixture(
-            means_attention,
-            std_attention,
-            weights_mixture
-        )
-
         vf = LinearGuidanceVF(
             **kwargs,
             templates=templates,
             latent=latent_fn,
             latent_inv=latent_inv_fn,
-            attention=attention
+            attention=attention_fn
         )
+        
+        # Attention mechanism
+        attention_fn = cls._create_attention(prms, templates, latent_fn)
 
         return vf
 
@@ -507,8 +514,6 @@ class BuilderLinearHFVF(BuilderVFBase):
 
         from diffusers import AutoencoderKL
         vae = AutoencoderKL.from_pretrained(prms.hf_url, subfolder="vae", use_safetensors=True)
-        vae = vae.to(device=templates.device, dtype=templates.dtype)
-
 
         vf = VF(
                 **kwargs_filtered,
@@ -534,7 +539,7 @@ def create_vf(prms: ConfigGuidanceVF, templates, verbose=True):
         case "hf":
             vf = BuilderHuggingfaceVF.create(prms, templates)
         case "hf-linear":
-            pass
+            vf = BuilderHuggingfaceVF.create(prms, templates)
 
     return vf
 
