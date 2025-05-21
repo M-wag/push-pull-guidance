@@ -565,7 +565,13 @@ class BuilderPixelVF(BuilderVFBase):
         return PixelGuidanceVF(**kwargs, templates=templates)
 
 def create_vf(prms: ConfigGuidanceVF, templates):
-    print(prms.type_latent)
+    if verbose: 
+        print(f"\n{prms}")
+        print(f"\ntemplates_shape \t= {tuple(templates.shape)}")
+
+    if prms is None:
+        vf = lambda x, t: torch.zeros_like(x)
+        return vf
     match prms.type_latent:
         case "pixel":
             vf = BuilderPixelVF.create(prms, templates)
