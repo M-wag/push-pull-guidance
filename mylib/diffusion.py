@@ -77,7 +77,7 @@ def generate_image_grid(
         t_hat = net.round_sigma(t_cur + gamma * t_cur)
         x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
 
-        # template score
+        # templates score
         d_template = vf_template(x_hat, t_hat)
 
         # model score
@@ -232,14 +232,14 @@ class AttentionMixture:
         # Compute squared distances between x and all means (B, N)
         diff = self.means.unsqueeze(0) - x.unsqueeze(1)  # (1, N, D) - (B, 1, D) → (B, N, D)
         mahalanobis = (diff ** 2).sum(dim=-1) / self.stds.unsqueeze(0)  # (B, N)
-        energy_maha = -0.5 * mahalanobis  ** 2  # (B,N)
+        energy_mahalana = -0.5 * mahalanobis  ** 2  # (B,N)
 
         # Compute log terms for each component 
         log_weights = torch.log(self.weights_mixture + 1e-8)                     # (N,)
         log_std_term = -self.D * torch.log(self.stds + 1e-8)                    # (N,)
 
         # Combine, drop the constant -(D/2)*ln(2π) 
-        energy = energy_maha + log_weights.unsqueeze(0) + log_std_term.unsqueeze(0)  # (B,N)
+        energy = energy_mahalana + log_weights.unsqueeze(0) + log_std_term.unsqueeze(0)  # (B,N)
 
         # Apply temperature and compute attention weights (B, N)
         weights_attn = F.softmax(T * energy, dim=-1)
@@ -251,14 +251,14 @@ class GuidanceVF:
         return rearrange(x, "... c h w -> ... (c h w)")
     
     def unflat(self, x):
-        return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
+        return rearrange(x, "... (c h w) -> ... c h w", c=self.templates.shape[-3], h=self.templates.shape[-2], w=self.templates.shape[-1])
 
     def __init__(self, templates, scale, v_0, decay_rate, latent, latent_inv, *, flatten_input=False, threshold_weight=None,
                  threshold_time_min=None,
                  threshold_time_max=None):
 
         # Core parameters
-        self.template = templates
+        self.templates = templates
         self.scale = scale
         self.v_0 = v_0
         self.decay_rate = decay_rate
@@ -270,13 +270,13 @@ class GuidanceVF:
         self.threshold_time_min = threshold_time_min
         self.threshold_time_max = threshold_time_max
 
-        # Pre-process template 
-        self.features_template = latent(self.flat(self.template)) if flatten_input else latent(self.template)
+        # Pre-process templates 
+        self.features_template = latent(self.flat(self.templates)) if flatten_input else latent(self.templates)
         if self.features_template.shape[0] > 1:
             self.features_template = self.features_template.flatten(0, 1)
         # Device and type tracking
-        self.device = self.template.device
-        self.dtype = self.template.dtype
+        self.device = self.templates.device
+        self.dtype = self.templates.dtype
         # For testing
         self.history_weight = []
         self.history_apply_score = []
@@ -319,30 +319,27 @@ class PixelGuidanceVF(GuidanceVF):
         super().__init__(*args, **kwargs, latent=lambda x: x, latent_inv=lambda x: x)
 
     def _dirac_score(self, x, t):
-        dirac_score =  -(self.template - x) / t
+        dirac_score =  -(self.templates - x) / t
         return dirac_score
-
 
 class LinearGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
         # Override latent mappings while passing through other params
         super().__init__(*args, **kwargs)
 
-    def _dirac_score(self, x, t):
-        features = self.latent(x)
-        dirac_score =  -self.latent_inv((self.features_template - features).unsqueeze(1)) / t
-        return dirac_score
-
     def _dirac_score_attention(self, x, t):
+        # (B, F, L)
         features = self.latent(x)
-        print(features.shape)
-        print(self.features_template.shape)
-        # TODO : needs to use noise not time# 
-        # (1, N * F , L) - (B, F, L) = (B, N , F, L)
-        dirac_score_per_feature =  -self.latent_inv(self.features_template.unsqueeze(0) - features) / t 
-        weights_attention = self.attention(x, t, T=self.T)
-        dirac_score = torch.einsum("BND, N -> BD", dirac_score_per_feature, weights_atention)
-        return dirac_score
+        # (B, F * T, L)
+        features_copied = torch.repeat_interleave(features, dim=1, repeats=self.templates.shape[0])
+        # (B, F * T, L) = (1, F * T, L) - (B, F * T, L) 
+        diff_features = self.features_template.unsqueeze(0) - features_copied
+        # (B, F*T, D) 
+        recons = self.latent_inv(diff_features)
+        # (B, F * T)
+        attention = self.attention(x)
+        # (B, D) = (B, F * T) o (B, F * T, D) 
+        dirac_score = torch.einsum("BN, BND -> BD", attention, recons)
 
 class JVPGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
@@ -372,171 +369,6 @@ class NumericalGuidanceVF(GuidanceVF):
         
         return (f_perturbed - f_original) / self.epsilon  
 
-def create_guidance_vf(prms : ConfigGuidanceVF, templates, verbose=True):
-    if verbose: 
-        print(f"\n{prms}")
-        print(f"\ntemplates_shape \t= {tuple(templates.shape)}")
-
-    # Check if vector field is defined
-    if prms is None:
-        vf = lambda x, t: torch.zeros_like(x)
-        return vf
-
-    # Match specicic type of vector field
-    match prms.type_latent:
-        case "pixel":
-            kwargs_filtered = {
-                k: v
-                for k, v in prms.to_dict().items()
-                if k not in ("type_latent", "template_path") and v is not None
-            }
-            vf = PixelGuidanceVF(**kwargs_filtered, template=templates)
-
-        case "hf":
-            from diffusers import AutoencoderKL
-            vae = AutoencoderKL.from_pretrained(prms.hf_url, subfolder="vae", use_safetensors=True)
-            vae = vae.to(device=templates.device, dtype=templates.dtype)
-
-            kwargs_filtered = {
-                k: v
-                for k, v in prms.to_dict().items()
-                if k not in ("type_latent", "type_eval", "template_path", "hf_url") and v is not None
-            }
-
-            match prms.type_eval:
-                case "numdiff":
-                    VF = NumericalGuidanceVF
-                case "jvp":
-                    VF = JVPGuidanceVF
-
-            vf = VF(
-                    **kwargs_filtered,
-                    template=templates,
-                    latent = lambda x : vae.encode(x).latent_dist.sample(),
-                    latent_inv = lambda x: vae.decode(x).sample
-            )
-
-        case "linear":
-
-            g = torch.Generator(device=templates.device).manual_seed(prms.seed_mat)
-            template_dim = int(torch.prod(torch.tensor(templates.shape[1:])))
-            mat_latent = torch.randn(
-                (prms.n_features, prms.dim_feature, template_dim),
-                generator=g,
-                device=templates.device,
-                dtype=templates.dtype
-            )
-            mat_latent_inv = torch.linalg.pinv(mat_latent)
-
-            kwargs_filtered = {
-                k: v for k, v in prms.to_dict().items()
-                if k not in ("type_latent", "type_eval", "template_path", "n_features", "dim_feature", "seed_mat", "T") and v is not None
-            }
-
-            # Flatt input for matmul 
-            if len(templates.shape[1:]) > 1 :
-                latent_fn = lambda x: torch.einsum("nld,bd->bnl", mat_latent, x.flatten(start_dim=1))
-                latent_inv_fn = lambda x: torch.einsum("ndl,bnl->bd", mat_latent_inv, x).reshape(templates.shape)
-            else:
-                latent_fn = lambda x: torch.einsum("nld,bd->bl", mat_latent, x),  
-                latent_inv_fn = lambda x: torch.einsum("bdl,bnl->bnd", mat_latent_inv, x)
-
-            
-            vf = LinearGuidanceVF(
-                **kwargs_filtered,
-                template=templates,
-                latent=latent_fn,
-                latent_inv=latent_inv_fn,
-            )
-
-
-            if templates.shape[0] > 1:
-                # Calculate attention parameters
-                #TODO : DOES THIS WORK FOR DIFFERNET V_0s
-                means_attention = vf.latent(templates).flatten(0, 1) #(N, D) -> (N, F, L) -> (N * F, L)
-                std_attention =  vf.v_0
-                weights_mixture = torch.ones(templates.shape[0]) / templates.shape[0]
-                weights_mixture = weights_mixture.to(device=vf.device)
-                
-                # Assign to instance not class
-                vf.attention = AttentionMixture(
-                    means_attention,
-                    std_attention,
-                    weights_mixture
-                )
-        case _:
-            raise ValueError(f"Received unexepcted vector field type: {prvs.type_latent}")
-
-    return vf
-
-def create_linear_vae():
-    # Imprt HF
-    from diffusers import AutoencoderKL
-    vae = AutoencoderKL.from_pretrained(prms.hf_url, subfolder="vae", use_safetensors=True)
-    vae = vae.to(device=templates.device, dtype=templates.dtype)
-
-    # Create linear features
-    g = torch.Generator(device=templates.device).manual_seed(prms.seed_mat)
-    template_dim = int(torch.prod(torch.tensor(templates.shape[1:])))
-    mat_latent = torch.randn(
-        (prms.n_features, prms.dim_feature, template_dim),
-        generator=g,
-        device=templates.device,
-        dtype=templates.dtype
-    )
-    mat_latent_inv = torch.linalg.pinv(mat_latent)
-    # Flatten if necessary 
-    if len(templates.shape[1:]) > 1 :
-        latent_fn = lambda x: torch.einsum("nld,bd->bnl", mat_latent, x.flatten(start_dim=1))
-        latent_inv_fn = lambda x: torch.einsum("ndl,bnl->bd", mat_latent_inv, x).reshape(templates.shape)
-    else:
-        latent_fn = lambda x: torch.einsum("nld,bd->bl", mat_latent, x),  
-        latent_inv_fn = lambda x: torch.einsum("bdl,bnl->bnd", mat_latent_inv, x)
-     
-    vf = LinearGuidanceVF(
-        **kwargs_filtered,
-        template=templates,
-        latent=latent_fn,
-        latent_inv=latent_inv_fn,
-    )
-
-    # Filter kwargs
-    kwargs_filtered = {
-        k: v for k, v in prms.to_dict().items()
-        if k not in ("type_latent", "type_eval", "template_path", "n_features", "dim_feature", "seed_mat", "T", "hf_url") and v is not None
-            }
-    # Create attention 
-    means_attention = vf.latent(templates).flatten(0, 1) #(N, D) -> (N, F, L) -> (N * F, L)
-    std_attention =  vf.v_0
-    weights_mixture = torch.ones(templates.shape[0]) / templates.shape[0]
-    weights_mixture = weights_mixture.to(device=vf.device)
-                
-    vf_linear.attention = AttentionMixture(
-        means_attention,
-        std_attention,
-        weights_mixture
-    )
-
-    kwargs_filtered = {
-        k: v
-        for k, v in prms.to_dict().items()
-        if k not in ("type_latent", "type_eval", "template_path", "hf_url") and v is not None
-    }
-
-    match prms.type_eval:
-        case "numdiff":
-            VF = NumericalGuidanceVF
-        case "jvp":
-            VF = JVPGuidanceVF
-
-    vf = VF(
-            **kwargs_filtered,
-            template=templates,
-            latent = lambda x : vf_linear.latent(vae.encode(x).latent_dist.sample()),
-            latent_inv = lambda x: vae.decode(vf_linear.latent_inv(x)).sample
-    )
-
-
 # VF Builders
 class BuilderVFBase:
     @classmethod
@@ -548,7 +380,7 @@ class BuilderVFBase:
     def _common_setup(cls, prms, templates, extra_exclusions=None):
         """Shared initialization logic"""
 
-        exclusions = {"type_latent", "template_path", "hf_url", "type_eval"}
+        exclusions = {"type_latent", "template_path", "type_eval"}
 
         if extra_exclusions:
             exclusions.update(extra_exclusions)
@@ -564,7 +396,133 @@ class BuilderPixelVF(BuilderVFBase):
         kwargs, templates = cls._common_setup(prms, templates)
         return PixelGuidanceVF(**kwargs, templates=templates)
 
-def create_vf(prms: ConfigGuidanceVF, templates):
+class BuilderLinearVF(BuilderVFBase):
+    @classmethod
+    def _create_mappings(cls, prms, templates):
+        """Create the matrix representation linear mapping and its pseudoinverse"""
+        g = torch.Generator(device=templates.device).manual_seed(prms.seed_mat)
+        template_dim = int(torch.prod(torch.tensor(templates.shape[1:])))
+        mat_latent = torch.randn(
+            (prms.n_features, prms.dim_feature, template_dim),
+            generator=g,
+            device=templates.device,
+            dtype=templates.dtype
+        )
+        mat_latent_inv = torch.linalg.pinv(mat_latent)
+
+        return mat_latent, mat_latent_inv
+
+    @classmethod
+    def create(cls, prms, templates):
+        kwargs, templates = cls._common_setup(prms, templates,
+                                              extra_exclusions = ("n_features", "dim_feature", "seed_mat", "T"))
+        # Initialize mapping
+        mat_latent, mat_latent_inv = cls._create_mappings(prms, templates)
+
+        n_templates = templates.shape[0] 
+        def latent_fn(x): 
+            mat_latent_inv = torch.repeat_interleave(mat_latent, dim=0, repeats=n_templates)
+            return torch.einsum("NLD, BD -> BNL", mat_latent, x)
+        def latent_inv_fn(x):
+            mat_latent_inv_stacked = torch.repeat_interleave(mat_latent_inv, dim=0, repeats=n_templates)
+            # (F * T, L, D), (B, F * T, L) -> (B, F*T, D)
+            return torch.einsum("NDL ,BNL ->BND", mat_latent_inv_stacked, x)
+
+        # If templates dim is not flattend make sure it is flattend before applying linear transformations
+        if len(templates.shape[1:]) > 1:
+            _orig_latent_fn = latent_fn
+            latent_fn = lambda x: _orig_latent_fn(x.flatten(start_dim=1))
+            _orig_latent_inv_fn = latent_inv_fn
+            latent_inv_fn = lambda x : _orig_latent_inv_fn(x).reshape(-1, *templates.shape[1:])
+            
+
+        # Attention mechanism
+        means_attention = latent_fn(templates).flatten(start_dim=0, end_dim=1)
+        std_attention =  .....
+        weights_mixture = torch.ones(n_templates * templates.shape[0]) / n_templates * templates.shape[0]
+        weights_mixture = weights_mixture.to(device=prms.device)
+        
+        # Assign to instance not class
+        vf.attention = AttentionMixture(
+            means_attention,
+            std_attention,
+            weights_mixture
+        )
+
+        vf = LinearGuidanceVF(
+            **kwargs,
+            templates=templates,
+            latent=latent_fn,
+            latent_inv=latent_inv_fn,
+            attention = attention
+        )
+
+        return vf
+
+        if templates.shape[0] > 1:
+            # Calculate attention parameters
+            #TODO : DOES THIS WORK FOR DIFFERNET V_0s
+            means_attention = vf.latent(templates).flatten(0, 1) #(N, D) -> (N, F, L) -> (N * F, L)
+            std_attention =  vf.v_0 = 
+            weights_mixture = torch.ones(templates.shape[0]) / templates.shape[0]
+            weights_mixture = weights_mixture.to(device=vf.device)
+            
+            # Assign to instance not class
+            vf.attention = AttentionMixture(
+                means_attention,
+                std_attention,
+                weights_mixture
+            )
+
+class BuilderHuggingfaceVF(BuilderVFBase):
+    @classmethod
+    def create(cls, prms, templates):
+        kwags, templates = cls._common_setup(prms, templates, 
+                                             extra_exclusions="hf_url")
+        match prms.type_eval:
+            case "numdiff":
+                VF = NumericalGuidanceVF
+            case "jvp":
+                VF = JVPGuidanceVF
+
+        from diffusers import AutoencoderKL
+        vae = AutoencoderKL.from_pretrained(prms.hf_url, subfolder="vae", use_safetensors=True)
+        vae = vae.to(device=templates.device, dtype=templates.dtype)
+
+        vf = VF(
+                **kwargs_filtered,
+                templates=templates,
+                latent = lambda x : vae.encode(x).latent_dist.sample(),
+                latent_inv = lambda x: vae.decode(x).sample
+        )
+
+        return vf 
+
+class BuilderLinearHFVF(BuilderVFBase):
+    @classmethod
+    def create(cls, prms, templates):
+        kwags, templates = cls._common_setup(prms, templates, 
+                                             extra_exclusions="hf_url")
+        match prms.type_eval:
+            case "numdiff":
+                VF = NumericalGuidanceVF
+            case "jvp":
+                VF = JVPGuidanceVF
+
+        from diffusers import AutoencoderKL
+        vae = AutoencoderKL.from_pretrained(prms.hf_url, subfolder="vae", use_safetensors=True)
+        vae = vae.to(device=templates.device, dtype=templates.dtype)
+
+
+        vf = VF(
+                **kwargs_filtered,
+                templates=templates,
+                latent = lambda x : linear_map(vae.encode(x).latent_dist.sample()),
+                latent_inv = lambda x: vae.decode(linear_inv_map(x)).sample
+        )
+
+
+def create_vf(prms: ConfigGuidanceVF, templates, verbose=True):
     if verbose: 
         print(f"\n{prms}")
         print(f"\ntemplates_shape \t= {tuple(templates.shape)}")
@@ -575,16 +533,20 @@ def create_vf(prms: ConfigGuidanceVF, templates):
     match prms.type_latent:
         case "pixel":
             vf = BuilderPixelVF.create(prms, templates)
+        case "linear":
+            vf = BuilderLinearVF.create(prms, templates)
+        case "hf":
+            vf = BuilderHuggingfaceVF.create(prms, templates)
+        case "hf-linear":
+            pass
 
     return vf
-
-
 
 
 ### SCHEDULER ###
 
 def load_templates(cnfg : ConfigSimulation, for_torch=True):
-    # Load template data
+    # Load templates data
     if isinstance(cnfg.guidance_vf, type(None)):
         return np.array([0])
     elif os.path.isfile(cnfg.guidance_vf.template_path):
@@ -625,7 +587,6 @@ def schedule_diffusion(cnfg : ConfigSimulation):
     start_time = time.time()
     for idx, cnfg_split in enumerate(cnfg.split()):
         templates = load_templates(cnfg_split)
-        # vf_guide = create_guidance_vf(cnfg_split.guidance_vf, templates)
         vf_guide = create_vf(cnfg_split.guidance_vf, templates)
         xs, ts = generate_image_grid(net, vf_guide, cnfg.seed, cnfg.device,
                                      **cnfg.diffusion.to_dict())

@@ -8,7 +8,7 @@ import torch
 import pickle 
 from einops import rearrange, repeat
 from dataclasses import replace
-from mylib.diffusion import schedule_diffusion, ConfigSimulation, ConfigDiffusion, ConfigGuidanceVF, load_templates, create_guidance_vf
+from mylib.diffusion import schedule_diffusion, ConfigSimulation, ConfigDiffusion, ConfigGuidanceVF, load_templates, create_vf
 from mylib.visual import visualize_from_path
 import math 
 
@@ -18,7 +18,7 @@ VF_PIXEL= ConfigGuidanceVF(
         type_latent = "pixel",
         decay_rate = 1.0,
         v_0 = [40, 20, 10 , 5],
-        scale_template_score = 1.0,
+        scale = 1.0,
         template_path = "data/input/cat.jpg",
         )
 
@@ -26,7 +26,7 @@ VF_PIXEL_SCALE_AND_V0 = ConfigGuidanceVF(
         type_latent = "pixel",
         decay_rate = 1.0,
         v_0 = [15, 30],
-        scale_template_score = [0.1, 0.5],
+        scale = [0.1, 0.5],
         template_path = "data/input/cat.jpg",
         )
 
@@ -35,8 +35,8 @@ VF_VAE_JVP = ConfigGuidanceVF(
         type_eval = "jvp",
         hf_url = "stabilityai/sd-turbo",
         decay_rate = 1.0,
-        v_0 = [40, 20, 10 , 5],
-        scale_template_score = 1.0,
+        v_0 = [40, 20, 10, 5],
+        scale = 1.0,
         template_path = "data/input/cat.jpg",
         )
 
@@ -44,10 +44,10 @@ VF_LINEAR = ConfigGuidanceVF(
         type_latent = "linear",
         decay_rate = 1.0,
         v_0 = [45, 30, 15],
-        scale_template_score = 1.0,
+        scale = 1.0,
         template_path = "data/input/cat.jpg",
         seed_mat = 0,
-        n_features = 4,
+        n_features = 3,
         dim_feature = 64,
         T = 1.0,
         flatten_input=True,
@@ -114,6 +114,7 @@ def main(visualize=False):
         plt.show()
 
 if __name__ == "__main__":
+    cnfg_vf = VF_LINEAR(templtate_path="data/input/", v_0=(40, 40))
     cnfg_sim = ConfigSimulation( 
                 network_pkl     = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl', 
                 device          = "cuda" if torch.cuda.is_available() else "cpu",
@@ -126,8 +127,8 @@ if __name__ == "__main__":
     templates = load_templates(cnfg_sim)
     print(templates.shape)
 
-    vf = create_guidance_vf(cnfg_sim.guidance_vf.split()[0], templates)
-    x =  torch.rand(8, 3, 64, 64)
+    vf = create_vf(cnfg_sim.guidance_vf.split()[0], templates)
+    x =  torch.rand(8, 3, 64, 64).to(device=vf.device, dtype=vf.dtype)
     t = torch.tensor(40, device=vf.device, dtype=vf.dtype)
     
     vf(x, t)
