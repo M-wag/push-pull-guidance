@@ -204,6 +204,7 @@ class ConfigSimulation(Config):
     guidance_vf:    ConfigGuidanceVF 
     diffusion:      ConfigDiffusion 
 
+
 ### Guidance Vector Fields
 class AttentionMixture:
     def __init__(self, means, stds, weights_mixture):
@@ -245,7 +246,6 @@ class AttentionMixture:
         return weights_attn
 
 
-
 class GuidanceVF:
     def flat(self, x):
         return rearrange(x, "... c h w -> ... (c h w)")
@@ -253,12 +253,12 @@ class GuidanceVF:
     def unflat(self, x):
         return rearrange(x, "... (c h w) -> ... c h w", c=self.template.shape[-3], h=self.template.shape[-2], w=self.template.shape[-1])
 
-    def __init__(self, template, scale, v_0, decay_rate, latent, latent_inv, *, flatten_input=False, threshold_weight=None,
+    def __init__(self, templates, scale, v_0, decay_rate, latent, latent_inv, *, flatten_input=False, threshold_weight=None,
                  threshold_time_min=None,
                  threshold_time_max=None):
 
         # Core parameters
-        self.template = template
+        self.template = templates
         self.scale = scale
         self.v_0 = v_0
         self.decay_rate = decay_rate
@@ -271,12 +271,12 @@ class GuidanceVF:
         self.threshold_time_max = threshold_time_max
 
         # Pre-process template 
-        self.features_template = latent(self.flat(template)) if flatten_input else latent(template)
+        self.features_template = latent(self.flat(self.template)) if flatten_input else latent(self.template)
         if self.features_template.shape[0] > 1:
             self.features_template = self.features_template.flatten(0, 1)
         # Device and type tracking
-        self.device = template.device
-        self.dtype = template.dtype
+        self.device = self.template.device
+        self.dtype = self.template.dtype
         # For testing
         self.history_weight = []
         self.history_apply_score = []
@@ -537,6 +537,43 @@ def create_linear_vae():
     )
 
 
+# VF Builders
+class BuilderVFBase:
+    @classmethod
+    def create(cls, prms : ConfigGuidanceVF, templates):
+        """ Factory method to be implemented by subclasses"""
+        raise NotImplementedError
+    
+    @classmethod 
+    def _common_setup(cls, prms, templates, extra_exclusions=None):
+        """Shared initialization logic"""
+
+        exclusions = {"type_latent", "template_path", "hf_url", "type_eval"}
+
+        if extra_exclusions:
+            exclusions.update(extra_exclusions)
+            
+        kwargs = {k: v for k, v in prms.to_dict().items() 
+                if k not in exclusions and v is not None}
+
+        return kwargs, templates
+
+class BuilderPixelVF(BuilderVFBase):
+    @classmethod
+    def create(cls, prms, templates):
+        kwargs, templates = cls._common_setup(prms, templates)
+        return PixelGuidanceVF(**kwargs, templates=templates)
+
+def create_vf(prms: ConfigGuidanceVF, templates):
+    print(prms.type_latent)
+    match prms.type_latent:
+        case "pixel":
+            vf = BuilderPixelVF.create(prms, templates)
+
+    return vf
+
+
+
 
 ### SCHEDULER ###
 
@@ -582,7 +619,8 @@ def schedule_diffusion(cnfg : ConfigSimulation):
     start_time = time.time()
     for idx, cnfg_split in enumerate(cnfg.split()):
         templates = load_templates(cnfg_split)
-        vf_guide = create_guidance_vf(cnfg_split.guidance_vf, templates)
+        # vf_guide = create_guidance_vf(cnfg_split.guidance_vf, templates)
+        vf_guide = create_vf(cnfg_split.guidance_vf, templates)
         xs, ts = generate_image_grid(net, vf_guide, cnfg.seed, cnfg.device,
                                      **cnfg.diffusion.to_dict())
         raw_data[idx] = (xs * 127.5 + 128) / 255
