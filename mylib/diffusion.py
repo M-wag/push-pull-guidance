@@ -318,6 +318,9 @@ class GuidanceVF:
     def _dirac_score(self, x, t):
         raise NotImplementedError("Subclasses must implement this method")
 
+    def _dirac_score_latent(self, features, t):
+        raise NotImplementedError("Subclasses must implement this method")
+
 class PixelGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
         # Override latent mappings while passing through other params
@@ -351,13 +354,19 @@ class JVPGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
         # Override latent mappings while passing through other params
         super().__init__(*args, **kwargs)
+
     def _dirac_score(self, x, t):
         with torch.no_grad():
             features = self.latent(x)
+            # TODO : THESE ARE NOT DIRAC SCORES 
             dirac_score_latent =  -(self.features_template - features) / t
+            # tangent = self._dirac_score_latent(features, t)
+            
             # Jacobian vector product 
-            _, dirac_score = jvp(self.latent_inv, features, dirac_score_latent, strict=False)
+            _, dirac_score = jvp(self.latent_inv, features, tangent, strict=False)
         return dirac_score
+
+
 
 class NumericalGuidanceVF(GuidanceVF):
     def __init__(self, *args, epsilon=1e-3, **kwargs):
@@ -367,18 +376,13 @@ class NumericalGuidanceVF(GuidanceVF):
     def _dirac_score(self, x, t):
         with torch.no_grad():
             features = self.latent(x)
-            # TODO : change  
-            if self.features_template.shape[0] > 1:
-                features_copied = torch.repeat_interleave(features, dim=1, repeats=self.templates.shape[0])
-
-            else:
-                dirac_score_latent = -(self.features_template - features) / t
             # Numerical differentiation
-            perturbed_features = features + self.epsilon * dirac_score_latent
+            perturbed_features = features + self.epsilon * self._dirac_score_latent(features , t)
             f_perturbed = self.latent_inv(perturbed_features)
             f_original = self.latent_inv(features)
         
         return (f_perturbed - f_original) / self.epsilon  
+
 
 # VF Builders
 class BuilderVFBase:
@@ -514,13 +518,18 @@ class BuilderLinearHFVF(BuilderVFBase):
 
         from diffusers import AutoencoderKL
         vae = AutoencoderKL.from_pretrained(prms.hf_url, subfolder="vae", use_safetensors=True)
+        vae = vae.to(device=templates.device, dtype=templates.dtype)
 
         vf = VF(
                 **kwargs_filtered,
                 templates=templates,
-                latent = lambda x : linear_map(vae.encode(x).latent_dist.sample()),
-                latent_inv = lambda x: vae.decode(linear_inv_map(x)).sample
+                latent = lambda x : vae.encode(x).latent_dist.sample(),
+                latent_inv = lambda x: vae.decode(x).sample
         )
+
+        vf._dirac_score_latent = BuilderLinearVF(prms, vf.features_template)
+        
+        return vf
 
 
 def create_vf(prms: ConfigGuidanceVF, templates, verbose=True):

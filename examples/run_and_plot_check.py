@@ -55,6 +55,20 @@ VF_LINEAR = ConfigGuidanceVF(
         T = 1.0,
         )
 
+VF_LINEAR_HF = ConfigGuidanceVF(
+        type_latent = "hf-linear",
+        type_eval = "jvp",
+        hf_url = "stabilityai/sd-turbo",
+        decay_rate = 1.0,
+        v_0 = [45, 30, 15],
+        scale = 0.1,
+        template_path = "data/input/",
+        seed_mat = 0,
+        n_features = 3,
+        dim_feature = 64,
+        T = 1.0,
+        )
+
 def run_no_guidance(cnfg, path_exp):
     # Pass to scheduler
     raw_data = schedule_diffusion(cnfg(guidance_vf=None))
