@@ -142,7 +142,7 @@ def visualize_from_path(path_exp, title=None, labels=None):
     data_og = rearrange(data_og, "p1 p2 b h w c -> (b p1) p2 1 h w c")
 
     # Load template images
-    template = load_templates(cnfg_sim, for_torch=False)
+    template = rearrange(load_templates(cnfg_sim, for_torch=False), "n c h w -> 1 c h (n w)")
 
     # Prepare dictionary for plotting
     data_dict = {

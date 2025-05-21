@@ -21,7 +21,6 @@ from typing import List, Any, Literal
 import torch
 import torch.nn.functional as F
 from einops import rearrange
-from jaxtyping import Float
 from torch import Tensor
 
 #----------------------------------------------------------------------------
