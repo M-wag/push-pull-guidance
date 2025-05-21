@@ -1,5 +1,5 @@
 # Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-#
+#dirac_score
 # This work is licensed under a Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
 # You should have received a copy of the license along with this
@@ -218,7 +218,7 @@ class AttentionMixture:
         if not torch.isclose(torch.sum(weights_mixture), torch.tensor(1.0, dtype=weights_mixture.dtype), atol=1e-6):
             raise ValueError(f"weights_mixture must sum to 1.0, got sum={torch.sum(weights_mixture).item():.4f}")
 
-    def __call__(self, x, T=1.0):
+    def __call__(self, x, T=1.0, passing_diff=False):
         """
         Args:
             x: Input tensor of shape (B, D) where B is batch size
@@ -226,11 +226,16 @@ class AttentionMixture:
         Returns:
             weights_attention : Attention assocciated with gradient of log-density of mixture model, shape (B, D)
         """
-        B, D = x.shape
-        N, _ = self.means.shape
+        if passing_diff:
+            diff = x 
+        else:
+            B, D = x.shape
+            N, _ = self.means.shape
 
-        # Compute squared distances between x and all means (B, N)
-        diff = self.means.unsqueeze(0) - x.unsqueeze(1)  # (1, N, D) - (B, 1, D) → (B, N, D)
+            # Compute squared distances between x and all means (B, N)
+            diff = self.means.unsqueeze(0) - x.unsqueeze(1)  # (1, N, D) - (B, 1, D) → (B, N, D)
+
+
         mahalanobis = (diff ** 2).sum(dim=-1) / self.stds.unsqueeze(0)  # (B, N)
         energy_mahalana = -0.5 * mahalanobis  ** 2  # (B,N)
 
@@ -253,9 +258,13 @@ class GuidanceVF:
     def unflat(self, x):
         return rearrange(x, "... (c h w) -> ... c h w", c=self.templates.shape[-3], h=self.templates.shape[-2], w=self.templates.shape[-1])
 
-    def __init__(self, templates, scale, v_0, decay_rate, latent, latent_inv, *, flatten_input=False, threshold_weight=None,
+    def __init__(self, templates, scale, v_0, decay_rate, latent, latent_inv, *, 
+                 flatten_input=False, 
+                 threshold_weight=None,
                  threshold_time_min=None,
-                 threshold_time_max=None):
+                 threshold_time_max=None,
+                 attention=None,
+                 ):
 
         # Core parameters
         self.templates = templates
@@ -269,6 +278,7 @@ class GuidanceVF:
         self.threshold_weight = threshold_weight
         self.threshold_time_min = threshold_time_min
         self.threshold_time_max = threshold_time_max
+        self.attention = attention
 
         # Pre-process templates 
         self.features_template = latent(self.flat(self.templates)) if flatten_input else latent(self.templates)
@@ -337,9 +347,10 @@ class LinearGuidanceVF(GuidanceVF):
         # (B, F*T, D) 
         recons = self.latent_inv(diff_features)
         # (B, F * T)
-        attention = self.attention(x)
+        attention = self.attention(diff_features, passing_diff=True)
         # (B, D) = (B, F * T) o (B, F * T, D) 
-        dirac_score = torch.einsum("BN, BND -> BD", attention, recons)
+        dirac_score = torch.einsum("BN, BN... -> B...", attention, recons)
+        return dirac_score
 
 class JVPGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
@@ -421,29 +432,30 @@ class BuilderLinearVF(BuilderVFBase):
 
         n_templates = templates.shape[0] 
         def latent_fn(x): 
-            mat_latent_inv = torch.repeat_interleave(mat_latent, dim=0, repeats=n_templates)
             return torch.einsum("NLD, BD -> BNL", mat_latent, x)
+
+        mat_latent_inv_stacked = torch.repeat_interleave(mat_latent_inv, dim=0, repeats=n_templates)
         def latent_inv_fn(x):
-            mat_latent_inv_stacked = torch.repeat_interleave(mat_latent_inv, dim=0, repeats=n_templates)
             # (F * T, L, D), (B, F * T, L) -> (B, F*T, D)
-            return torch.einsum("NDL ,BNL ->BND", mat_latent_inv_stacked, x)
+            return torch.einsum("NDL, BNL -> BND", mat_latent_inv_stacked, x)
 
         # If templates dim is not flattend make sure it is flattend before applying linear transformations
         if len(templates.shape[1:]) > 1:
             _orig_latent_fn = latent_fn
             latent_fn = lambda x: _orig_latent_fn(x.flatten(start_dim=1))
             _orig_latent_inv_fn = latent_inv_fn
-            latent_inv_fn = lambda x : _orig_latent_inv_fn(x).reshape(-1, *templates.shape[1:])
+            latent_inv_fn = lambda x : torch.unflatten(_orig_latent_inv_fn(x), -1, templates.shape[1:])
             
 
         # Attention mechanism
         means_attention = latent_fn(templates).flatten(start_dim=0, end_dim=1)
-        std_attention =  .....
-        weights_mixture = torch.ones(n_templates * templates.shape[0]) / n_templates * templates.shape[0]
-        weights_mixture = weights_mixture.to(device=prms.device)
+        std_attention =  prms.v_0 * torch.ones(n_templates * prms.n_features,
+                                               device=templates.device, 
+                                               dtype=templates.dtype)
+        weights_mixture = (torch.ones(n_templates * prms.n_features) / (n_templates * prms.n_features)).to(device=templates.device)
         
         # Assign to instance not class
-        vf.attention = AttentionMixture(
+        attention = AttentionMixture(
             means_attention,
             std_attention,
             weights_mixture
@@ -454,25 +466,10 @@ class BuilderLinearVF(BuilderVFBase):
             templates=templates,
             latent=latent_fn,
             latent_inv=latent_inv_fn,
-            attention = attention
+            attention=attention
         )
 
         return vf
-
-        if templates.shape[0] > 1:
-            # Calculate attention parameters
-            #TODO : DOES THIS WORK FOR DIFFERNET V_0s
-            means_attention = vf.latent(templates).flatten(0, 1) #(N, D) -> (N, F, L) -> (N * F, L)
-            std_attention =  vf.v_0 = 
-            weights_mixture = torch.ones(templates.shape[0]) / templates.shape[0]
-            weights_mixture = weights_mixture.to(device=vf.device)
-            
-            # Assign to instance not class
-            vf.attention = AttentionMixture(
-                means_attention,
-                std_attention,
-                weights_mixture
-            )
 
 class BuilderHuggingfaceVF(BuilderVFBase):
     @classmethod

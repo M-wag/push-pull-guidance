@@ -43,7 +43,17 @@ VF_VAE_JVP = ConfigGuidanceVF(
 
 VF_VAE_NUMDIFF = VF_VAE_JVP(type_eval="numdiff")
 
-
+VF_LINEAR = ConfigGuidanceVF(
+        type_latent = "linear",
+        decay_rate = 1.0,
+        v_0 = [45, 30, 15],
+        scale = 1.0,
+        template_path = "data/input/cat.jpg",
+        seed_mat = 0,
+        n_features = 3,
+        dim_feature = 64,
+        T = 1.0,
+        )
 
 def run_no_guidance(cnfg, path_exp):
     # Pass to scheduler
@@ -60,9 +70,10 @@ if __name__ == "__main__":
     exp_name = "run_and_plot_check"
 
     guidance_configs = [
-        VF_PIXEL_SCALE_AND_V0,
-        VF_VAE_JVP,
-        VF_VAE_NUMDIFF,
+        VF_LINEAR,
+        # VF_PIXEL_SCALE_AND_V0,
+        # VF_VAE_JVP,
+        # VF_VAE_NUMDIFF,
     ]
 
     for i, guidance_vf in enumerate(guidance_configs):

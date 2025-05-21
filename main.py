@@ -50,7 +50,6 @@ VF_LINEAR = ConfigGuidanceVF(
         n_features = 3,
         dim_feature = 64,
         T = 1.0,
-        flatten_input=True,
         )
 
 VF_VAE_NUMDIFF = VF_VAE_JVP(type_eval="numdiff")
@@ -114,7 +113,6 @@ def main(visualize=False):
         plt.show()
 
 if __name__ == "__main__":
-    cnfg_vf = VF_LINEAR(templtate_path="data/input/", v_0=(40, 40))
     cnfg_sim = ConfigSimulation( 
                 network_pkl     = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl', 
                 device          = "cuda" if torch.cuda.is_available() else "cpu",
