@@ -370,7 +370,7 @@ class NumericalGuidanceVF(GuidanceVF):
             # TODO : change  
             if self.features_template.shape[0] > 1:
                 features_copied = torch.repeat_interleave(features, dim=1, repeats=self.templates.shape[0])
-                dirac_score_latent = -(self.features_template - features) / t
+
             else:
                 dirac_score_latent = -(self.features_template - features) / t
             # Numerical differentiation
@@ -463,6 +463,8 @@ class BuilderLinearVF(BuilderVFBase):
             _orig_latent_inv_fn = latent_inv_fn
             latent_inv_fn = lambda x : torch.unflatten(_orig_latent_inv_fn(x), -1, templates.shape[1:])
             
+        # Attention mechanism
+        attention_fn = cls._create_attention(prms, templates, latent_fn)
 
         vf = LinearGuidanceVF(
             **kwargs,
@@ -472,8 +474,6 @@ class BuilderLinearVF(BuilderVFBase):
             attention=attention_fn
         )
         
-        # Attention mechanism
-        attention_fn = cls._create_attention(prms, templates, latent_fn)
 
         return vf
 
