@@ -46,12 +46,12 @@ VF_VAE_NUMDIFF = VF_VAE_JVP(type_eval="numdiff")
 VF_LINEAR = ConfigGuidanceVF(
         type_latent = "linear",
         decay_rate = 1.0,
-        v_0 = [45, 30, 15],
+        v_0 = [45, 30, 25, 20, 15],
         scale = 1.0,
         template_path = "data/input/",
         seed_mat = 0,
-        n_features = 3,
-        dim_feature = 64,
+        n_features = 128,
+        dim_feature = 32,
         T = 1.0,
         )
 
@@ -61,11 +61,11 @@ VF_LINEAR_HF = ConfigGuidanceVF(
         hf_url = "stabilityai/sd-turbo",
         decay_rate = 1.0,
         v_0 = [45, 30, 15],
-        scale = 0.1,
+        scale = 1.0,
         template_path = "data/input/",
         seed_mat = 0,
-        n_features = 3,
-        dim_feature = 16,
+        n_features = 32,
+        dim_feature = 64,
         T = 1.0,
         )
 
@@ -84,7 +84,7 @@ if __name__ == "__main__":
     exp_name = "run_and_plot_check"
 
     guidance_configs = [
-        VF_LINEAR
+        VF_LINEAR_HF(threshold_weight=0.1, threshold_time_max=60)
     ]
 
     for i, guidance_vf in enumerate(guidance_configs):
@@ -93,8 +93,8 @@ if __name__ == "__main__":
             device        = "cuda" if torch.cuda.is_available() else "cpu",
             seed          = 0,
             input_shape   = (3, 64, 64),
-            guidance_vf   = guidance_vf(scale=10.0, T=100.0),
-            diffusion     = ConfigDiffusion(num_steps=24),
+            guidance_vf   = guidance_vf,
+            diffusion     = ConfigDiffusion(num_steps=16),
         )
 
         # Set up the per-experiment directory

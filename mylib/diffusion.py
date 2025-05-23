@@ -276,8 +276,6 @@ class GuidanceVF:
 
         # Pre-process templates 
         self.features_template = latent(self.flat(self.templates)) if flatten_input else latent(self.templates)
-        if self.features_template.shape[0] > 1:
-            self.features_template = self.features_template.flatten(0, 1)
         # Device and type tracking
         self.device = self.templates.device
         self.dtype = self.templates.dtype
@@ -329,8 +327,11 @@ class PixelGuidanceVF(GuidanceVF):
 
 class LinearGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
-        # Override latent mappings while passing through other params
         super().__init__(*args, **kwargs)
+        if self.features_template.shape[0] > 1:
+            # (N_u, N_f, L) -> (N_u * N_f, L) 
+            # TODO: how does this behave in 1-D case
+            self.features_template = self.features_template.flatten(0, 1)
 
     def _dirac_score(self, x, t):
         # (B, F, L)
@@ -345,7 +346,6 @@ class LinearGuidanceVF(GuidanceVF):
         diff_features_normalized = (diff_features - torch.mean(diff_features, dim=1, keepdim=True)) / torch.std(diff_features, dim=1,keepdim=True)
         attention = self.attention(diff_features_normalized, passing_diff=True)
         self.history_weight.append(attention)
-        print(attention)
         # (B, D) = (B, F * T) o (B, F * T, D) 
         # dirac_score =  -1/t * torch.einsum("BN, BN... -> B...", attention, recons)
         dirac_score =  -1/t  * torch.einsum("BN, BN... -> B...", attention, recons)
@@ -454,7 +454,6 @@ class BuilderLinearVF(BuilderVFBase):
 
         n_templates = templates.shape[0] 
         def latent_fn(x): 
-
             return torch.einsum("NLD, BD -> BNL", mat_latent, x)
 
         mat_latent_inv_stacked = torch.repeat_interleave(mat_latent_inv, dim=0, repeats=n_templates)
@@ -465,10 +464,12 @@ class BuilderLinearVF(BuilderVFBase):
         # If templates dim is not flattend make sure it is flattend before applying linear transformations
         if len(templates.shape[1:]) > 1:
             _orig_latent_fn = latent_fn
-            latent_fn = lambda x: _orig_latent_fn(x.flatten(start_dim=1))
             _orig_latent_inv_fn = latent_inv_fn
-            latent_inv_fn = lambda x : torch.unflatten(_orig_latent_inv_fn(x), -1, templates.shape[1:])
-            
+            def latent_fn(x):
+                return _orig_latent_fn(x.flatten(start_dim=1))
+            def latent_inv_fn(x):
+                return torch.unflatten(_orig_latent_inv_fn(x), -1, templates.shape[1:])
+
         # Attention mechanism
         attention_fn = cls._create_attention(prms, templates, latent_fn)
 
@@ -479,7 +480,6 @@ class BuilderLinearVF(BuilderVFBase):
             latent_inv=latent_inv_fn,
             attention=attention_fn
         )
-        
 
         return vf
 
@@ -528,8 +528,10 @@ class BuilderLinearHFVF(BuilderVFBase):
                 latent = lambda x : vae.encode(x).latent_dist.sample(),
                 latent_inv = lambda x: vae.decode(x).sample
         )
+        prms_linear = prms(hf_url=None, scale=10.0) 
 
-        vf._dirac_score_latent = BuilderLinearVF.create(prms(hf_url=None), vf.features_template)
+        # TODO: is this dirac score or just score
+        vf._dirac_score_latent = BuilderLinearVF.create(prms_linear, vf.features_template)
         
         return vf
 
