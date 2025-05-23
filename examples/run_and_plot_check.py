@@ -84,11 +84,7 @@ if __name__ == "__main__":
     exp_name = "run_and_plot_check"
 
     guidance_configs = [
-        # VF_LINEAR_HF,
         VF_LINEAR
-        # VF_PIXEL_SCALE_AND_V0,
-        # VF_VAE_JVP,
-        # VF_VAE_NUMDIFF,
     ]
 
     for i, guidance_vf in enumerate(guidance_configs):

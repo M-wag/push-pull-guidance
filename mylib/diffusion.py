@@ -284,6 +284,7 @@ class GuidanceVF:
         # For testing
         self.history_weight = []
         self.history_apply_score = []
+        self.history_attention = []
         
     def __call__(self, x, t):
         x = self.flat(x) if self.flatten_input else x
@@ -341,7 +342,9 @@ class LinearGuidanceVF(GuidanceVF):
         # (B, F*T, D) 
         recons = self.latent_inv(diff_features)
         # (B, F * T)
-        attention = self.attention(diff_features, passing_diff=True)
+        diff_features_normalized = (diff_features - torch.mean(diff_features, dim=1, keepdim=True)) / torch.std(diff_features, dim=1,keepdim=True)
+        attention = self.attention(diff_features_normalized, passing_diff=True)
+        self.history_weight.append(attention)
         print(attention)
         # (B, D) = (B, F * T) o (B, F * T, D) 
         # dirac_score =  -1/t * torch.einsum("BN, BN... -> B...", attention, recons)
