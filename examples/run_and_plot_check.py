@@ -47,7 +47,7 @@ VF_LINEAR = ConfigGuidanceVF(
         type_latent = "linear",
         decay_rate = 1.0,
         v_0 = [45, 30, 15],
-        scale = 0.1,
+        scale = 1.0,
         template_path = "data/input/",
         seed_mat = 0,
         n_features = 3,
@@ -57,7 +57,7 @@ VF_LINEAR = ConfigGuidanceVF(
 
 VF_LINEAR_HF = ConfigGuidanceVF(
         type_latent = "hf-linear",
-        type_eval = "jvp",
+        type_eval = "numdiff",
         hf_url = "stabilityai/sd-turbo",
         decay_rate = 1.0,
         v_0 = [45, 30, 15],
@@ -65,7 +65,7 @@ VF_LINEAR_HF = ConfigGuidanceVF(
         template_path = "data/input/",
         seed_mat = 0,
         n_features = 3,
-        dim_feature = 64,
+        dim_feature = 16,
         T = 1.0,
         )
 
@@ -84,7 +84,8 @@ if __name__ == "__main__":
     exp_name = "run_and_plot_check"
 
     guidance_configs = [
-        VF_LINEAR,
+        # VF_LINEAR_HF,
+        VF_LINEAR
         # VF_PIXEL_SCALE_AND_V0,
         # VF_VAE_JVP,
         # VF_VAE_NUMDIFF,
@@ -96,7 +97,7 @@ if __name__ == "__main__":
             device        = "cuda" if torch.cuda.is_available() else "cpu",
             seed          = 0,
             input_shape   = (3, 64, 64),
-            guidance_vf   = guidance_vf,
+            guidance_vf   = guidance_vf(scale=10.0, T=100.0),
             diffusion     = ConfigDiffusion(num_steps=24),
         )
 

@@ -159,7 +159,7 @@ class ConfigGuidanceVF(Config):
     type_latent:            Literal["pixel", "linear", "hf"] = None
     type_eval:              Literal["jvp", "numdiff"] | None = None
     template_path:          str | None = None
-    scale:   float | list[float] | None  = 1.0
+    scale:                  float | list[float] | None  = 1.0
     decay_rate:             float | list[float] | None = None
     v_0:                    float | list[float] | None = None
     # Linear
@@ -300,11 +300,7 @@ class GuidanceVF:
             apply_score = False
         
         if apply_score:
-            # TODO : Should be handled by Builder
-            if self.features_template.shape[0] == 1:
-                dirac_score = self._dirac_score(x, t)
-            else:
-                dirac_score = self._dirac_score_attention(x, t)
+            dirac_score = self._dirac_score(x, t)
             score = weight * dirac_score
         else:
             score = torch.zeros_like(x)
@@ -335,7 +331,7 @@ class LinearGuidanceVF(GuidanceVF):
         # Override latent mappings while passing through other params
         super().__init__(*args, **kwargs)
 
-    def _dirac_score_attention(self, x, t):
+    def _dirac_score(self, x, t):
         # (B, F, L)
         features = self.latent(x)
         # (B, F * T, L)
@@ -346,8 +342,10 @@ class LinearGuidanceVF(GuidanceVF):
         recons = self.latent_inv(diff_features)
         # (B, F * T)
         attention = self.attention(diff_features, passing_diff=True)
+        print(attention)
         # (B, D) = (B, F * T) o (B, F * T, D) 
-        dirac_score =  -1/t * torch.einsum("BN, BN... -> B...", attention, recons)
+        # dirac_score =  -1/t * torch.einsum("BN, BN... -> B...", attention, recons)
+        dirac_score =  -1/t  * torch.einsum("BN, BN... -> B...", attention, recons)
         return dirac_score
 
 class JVPGuidanceVF(GuidanceVF):
@@ -453,6 +451,7 @@ class BuilderLinearVF(BuilderVFBase):
 
         n_templates = templates.shape[0] 
         def latent_fn(x): 
+
             return torch.einsum("NLD, BD -> BNL", mat_latent, x)
 
         mat_latent_inv_stacked = torch.repeat_interleave(mat_latent_inv, dim=0, repeats=n_templates)
@@ -484,7 +483,7 @@ class BuilderLinearVF(BuilderVFBase):
 class BuilderHuggingfaceVF(BuilderVFBase):
     @classmethod
     def create(cls, prms, templates):
-        kwags, templates = cls._common_setup(prms, templates, 
+        kwargs, templates = cls._common_setup(prms, templates, 
                                              extra_exclusions="hf_url")
         match prms.type_eval:
             case "numdiff":
@@ -497,7 +496,7 @@ class BuilderHuggingfaceVF(BuilderVFBase):
         vae = vae.to(device=templates.device, dtype=templates.dtype)
 
         vf = VF(
-                **kwargs_filtered,
+                **kwargs,
                 templates=templates,
                 latent = lambda x : vae.encode(x).latent_dist.sample(),
                 latent_inv = lambda x: vae.decode(x).sample
@@ -508,8 +507,8 @@ class BuilderHuggingfaceVF(BuilderVFBase):
 class BuilderLinearHFVF(BuilderVFBase):
     @classmethod
     def create(cls, prms, templates):
-        kwags, templates = cls._common_setup(prms, templates, 
-                                             extra_exclusions="hf_url")
+        kwargs, templates = cls._common_setup(prms, templates, 
+                                             extra_exclusions = ("n_features", "dim_feature", "seed_mat", "T", "hf_url"))
         match prms.type_eval:
             case "numdiff":
                 VF = NumericalGuidanceVF
@@ -521,13 +520,13 @@ class BuilderLinearHFVF(BuilderVFBase):
         vae = vae.to(device=templates.device, dtype=templates.dtype)
 
         vf = VF(
-                **kwargs_filtered,
+                **kwargs,
                 templates=templates,
                 latent = lambda x : vae.encode(x).latent_dist.sample(),
                 latent_inv = lambda x: vae.decode(x).sample
         )
 
-        vf._dirac_score_latent = BuilderLinearVF(prms, vf.features_template)
+        vf._dirac_score_latent = BuilderLinearVF.create(prms(hf_url=None), vf.features_template)
         
         return vf
 
@@ -548,7 +547,7 @@ def create_vf(prms: ConfigGuidanceVF, templates, verbose=True):
         case "hf":
             vf = BuilderHuggingfaceVF.create(prms, templates)
         case "hf-linear":
-            vf = BuilderHuggingfaceVF.create(prms, templates)
+            vf = BuilderLinearHFVF.create(prms, templates)
 
     return vf
 

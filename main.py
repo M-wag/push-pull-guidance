@@ -118,12 +118,10 @@ if __name__ == "__main__":
                 device          = "cuda" if torch.cuda.is_available() else "cpu",
                 seed            = 0,
                 input_shape     = (3, 64, 64),
-                # guidance_vf     = VF_LINEAR(template_path="data/input/cat.jpg"),
-                guidance_vf     = VF_LINEAR(template_path="data/input/"),
+                guidance_vf     = VF_LINEAR(template_path="data/input/")
                 diffusion       = ConfigDiffusion(num_steps=24),
     )
     templates = load_templates(cnfg_sim)
-    print(templates.shape)
 
     vf = create_vf(cnfg_sim.guidance_vf.split()[0], templates)
     x =  torch.rand(8, 3, 64, 64).to(device=vf.device, dtype=vf.dtype)
