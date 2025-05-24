@@ -328,10 +328,8 @@ class PixelGuidanceVF(GuidanceVF):
 class LinearGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        if self.features_template.shape[0] > 1:
-            # (N_u, N_f, L) -> (N_u * N_f, L) 
-            # TODO: how does this behave in 1-D case
-            self.features_template = self.features_template.flatten(0, 1)
+        # (N_u, N_f, L) -> (N_u * N_f, L) 
+        self.features_template = self.features_template.flatten(0, 1)
 
     def _dirac_score(self, x, t):
         # (B, F, L)
