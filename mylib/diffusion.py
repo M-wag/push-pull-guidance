@@ -285,7 +285,7 @@ class GuidanceVF:
         self.history_apply_score = []
         self.history_attention = []
         
-    def __call__(self, x, t):
+    def __call__(self, x, t, return_feauture=False):
         x = self.flat(x) if self.flatten_input else x
         weight = torch.sigmoid(self.decay_rate * (t - self.v_0)) * self.scale
         
@@ -300,34 +300,50 @@ class GuidanceVF:
             apply_score = False
         
         if apply_score:
-            dirac_score = self._dirac_score(x, t)
-            score = weight * dirac_score
+            # TODO just return reverse step
+            dx_guidance = self.reverse_step(x, t)
         else:
-            score = torch.zeros_like(x)
+            dx_guidance = torch.zeros_like(x)
         
-        score = self.unflat(score) if self.flatten_input else score
+        dx_guidance = self.unflat(score) if self.flatten_input else score
 
         self.history_weight.append(weight)
         self.history_apply_score.append(apply_score)
-        return score
+        return dx_guidance
 
-    def _dirac_score(self, x, t):
+    def reverse_step(self, x, t):
         raise NotImplementedError("Subclasses must implement this method")
-
-    def _dirac_score_latent(self, features, t):
-        raise NotImplementedError("Subclasses must implement this method")
-
-
 
 class PixelGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
-        # Override latent mappings while passing through other params
         super().__init__(*args, **kwargs, latent=lambda x: x, latent_inv=lambda x: x)
 
     def _dirac_score(self, x, t):
-        dirac_score =  -(self.templates - x) / t
+        dirac_score =  -(self.templates - x) / self.noise(t)
         return dirac_score
 
+    def _reverse_step_single_feature(self, x, t):
+        # (1, ) * (1, ) * ( (1, D) - (B,D))
+        dx = -self.noise_dot(t) * self.time_weight(t) * (self.features_template - x)
+        return dx 
+
+    def _reverse_step_attention(self, x, t):
+        # (1, N, D) - (B, 1, D)
+        diffs = self.features_template.unsqueeze(0) - x.unsqueeze(1)
+        diffs_normalized = self.attention_normalizer(diffs)
+        # (B, N)
+        attention = self.attention(diff_normalized, passing_diff=True)
+        # (N, )
+        time_weights = self.time_weight(t)
+        score_times_noise = torch.einsum("BN, BN... -> B...", attention * time_weihts.unsqueeze(0), recons)
+        dx = -self_noise_dot(t) * score_times_Noise
+        self.history_weight.append(attention)
+        return dx
+    
+    def reverse_step(self, x, t):
+        pass
+
+        
 class LinearGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -344,6 +360,7 @@ class LinearGuidanceVF(GuidanceVF):
         # (B, F*T, D) 
         recons = self.latent_inv(diff_features)
         # (B, F * T)
+        # TODO : make this a parameter
         diff_features_normalized = (diff_features - torch.mean(diff_features, dim=1, keepdim=True)) / torch.std(diff_features, dim=1,keepdim=True)
         attention = self.attention(diff_features_normalized, passing_diff=True)
         self.history_weight.append(attention)
@@ -353,22 +370,25 @@ class LinearGuidanceVF(GuidanceVF):
         return dirac_score
 
 class NonLinearGuidanceVFBase():
-    def __init__(vf_latent, latent, latent_inv, device, dtype):
+    def __init__(self, vf_latent, latent, latent_inv):
         self.vf_latent = vf_latent
         self.latent = latent
         self.latent_inv = latent_inv
 
-    def reverse_step(self, x, t)
+    def __call__(self, x, t):
+        return self.reverse_step(x, t)
+
+    def reverse_step(self, x, t):
         dx_latent, latent = self.vf_latent(x, t, return_feature=True)
         dx = self._pullback(dx, x_latent)
         return dx
 
-    def self._pullback(self, x_latent, dx_latent):
+    def _pullback(self, x_latent, dx_latent):
         raise NotImplementedError("Subclasses must implement this method")
 
 
 class JVPGuidanceVF(NonLinearGuidanceVFBase):
-    def self._pullback(self, x_latent, dx_latent):
+    def _pullback(self, x_latent, dx_latent):
         with torch.no_grad():
             _, dx = jvp(self.latent_inv, x_latent, dx_latent)
         return dx
@@ -378,7 +398,7 @@ class NumericalGuidanceVF(NonLinearGuidanceVFBase):
         super().__init__(*args, **kwargs)
         self.step_size = step_size  
 
-    def self._pullback(self, x_latent, dx_latent)
+    def _pullback(self, x_latent, dx_latent):
         with torch.no_grad():
             perturbed_latent = latent + self.step_size * dx_latent
             f_perturbed = self.latent_inv(petrubed_latent)
@@ -399,6 +419,9 @@ class BuilderVFBase:
         """Shared initialization logic"""
 
         exclusions = {"type_latent", "template_path", "type_eval"}
+
+        assert isinstance(extra_exclusions, tuple) or extra_exclusions is None or isinstance(extra_exclusions, None), \
+                f"Expected type tuple, list or None  got : {extra_exclusions}"
 
         if extra_exclusions:
             exclusions.update(extra_exclusions)
@@ -491,7 +514,7 @@ class BuilderHuggingfaceVF(BuilderVFBase):
     @classmethod
     def create(cls, prms, templates):
         kwargs, templates = cls._common_setup(prms, templates, 
-                                             extra_exclusions="hf_url")
+                                             extra_exclusions = ("hf_url",) )
         # How pullback is evaluated
         match prms.type_eval:
             case "numdiff":
@@ -499,17 +522,17 @@ class BuilderHuggingfaceVF(BuilderVFBase):
             case "jvp":
                 VF = JVPGuidanceVF
 
-        # Import Model
+        # Import model from Hugging face
         from diffusers import AutoencoderKL
         vae = AutoencoderKL.from_pretrained(prms.hf_url, subfolder="vae", use_safetensors=True)
         vae = vae.to(device=templates.device, dtype=templates.dtype)
 
         #TODO : ensure kwargs -> Config goess well
         prms_latent = ConfigGuidanceVF(**kwargs)(type_latent="pixel")
-        features_template = vae.encode(x).latent_dist.sample()
+        features_template = vae.encode(templates).latent_dist.sample()
 
         vf = VF(
-                vf_latent = create_vf(prms_latent, features_template)
+                vf_latent = create_vf(prms_latent, features_template),
                 latent = lambda x : vae.encode(x).latent_dist.sample(),
                 latent_inv = lambda x: vae.decode(x).sample,
         )
