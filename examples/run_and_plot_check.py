@@ -35,7 +35,8 @@ VF_VAE_JVP = ConfigGuidanceVF(
         type_latent = "hf",
         type_eval = "jvp",
         hf_url = "stabilityai/sd-turbo",
-        v_0 = [20, 10],
+        # v_0 = [20, 10],
+        v_0 = 20,
         template_path = "data/input/cat_1.jpg",
         threshold_weight = 0.1,
         )

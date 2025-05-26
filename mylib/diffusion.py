@@ -342,8 +342,13 @@ class PixelGuidanceVF(GuidanceVF):
 
     def _score_single_feature(self, x, t):
         # (1, ) * (1, ) * ( (1, D) - (B,D))
-        score = -self.scale *  self.time_weight(t) * (self.templates - x) / self.noise(t) ** 2
+        # score = self.scale *  self.time_weight(t) * (self.templates - x) / self.noise(t) ** 2
+        score = self.scale * self.time_weight(t) * (self.templates- x) / self.noise(t)**2 
         return score
+    
+    def test(self, x, t):
+        dirac_score_latent = -self.noise_dot(t) * (self.features_template - x) / self.noise(t)
+        return dirac_score_latent
 
     def _score_attention(self, x, t):
         # (1, N, D) - (B, 1, D)
@@ -397,12 +402,29 @@ class NonLinearGuidanceVFBase():
             dx_guidance = torch.zeros_like(x)
         return dx_guidance
 
+    
+    # OLD VERSION
+    def _reverse_step(self, x ,t):
+        with torch.no_grad():
+            features = self.latent(x)
+            dirac_score_latent = -self.noise_dot(t) * (self.vf_latent.templates- features) / self.noise(t)
+            _, dirac_score = jvp(self.latent_inv, features, dirac_score_latent, strict=False)
+        return dirac_score * self.vf_latent.time_weight(t) * self.vf_latent.scale
+
     def reverse_step(self, x, t):
-        x_latent = self.latent(x)
-        score_latent = self.vf_latent.score(x_latent, t)
-        score = self._pullback(score_latent, x_latent)
-        dx = -self.noise_dot(t) * self.noise(t) * score
+        with torch.no_grad():
+            x_latent = self.latent(x)
+            score_latent = self.vf_latent.score(x_latent, t)
+            score = self._pullback(x_latent, score_latent)
+            dx = -self.noise(t) * self.noise(t) * score
         return dx
+
+    def reverse_step(self, x ,t):
+        with torch.no_grad():
+            x_latent = self.latent(x)
+            score_latent = self.vf_latent.score(x_latent, t)
+            _, score = jvp(self.latent_inv, x_latent, score_latent, strict=False)
+        return -self.noise_dot(t) * self.noise(t) * score
 
     def should_apply_score(self, t):
         return self.vf_latent.should_apply_score(t)
@@ -410,20 +432,7 @@ class NonLinearGuidanceVFBase():
     def _pullback(self, x_latent, dx_latent):
         raise NotImplementedError("Subclasses must implement this method")
 
-
-class JVPGuidanceVF(GuidanceVF):
-    def __init__(self, *args,  **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def reverse_step(self, x , t):
-        with torch.no_grad():
-            features = self.latent(x)
-            dirac_score_latent = -(self.features_template - features) / t
-            _, dirac_score = jvp(self.latent_inv, features, dirac_score_latent, strict=False)
-        return dirac_score * self.time_weight(t) * self.scale
-
-
-class _JVPGuidanceVF(NonLinearGuidanceVFBase):
+class JVPGuidanceVF(NonLinearGuidanceVFBase):
     def _pullback(self, x_latent, dx_latent):
         with torch.no_grad():
             _, dx = jvp(self.latent_inv, x_latent, dx_latent, strict=False)
@@ -571,8 +580,8 @@ class BuilderHuggingfaceVF(BuilderVFBase):
         features_template = vae.encode(templates).latent_dist.sample()
 
         vf = VF(
-                **kwargs,
-                templates=templates,
+                # **kwargs,
+                vf_latent = create_vf(prms_latent, features_template),
                 latent = lambda x : vae.encode(x).latent_dist.sample(),
                 latent_inv = lambda x: vae.decode(x).sample,
         )
