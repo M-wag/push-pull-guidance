@@ -325,7 +325,7 @@ class GuidanceVF:
 
 
     def reverse_step(self, x, t):
-        return self.noise_dot(t) * self.noise(t)  * self.score(x, t)
+        return -self.noise_dot(t) * self.noise(t)  * self.score(x, t)
 
     def score(self, x, t):
         return self._score(x, t)
@@ -342,7 +342,7 @@ class PixelGuidanceVF(GuidanceVF):
 
     def _score_single_feature(self, x, t):
         # (1, ) * (1, ) * ( (1, D) - (B,D))
-        score = self.scale *  self.time_weight(t) * (self.templates - x) / self.noise(t) ** 2
+        score = -self.scale *  self.time_weight(t) * (self.templates - x) / self.noise(t) ** 2
         return score
 
     def _score_attention(self, x, t):
