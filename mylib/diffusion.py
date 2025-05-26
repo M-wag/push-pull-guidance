@@ -273,7 +273,13 @@ class GuidanceVF:
         self.threshold_weight = threshold_weight
         self.threshold_time_min = threshold_time_min
         self.threshold_time_max = threshold_time_max
+
         self.attention = attention
+        # Determine to use attention or not 
+        if self.attention:
+            self._reverse = self._reverse_step_attention
+        else:
+            self._reverse = self._reverse_step_single_feature
 
         # Pre-process templates 
         self.features_template = latent(self.flat(self.templates)) if flatten_input else latent(self.templates)
@@ -312,6 +318,12 @@ class GuidanceVF:
         return dx_guidance
 
     def reverse_step(self, x, t):
+        return self._reverse(x, t)
+
+    def _reverse_step_single_feature(self, x, t):
+        raise NotImplementedError("Subclasses must implement this method")
+
+    def _reverse_step_attention(self, x, t):
         raise NotImplementedError("Subclasses must implement this method")
 
 class PixelGuidanceVF(GuidanceVF):
@@ -336,14 +348,10 @@ class PixelGuidanceVF(GuidanceVF):
         # (N, )
         time_weights = self.time_weight(t)
         score_times_noise = torch.einsum("BN, BN... -> B...", attention * time_weihts.unsqueeze(0), recons)
-        dx = -self_noise_dot(t) * score_times_Noise
+        dx = -self_noise_dot(t) * score_times_noise
         self.history_weight.append(attention)
         return dx
     
-    def reverse_step(self, x, t):
-        pass
-
-        
 class LinearGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -497,8 +505,11 @@ class BuilderLinearVF(BuilderVFBase):
             def latent_inv_fn(x):
                 return torch.unflatten(_orig_latent_inv_fn(x), -1, templates.shape[1:])
 
-        # Attention mechanism
-        attention_fn = cls._create_attention(prms, templates, latent_fn)
+        # if n_features > 1 use attention
+        if latent_fn(templates).shape[0] > 1:
+            attention_fn = cls._create_attention(prms, templates, latent_fn)
+        else:
+            attention = None
 
         vf = LinearGuidanceVF(
             **kwargs,
