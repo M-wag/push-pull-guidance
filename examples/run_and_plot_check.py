@@ -50,7 +50,7 @@ VF_LINEAR = ConfigGuidanceVF(
         scale = 1.0,
         template_path = "data/input/",
         seed_mat = 0,
-        n_features = 128,
+        n_features = 5,
         dim_feature = 32,
         T = 1.0,
         )
@@ -84,7 +84,11 @@ if __name__ == "__main__":
     exp_name = "run_and_plot_check"
 
     guidance_configs = [
-        VF_LINEAR_HF(threshold_weight=0.1, threshold_time_max=60)
+        VF_LINEAR(
+            template_path = "data/input/cat_1.jpg"
+            # template_path = "data/input/"
+        )
+
     ]
 
     for i, guidance_vf in enumerate(guidance_configs):
