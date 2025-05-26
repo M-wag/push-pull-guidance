@@ -244,8 +244,6 @@ class AttentionMixture:
         weights_attn = F.softmax(T * energy, dim=-1)
         return weights_attn
 
-
-
 class GuidanceVF:
     def flat(self, x):
         return rearrange(x, "... c h w -> ... (c h w)")
@@ -291,7 +289,7 @@ class GuidanceVF:
         self.history_apply_score = []
         self.history_attention = []
         
-    def __call__(self, x, t, return_feauture=False):
+    def __call__(self, x, t):
         x = self.flat(x) if self.flatten_input else x
         weight = torch.sigmoid(self.decay_rate * (t - self.v_0)) * self.scale
         
@@ -306,8 +304,7 @@ class GuidanceVF:
             apply_score = False
         
         if apply_score:
-            # TODO just return reverse step
-            dx_guidance = self.reverse_step(x, t)
+            dx_guidance, _ = self.reverse_step(x, t)
         else:
             dx_guidance = torch.zeros_like(x)
         
@@ -330,14 +327,10 @@ class PixelGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs, latent=lambda x: x, latent_inv=lambda x: x)
 
-    def _dirac_score(self, x, t):
-        dirac_score =  -(self.templates - x) / self.noise(t)
-        return dirac_score
-
     def _reverse_step_single_feature(self, x, t):
         # (1, ) * (1, ) * ( (1, D) - (B,D))
         dx = -self.noise_dot(t) * self.time_weight(t) * (self.features_template - x)
-        return dx 
+        return dx, x 
 
     def _reverse_step_attention(self, x, t):
         # (1, N, D) - (B, 1, D)
@@ -350,7 +343,7 @@ class PixelGuidanceVF(GuidanceVF):
         score_times_noise = torch.einsum("BN, BN... -> B...", attention * time_weihts.unsqueeze(0), recons)
         dx = -self_noise_dot(t) * score_times_noise
         self.history_weight.append(attention)
-        return dx
+        return dx, x
     
 class LinearGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
@@ -387,7 +380,7 @@ class NonLinearGuidanceVFBase():
         return self.reverse_step(x, t)
 
     def reverse_step(self, x, t):
-        dx_latent, latent = self.vf_latent(x, t, return_feature=True)
+        dx_latent, latent = self.vf_latent(x, t)
         dx = self._pullback(dx, x_latent)
         return dx
 
