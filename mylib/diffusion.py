@@ -156,12 +156,15 @@ class Config:
 # TODO: add way to net VF
 @dataclass(frozen=True)
 class ConfigGuidanceVF(Config):
+    # TODO : these should probably all require user values
     # Core
     type_latent:            Literal["pixel", "linear", "hf"] = None
     template_path:          str | None = None
     scale:                  float | list[float] | None  = 1.0
     decay_rate:             float | list[float] | None = None
     v_0:                    float | list[float] | None = None
+    noise:                  = lambda x : x
+    noise_dot:              = lambda x : 1.0 
     # Linear
     n_features:             float | list[int] | None = None
     dim_feature:            float | list[int] | None = None
@@ -251,7 +254,7 @@ class GuidanceVF:
     def unflat(self, x):
         return rearrange(x, "... (c h w) -> ... c h w", c=self.templates.shape[-3], h=self.templates.shape[-2], w=self.templates.shape[-1])
 
-    def __init__(self, templates, scale, v_0, decay_rate, latent, latent_inv, *, 
+    def __init__(self, templates, scale, v_0, decay_rate, latent, latent_inv, noise, noise_dot, *, 
                  flatten_input=False, 
                  threshold_weight=None,
                  threshold_time_min=None,
@@ -266,6 +269,8 @@ class GuidanceVF:
         self.decay_rate = decay_rate
         self.latent = latent
         self.latent_inv = latent_inv
+        self.noise = noise
+        self.noise_dot = noise_dot
         # Optional features
         self.flatten_input = flatten_input
         self.threshold_weight = threshold_weight
@@ -329,7 +334,7 @@ class PixelGuidanceVF(GuidanceVF):
 
     def _reverse_step_single_feature(self, x, t):
         # (1, ) * (1, ) * ( (1, D) - (B,D))
-        dx = -self.noise_dot(t) * self.time_weight(t) * (self.features_template - x)
+        dx = -self.noise_dot(t) / self.noise(t)* self.time_weight(t) * (self.features_template - x)
         return dx, x 
 
     def _reverse_step_attention(self, x, t):
@@ -341,7 +346,7 @@ class PixelGuidanceVF(GuidanceVF):
         # (N, )
         time_weights = self.time_weight(t)
         score_times_noise = torch.einsum("BN, BN... -> B...", attention * time_weihts.unsqueeze(0), recons)
-        dx = -self_noise_dot(t) * score_times_noise
+        dx = -self_noise_dot(t) / self.noise(t) * score_times_noise
         self.history_weight.append(attention)
         return dx, x
     
