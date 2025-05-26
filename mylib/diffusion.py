@@ -411,12 +411,6 @@ class NonLinearGuidanceVFBase():
             _, dirac_score = jvp(self.latent_inv, features, dirac_score_latent, strict=False)
         return dirac_score * self.vf_latent.time_weight(t) * self.vf_latent.scale
 
-    def reverse_step(self, x, t):
-        with torch.no_grad():
-            x_latent = self.latent(x)
-            score_latent = self.vf_latent.score(x_latent, t)
-            score = self._pullback(x_latent, score_latent)
-            dx = -self.noise(t) * self.noise(t) * score
         return dx
 
     def reverse_step(self, x ,t):
@@ -425,6 +419,13 @@ class NonLinearGuidanceVFBase():
             score_latent = self.vf_latent.score(x_latent, t)
             _, score = jvp(self.latent_inv, x_latent, score_latent, strict=False)
         return -self.noise_dot(t) * self.noise(t) * score
+
+    def reverse_step(self, x, t):
+        with torch.no_grad():
+            x_latent = self.latent(x)
+            score_latent = self.vf_latent.score(x_latent, t)
+            score = self._pullback(x_latent, score_latent)
+            dx = -self.noise_dot(t) * self.noise(t) * score
 
     def should_apply_score(self, t):
         return self.vf_latent.should_apply_score(t)
