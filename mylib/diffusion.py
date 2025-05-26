@@ -157,7 +157,6 @@ class Config:
 class ConfigGuidanceVF(Config):
     # Core
     type_latent:            Literal["pixel", "linear", "hf"] = None
-    type_eval:              Literal["jvp", "numdiff"] | None = None
     template_path:          str | None = None
     scale:                  float | list[float] | None  = 1.0
     decay_rate:             float | list[float] | None = None
@@ -167,9 +166,9 @@ class ConfigGuidanceVF(Config):
     dim_feature:            float | list[int] | None = None
     seed_mat:               int | None = None
     T:                      int | list[int] | None = None
-    # Hugging Face
+    # Hugging Face or Non-Linear
     hf_url:                 str = None
-
+    type_eval:              Literal["jvp", "numdiff"] | None = None
     # Optional
     flatten_input:          bool | None = False
     threshold_weight:       float | list[float] = None
@@ -353,11 +352,10 @@ class LinearGuidanceVF(GuidanceVF):
         return dirac_score
 
 class NonLinearGuidanceVFBase():
-    def __init__(latent, latent_inv, device, dtype):
+    def __init__(vf_latent, latent, latent_inv, device, dtype):
+        self.vf_latent = vf_latent
         self.latent = latent
         self.latent_inv = latent_inv
-        self.device = device
-        self.dtype = dtype
 
     def reverse_step(self, x, t)
         dx_latent, latent = self.vf_latent(x, t, return_feature=True)
@@ -493,21 +491,26 @@ class BuilderHuggingfaceVF(BuilderVFBase):
     def create(cls, prms, templates):
         kwargs, templates = cls._common_setup(prms, templates, 
                                              extra_exclusions="hf_url")
+        # How pullback is evaluated
         match prms.type_eval:
             case "numdiff":
                 VF = NumericalGuidanceVF
             case "jvp":
                 VF = JVPGuidanceVF
 
+        # Import Model
         from diffusers import AutoencoderKL
         vae = AutoencoderKL.from_pretrained(prms.hf_url, subfolder="vae", use_safetensors=True)
         vae = vae.to(device=templates.device, dtype=templates.dtype)
 
+        #TODO : ensure kwargs -> Config goess well
+        prms_latent = ConfigGuidanceVF(**kwargs)
+        features_template = vae.encode(x).latent_dist.sample()
+
         vf = VF(
-                **kwargs,
-                templates=templates,
+                vf_latent = create_vf(prms_latent, features_template)
                 latent = lambda x : vae.encode(x).latent_dist.sample(),
-                latent_inv = lambda x: vae.decode(x).sample
+                latent_inv = lambda x: vae.decode(x).sample,
         )
 
         return vf 
