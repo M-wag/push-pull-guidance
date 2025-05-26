@@ -269,7 +269,7 @@ class GuidanceVF:
         self.latent_inv = latent_inv
         self.noise = lambda x: x 
         self.noise_dot = lambda x : 1 
-        self.time_weight = lambda t: torch.sigmoid(self.decay_rate * (t - self.v_0)) 
+        self.time_weight = lambda t: torch.sigmoid(self.decay_rate * (self.noise(t) - self.v_0)) 
         # Optional features
         self.flatten_input = flatten_input
         self.threshold_weight = threshold_weight
@@ -279,9 +279,9 @@ class GuidanceVF:
         self.attention = attention
         # Determine to use attention or not 
         if self.attention:
-            self._reverse = self._reverse_step_attention
+            self._score = self._score_attention
         else:
-            self._reverse = self._reverse_step_single_feature
+            self._score = self._score_single_feature
 
         # Pre-process templates 
         self.features_template = latent(self.flat(self.templates)) if flatten_input else latent(self.templates)
@@ -323,36 +323,39 @@ class GuidanceVF:
 
         return apply_score 
 
-    def reverse_step(self, x, t):
-        return self._reverse(x, t)
 
-    def _reverse_step_single_feature(self, x, t):
+    def reverse_step(self, x, t):
+        return self.noise_dot(t) * self.noise(t)  * self.score(x, t)
+
+    def score(self, x, t):
+        return self._score(x, t)
+
+    def _score_single_feature(self, x, t):
         raise NotImplementedError("Subclasses must implement this method")
 
-    def _reverse_step_attention(self, x, t):
+    def _score_attention(self, x, t):
         raise NotImplementedError("Subclasses must implement this method")
 
 class PixelGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs, latent=lambda x: x, latent_inv=lambda x: x)
 
-    def _reverse_step_single_feature(self, x, t):
+    def _score_single_feature(self, x, t):
         # (1, ) * (1, ) * ( (1, D) - (B,D))
-        dx = -self.noise_dot(t) / self.noise(t)* self.time_weight(t) * (self.features_template - x)
-        return dx
+        score = self.scale *  self.time_weight(t) * (self.templates - x) / self.noise(t) ** 2
+        return score
 
-    def _reverse_step_attention(self, x, t):
+    def _score_attention(self, x, t):
         # (1, N, D) - (B, 1, D)
         diffs = self.features_template.unsqueeze(0) - x.unsqueeze(1)
         diffs_normalized = self.attention_normalizer(diffs)
         # (B, N)
         attention = self.attention(diff_normalized, passing_diff=True)
         # (N, )
-        time_weights = self.time_weight(t)
-        score_times_noise = torch.einsum("BN, BN... -> B...", attention * time_weihts.unsqueeze(0), recons)
-        dx = -self_noise_dot(t) / self.noise(t) * score_times_noise
+        weights =  attention * time_weight.unsqueeze(0) * self.scale
+        score =  torch.einsum("BN, BN... -> B...", weights, recons) / self.noise(t) ** 2
         self.history_weight.append(attention)
-        return dx
+        return score
     
 class LinearGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
@@ -384,6 +387,8 @@ class NonLinearGuidanceVFBase():
         self.vf_latent = vf_latent
         self.latent = latent
         self.latent_inv = latent_inv
+        self.noise = lambda x : x 
+        self.noise_dot = lambda x : 1
 
     def __call__(self, x, t):
         if self.should_apply_score(t):
@@ -394,8 +399,9 @@ class NonLinearGuidanceVFBase():
 
     def reverse_step(self, x, t):
         x_latent = self.latent(x)
-        dx_latent = self.vf_latent(x_latent, t)
-        dx = self._pullback(dx_latent, x_latent)
+        score_latent = self.vf_latent.score(x_latent, t)
+        score = self._pullback(score_latent, x_latent)
+        dx = -self.noise_dot(t) * self.noise(t) * score
         return dx
 
     def should_apply_score(self, t):
@@ -405,11 +411,22 @@ class NonLinearGuidanceVFBase():
         raise NotImplementedError("Subclasses must implement this method")
 
 
+class JVPGuidanceVF(GuidanceVF):
+    def __init__(self, *args,  **kwargs):
+        super().__init__(*args, **kwargs)
 
-class JVPGuidanceVF(NonLinearGuidanceVFBase):
+    def reverse_step(self, x , t):
+        with torch.no_grad():
+            features = self.latent(x)
+            dirac_score_latent = -(self.features_template - features) / t
+            _, dirac_score = jvp(self.latent_inv, features, dirac_score_latent, strict=False)
+        return dirac_score * self.time_weight(t) * self.scale
+
+
+class _JVPGuidanceVF(NonLinearGuidanceVFBase):
     def _pullback(self, x_latent, dx_latent):
         with torch.no_grad():
-            _, dx = jvp(self.latent_inv, x_latent, dx_latent)
+            _, dx = jvp(self.latent_inv, x_latent, dx_latent, strict=False)
         return dx
 
 class NumericalGuidanceVF(NonLinearGuidanceVFBase):
@@ -419,10 +436,10 @@ class NumericalGuidanceVF(NonLinearGuidanceVFBase):
 
     def _pullback(self, x_latent, dx_latent):
         with torch.no_grad():
-            perturbed_latent = latent + self.step_size * dx_latent
-            f_perturbed = self.latent_inv(petrubed_latent)
-            f_original = self.latent_inv(latent)
-            dx = (f_perturbed - f_original) / self.epsilon  
+            perturbed_latent = x_latent + self.step_size * dx_latent
+            f_perturbed = self.latent_inv(perturbed_latent)
+            f_original = self.latent_inv(x_latent)
+            dx = (f_perturbed - f_original) / self.step_size  
         return  dx 
 
 
@@ -554,7 +571,8 @@ class BuilderHuggingfaceVF(BuilderVFBase):
         features_template = vae.encode(templates).latent_dist.sample()
 
         vf = VF(
-                vf_latent = create_vf(prms_latent, features_template),
+                **kwargs,
+                templates=templates,
                 latent = lambda x : vae.encode(x).latent_dist.sample(),
                 latent_inv = lambda x: vae.decode(x).sample,
         )

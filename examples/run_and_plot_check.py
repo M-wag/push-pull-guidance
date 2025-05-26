@@ -19,7 +19,7 @@ VF_PIXEL= ConfigGuidanceVF(
         type_latent = "pixel",
         decay_rate = 1.0,
         v_0 = [40, 20, 10 , 5],
-        scale = 1.0,
+        scale = 0.1,
         template_path = "data/input/cat_1.jpg",
         )
 
@@ -84,6 +84,7 @@ if __name__ == "__main__":
 
     guidance_configs = [
             VF_VAE_JVP,
+            # VF_PIXEL,
     ]
 
     for i, guidance_vf in enumerate(guidance_configs):
