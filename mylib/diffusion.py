@@ -153,6 +153,7 @@ class Config:
         return tuple(collect_dims(self))
 
 
+# TODO: add way to net VF
 @dataclass(frozen=True)
 class ConfigGuidanceVF(Config):
     # Core
@@ -504,7 +505,7 @@ class BuilderHuggingfaceVF(BuilderVFBase):
         vae = vae.to(device=templates.device, dtype=templates.dtype)
 
         #TODO : ensure kwargs -> Config goess well
-        prms_latent = ConfigGuidanceVF(**kwargs)
+        prms_latent = ConfigGuidanceVF(**kwargs)(type_latent="pixel")
         features_template = vae.encode(x).latent_dist.sample()
 
         vf = VF(
