@@ -245,6 +245,7 @@ class AttentionMixture:
         return weights_attn
 
 
+
 class GuidanceVF:
     def flat(self, x):
         return rearrange(x, "... c h w -> ... (c h w)")
@@ -315,6 +316,16 @@ class GuidanceVF:
 
     def _dirac_score_latent(self, features, t):
         raise NotImplementedError("Subclasses must implement this method")
+
+class NonLinearGuidanceVFBase(GuidanceVF):
+    def reverse_step(self, x, t)
+        dx_latent = self.vf_latent(x, t)
+        dx = self._pullback(dx)
+        return dx
+
+    def self._pullback(self, x, t):
+        raise NotImplementedError("Subclasses must implement this method")
+
 
 class PixelGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
@@ -403,9 +414,11 @@ class BuilderVFBase:
                 if k not in exclusions and v is not None}
 
         return kwargs, templates
+
     @classmethod 
     def _create_attention(cls, prms, templates, latent_fn):
         """Create attention mechanism when there a multiple feature templates"""
+        
         means_attention = latent_fn(templates).flatten(start_dim=0, end_dim=1)
         n_feature_templates = means_attention.shape[0]
         std_attention =  prms.v_0 * torch.ones(n_feature_templates,
