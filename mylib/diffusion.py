@@ -12,7 +12,7 @@ from einops import rearrange, repeat
 from torchvision.io import read_image, read_file
 from torch.autograd.functional import jvp
 from dataclasses import dataclass, asdict, replace, fields
-from typing import List, Any, Literal
+from typing import List, Any, Literal, Callable
 import torch
 import torch.nn.functional as F
 from einops import rearrange
@@ -161,10 +161,10 @@ class ConfigGuidanceVF(Config):
     type_latent:            Literal["pixel", "linear", "hf"] = None
     template_path:          str | None = None
     scale:                  float | list[float] | None  = 1.0
-    decay_rate:             float | list[float] | None = None
+    decay_rate:             float | list[float] | None = 1.0
     v_0:                    float | list[float] | None = None
-    noise:                  = lambda x : x
-    noise_dot:              = lambda x : 1.0 
+    noise:                  Callable[float, float] = lambda x : x
+    noise_dot:              Callable[float, float] = lambda x : 1.0 
     # Linear
     n_features:             float | list[int] | None = None
     dim_feature:            float | list[int] | None = None
