@@ -317,14 +317,6 @@ class GuidanceVF:
     def _dirac_score_latent(self, features, t):
         raise NotImplementedError("Subclasses must implement this method")
 
-class NonLinearGuidanceVFBase(GuidanceVF):
-    def reverse_step(self, x, t)
-        dx_latent = self.vf_latent(x, t)
-        dx = self._pullback(dx)
-        return dx
-
-    def self._pullback(self, x, t):
-        raise NotImplementedError("Subclasses must implement this method")
 
 
 class PixelGuidanceVF(GuidanceVF):
@@ -360,38 +352,40 @@ class LinearGuidanceVF(GuidanceVF):
         dirac_score =  -1/t  * torch.einsum("BN, BN... -> B...", attention, recons)
         return dirac_score
 
-class JVPGuidanceVF(GuidanceVF):
-    def __init__(self, *args, **kwargs):
-        # Override latent mappings while passing through other params
-        super().__init__(*args, **kwargs)
+class NonLinearGuidanceVFBase():
+    def __init__(latent, latent_inv, device, dtype):
+        self.latent = latent
+        self.latent_inv = latent_inv
+        self.device = device
+        self.dtype = dtype
 
-    def _dirac_score(self, x, t):
+    def reverse_step(self, x, t)
+        dx_latent, latent = self.vf_latent(x, t, return_feature=True)
+        dx = self._pullback(dx, x_latent)
+        return dx
+
+    def self._pullback(self, x_latent, dx_latent):
+        raise NotImplementedError("Subclasses must implement this method")
+
+
+class JVPGuidanceVF(NonLinearGuidanceVFBase):
+    def self._pullback(self, x_latent, dx_latent):
         with torch.no_grad():
-            features = self.latent(x)
-            # TODO : THESE ARE NOT DIRAC SCORES 
-            dirac_score_latent =  -(self.features_template - features) / t
-            # tangent = self._dirac_score_latent(features, t)
-            
-            # Jacobian vector product 
-            _, dirac_score = jvp(self.latent_inv, features, tangent, strict=False)
-        return dirac_score
+            _, dx = jvp(self.latent_inv, x_latent, dx_latent)
+        return dx
 
-
-
-class NumericalGuidanceVF(GuidanceVF):
-    def __init__(self, *args, epsilon=1e-3, **kwargs):
+class NumericalGuidanceVF(NonLinearGuidanceVFBase):
+    def __init__(self, *args, step_size=1e-3, **kwargs):
         super().__init__(*args, **kwargs)
-        self.epsilon = epsilon  # Step size for finite differences
+        self.step_size = step_size  
 
-    def _dirac_score(self, x, t):
+    def self._pullback(self, x_latent, dx_latent)
         with torch.no_grad():
-            features = self.latent(x)
-            # Numerical differentiation
-            perturbed_features = features + self.epsilon * self._dirac_score_latent(features , t)
-            f_perturbed = self.latent_inv(perturbed_features)
-            f_original = self.latent_inv(features)
-        
-        return (f_perturbed - f_original) / self.epsilon  
+            perturbed_latent = latent + self.step_size * dx_latent
+            f_perturbed = self.latent_inv(petrubed_latent)
+            f_original = self.latent_inv(latent)
+            dx = (f_perturbed - f_original) / self.epsilon  
+        return  dx 
 
 
 # VF Builders
