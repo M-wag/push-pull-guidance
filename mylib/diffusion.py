@@ -163,8 +163,6 @@ class ConfigGuidanceVF(Config):
     scale:                  float | list[float] | None  = 1.0
     decay_rate:             float | list[float] | None = 1.0
     v_0:                    float | list[float] | None = None
-    noise:                  Callable[float, float] = lambda x : x
-    noise_dot:              Callable[float, float] = lambda x : 1.0 
     # Linear
     n_features:             float | list[int] | None = None
     dim_feature:            float | list[int] | None = None
@@ -254,7 +252,7 @@ class GuidanceVF:
     def unflat(self, x):
         return rearrange(x, "... (c h w) -> ... c h w", c=self.templates.shape[-3], h=self.templates.shape[-2], w=self.templates.shape[-1])
 
-    def __init__(self, templates, scale, v_0, decay_rate, latent, latent_inv, noise, noise_dot, *, 
+    def __init__(self, templates, scale, v_0, decay_rate, latent, latent_inv,  *, 
                  flatten_input=False, 
                  threshold_weight=None,
                  threshold_time_min=None,
@@ -269,8 +267,9 @@ class GuidanceVF:
         self.decay_rate = decay_rate
         self.latent = latent
         self.latent_inv = latent_inv
-        self.noise = noise
-        self.noise_dot = noise_dot
+        self.noise = lambda x: x 
+        self.noise_dot = lambda x : 1 
+        self.time_weight = lambda t: torch.sigmoid(self.decay_rate * (t - self.v_0)) 
         # Optional features
         self.flatten_input = flatten_input
         self.threshold_weight = threshold_weight
@@ -295,9 +294,21 @@ class GuidanceVF:
         self.history_attention = []
         
     def __call__(self, x, t):
-        x = self.flat(x) if self.flatten_input else x
-        weight = torch.sigmoid(self.decay_rate * (t - self.v_0)) * self.scale
+        if self.flatten_input:
+            x = self.flat(x) 
         
+        if self.should_apply_score(t):
+            dx_guidance = self.reverse_step(x, t)
+        else:
+            dx_guidance = torch.zeros_like(x)
+        
+        if self.flatten_input:
+            dx_guidance = self.unflat(dx_guidance) 
+
+        return dx_guidance
+
+    def should_apply_score(self, t) -> bool:
+        weight = torch.max(torch.sigmoid(self.decay_rate * (self.noise(t) - self.v_0)) * self.scale)
         apply_score = True
         # Check weight threshold
         if self.threshold_weight is not None and weight < self.threshold_weight:
@@ -307,17 +318,10 @@ class GuidanceVF:
             apply_score = False
         if self.threshold_time_max is not None and t > self.threshold_time_max:
             apply_score = False
-        
-        if apply_score:
-            dx_guidance, _ = self.reverse_step(x, t)
-        else:
-            dx_guidance = torch.zeros_like(x)
-        
-        dx_guidance = self.unflat(score) if self.flatten_input else score
-
         self.history_weight.append(weight)
         self.history_apply_score.append(apply_score)
-        return dx_guidance
+
+        return apply_score 
 
     def reverse_step(self, x, t):
         return self._reverse(x, t)
@@ -335,7 +339,7 @@ class PixelGuidanceVF(GuidanceVF):
     def _reverse_step_single_feature(self, x, t):
         # (1, ) * (1, ) * ( (1, D) - (B,D))
         dx = -self.noise_dot(t) / self.noise(t)* self.time_weight(t) * (self.features_template - x)
-        return dx, x 
+        return dx
 
     def _reverse_step_attention(self, x, t):
         # (1, N, D) - (B, 1, D)
@@ -348,7 +352,7 @@ class PixelGuidanceVF(GuidanceVF):
         score_times_noise = torch.einsum("BN, BN... -> B...", attention * time_weihts.unsqueeze(0), recons)
         dx = -self_noise_dot(t) / self.noise(t) * score_times_noise
         self.history_weight.append(attention)
-        return dx, x
+        return dx
     
 class LinearGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
@@ -382,15 +386,24 @@ class NonLinearGuidanceVFBase():
         self.latent_inv = latent_inv
 
     def __call__(self, x, t):
-        return self.reverse_step(x, t)
+        if self.should_apply_score(t):
+            dx_guidance = self.reverse_step(x, t)
+        else:
+            dx_guidance = torch.zeros_like(x)
+        return dx_guidance
 
     def reverse_step(self, x, t):
-        dx_latent, latent = self.vf_latent(x, t)
-        dx = self._pullback(dx, x_latent)
+        x_latent = self.latent(x)
+        dx_latent = self.vf_latent(x_latent, t)
+        dx = self._pullback(dx_latent, x_latent)
         return dx
 
+    def should_apply_score(self, t):
+        return self.vf_latent.should_apply_score(t)
+    
     def _pullback(self, x_latent, dx_latent):
         raise NotImplementedError("Subclasses must implement this method")
+
 
 
 class JVPGuidanceVF(NonLinearGuidanceVFBase):

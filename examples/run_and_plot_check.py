@@ -35,10 +35,9 @@ VF_VAE_JVP = ConfigGuidanceVF(
         type_latent = "hf",
         type_eval = "jvp",
         hf_url = "stabilityai/sd-turbo",
-        decay_rate = 1.0,
-        v_0 = [40, 20, 10 , 5],
-        scale = 1.0,
+        v_0 = [20, 10],
         template_path = "data/input/cat_1.jpg",
+        threshold_weight = 0.1,
         )
 
 VF_VAE_NUMDIFF = VF_VAE_JVP(type_eval="numdiff")
@@ -84,11 +83,7 @@ if __name__ == "__main__":
     exp_name = "run_and_plot_check"
 
     guidance_configs = [
-        VF_LINEAR(
-            template_path = "data/input/cat_1.jpg"
-            # template_path = "data/input/"
-        )
-
+            VF_VAE_JVP,
     ]
 
     for i, guidance_vf in enumerate(guidance_configs):
