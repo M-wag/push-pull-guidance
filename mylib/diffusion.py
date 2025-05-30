@@ -20,7 +20,8 @@ from torch import Tensor
 
 #----------------------------------------------------------------------------
 def edm_sampler(
-    net, vf_template,         # Vector field induced by tempaplate and features      seed                : int , 
+    net, vf_template,         # Vector field induced by tempaplate and features      
+    seed                : int , 
     device              ,
     *,
     class_idx           : int , 
