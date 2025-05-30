@@ -83,8 +83,8 @@ if __name__ == "__main__":
     exp_name = "run_and_plot_check"
 
     guidance_configs = [
-            VF_VAE_NUMDIFF,
-            # VF_PIXEL,
+            # VF_VAE_NUMDIFF,
+            VF_PIXEL,
     ]
 
     for i, guidance_vf in enumerate(guidance_configs):

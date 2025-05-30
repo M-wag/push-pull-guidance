@@ -23,8 +23,9 @@ def generate_image_grid(
     net, 
     vf_template,         # Vector field induced by tempaplate and features      
     seed                : int , 
-    class_idx           : int , 
     device              ,
+    # Put new vars under here
+    class_idx           : int , 
     batch_size          : int,
     num_steps           : int, 
     sigma_min           : float,
@@ -180,7 +181,7 @@ class ConfigGuidanceVF(Config):
 
 @dataclass(frozen=True)
 class ConfigDiffusion(Config):
-    class_idx:          int 
+    class_idx:          int = None
     scale_model_score:  float = 1.0
     batch_size :        float = 9
     num_steps:          int = 32
@@ -666,6 +667,7 @@ def schedule_diffusion(cnfg : ConfigSimulation):
     raw_data = np.empty((len(cnfg.split()), cnfg.diffusion.num_steps, cnfg.diffusion.batch_size, *cnfg.input_shape)) # (N_combs, t, B, C, H, W)
     assert len(raw_data.shape) == 6, f"raw_data should have rank 6, got shape : {raw_data.shape}"
     start_time = time.time()
+    print(cnfg.diffusion.to_dict())
     for idx, cnfg_split in enumerate(cnfg.split()):
         templates = load_templates(cnfg_split)
         vf_guide = create_vf(cnfg_split.guidance_vf, templates)
