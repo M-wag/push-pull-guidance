@@ -21,8 +21,9 @@ from torch import Tensor
 #----------------------------------------------------------------------------
 def generate_image_grid(
     net, 
-    vf_template,         # Vector field induced by temlate and features      
+    vf_template,         # Vector field induced by tempaplate and features      
     seed                : int , 
+    class_idx           : int , 
     device              ,
     batch_size          : int,
     num_steps           : int, 
@@ -43,7 +44,7 @@ def generate_image_grid(
     latents = torch.randn([batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device)
     class_labels = None
     if net.label_dim:
-        class_labels = torch.eye(net.label_dim, device=device)[batch_size * [282]]
+        class_labels = torch.eye(net.label_dim, device=device)[batch_size * [class_idx]]
 
     # Adjust noise levels based on what's supported by the network.
     sigma_min = max(sigma_min, net.sigma_min)
@@ -179,6 +180,7 @@ class ConfigGuidanceVF(Config):
 
 @dataclass(frozen=True)
 class ConfigDiffusion(Config):
+    class_idx:          int 
     scale_model_score:  float = 1.0
     batch_size :        float = 9
     num_steps:          int = 32

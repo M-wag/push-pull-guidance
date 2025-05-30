@@ -94,7 +94,7 @@ if __name__ == "__main__":
             seed          = 0,
             input_shape   = (3, 64, 64),
             guidance_vf   = guidance_vf,
-            diffusion     = ConfigDiffusion(num_steps=16),
+            diffusion     = ConfigDiffusion(num_steps=16, class_idx=282),
         )
 
         # Set up the per-experiment directory
