@@ -19,12 +19,10 @@ from einops import rearrange
 from torch import Tensor
 
 #----------------------------------------------------------------------------
-def generate_image_grid(
-    net, 
-    vf_template,         # Vector field induced by tempaplate and features      
-    seed                : int , 
+def edm_sampler(
+    net, vf_template,         # Vector field induced by tempaplate and features      seed                : int , 
     device              ,
-    # Put new vars under here
+    *,
     class_idx           : int , 
     batch_size          : int,
     num_steps           : int, 
@@ -87,7 +85,7 @@ def generate_image_grid(
             xs[i] = x_next
             metrics[0, i] = torch.norm(x_next)
 
-    return xs.numpy(), t_steps.cpu().numpy()
+    return xs.numpy(), (t_steps.cpu().numpy(), )
 
 #----------------------------------------------------------------------------
 
@@ -671,7 +669,7 @@ def schedule_diffusion(cnfg : ConfigSimulation):
     for idx, cnfg_split in enumerate(cnfg.split()):
         templates = load_templates(cnfg_split)
         vf_guide = create_vf(cnfg_split.guidance_vf, templates)
-        xs, ts = generate_image_grid(net, vf_guide, cnfg.seed, cnfg.device,
+        xs, (ts, ) = edm_sampler(net, vf_guide, cnfg.seed, cnfg.device,
                                      **cnfg.diffusion.to_dict())
         raw_data[idx] = (xs * 127.5 + 128) / 255
     total_time = time.time() - start_time
