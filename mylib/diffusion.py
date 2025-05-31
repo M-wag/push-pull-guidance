@@ -25,6 +25,7 @@ def edm_sampler(
     device              ,
     *,
     class_idx           : int , 
+    latents             : float,
     batch_size          : int,
     num_steps           : int, 
     sigma_min           : float,
@@ -41,10 +42,26 @@ def edm_sampler(
         torch.manual_seed(seed)
 
     # Pick latents and labels.
-    latents = torch.randn([batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device)
-    class_labels = None
+    if latents is None:
+        latents = torch.randn([batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device)
+
+    # Handle class labels
     if net.label_dim:
-        class_labels = torch.eye(net.label_dim, device=device)[batch_size * [class_idx]]
+        if class_idx is None:
+            # Use zeros (no class)
+            class_labels = torch.zeros([batch_size, net.label_dim], device=device)
+        elif isinstance(class_idx, int):
+            # Use one-hot encoded specified class
+            class_labels = torch.eye(net.label_dim, device=device)[batch_size * [class_idx]]
+        elif torch.is_tensor(class_idx):
+            # Use provided class labels directly
+            assert class_idx.shape == (batch_size, net.label_dim), \
+                f"class_labels must have shape [{batch_size}, {net.label_dim}]"
+            class_labels = class_idx.to(device)
+        else:
+            raise ValueError("class_idx must be None, int, or tensor")
+    else:
+        class_labels = None
 
     # Adjust noise levels based on what's supported by the network.
     sigma_min = max(sigma_min, net.sigma_min)
