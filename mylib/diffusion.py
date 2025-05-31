@@ -3,8 +3,7 @@ import tqdm
 import time
 import pickle
 import numpy as np
-import torch
-import os
+import torch import os
 import itertools
 import dnnlib
 from PIL import Image
@@ -13,7 +12,6 @@ from torchvision.io import read_image, read_file
 from torch.autograd.functional import jvp
 from dataclasses import dataclass, asdict, replace, fields
 from typing import List, Any, Literal, Callable
-import torch
 import torch.nn.functional as F
 from einops import rearrange
 from torch import Tensor
@@ -196,7 +194,7 @@ class ConfigGuidanceVF(Config):
     threshold_time_max:     float | list[float] | None = None
 
 @dataclass(frozen=True)
-class ConfigDiffusion(Config):
+class ConfigSampler(Config):
     class_idx:          int = None
     scale_model_score:  float = 1.0
     batch_size :        float = 9
@@ -216,7 +214,7 @@ class ConfigSimulation(Config):
     seed:           int | None 
     input_shape:    tuple[int]
     guidance_vf:    ConfigGuidanceVF 
-    diffusion:      ConfigDiffusion 
+    diffusion:      ConfigSampler 
 
 
 ### Guidance Vector Fields
@@ -694,4 +692,3 @@ def schedule_diffusion(cnfg : ConfigSimulation):
     print(f"Total schedule_diffusion time: {total_time:.2f} s")
     
     return raw_data
-
