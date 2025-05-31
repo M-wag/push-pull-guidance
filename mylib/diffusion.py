@@ -642,7 +642,7 @@ def create_vf(prms: ConfigGuidanceVF, templates, verbose=True):
 
 ### SCHEDULER ###
 
-def load_templates(path device=None, dtype=None, for_torch=True,):
+def load_templates(path, device=None, dtype=None, for_torch=True):
     # Load templates data
     if isinstance(path, type(None)):
         return np.array([0])

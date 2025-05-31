@@ -142,7 +142,7 @@ def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=
                 )
 
         # Initialize vector field
-        templates = load_templates(...)
+        templates = load_templates(cfg_vf.template_path, device, dtype)
         vf_guide = create_vf(cfg_vf, templates)
 
         # Generate images
