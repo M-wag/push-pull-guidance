@@ -102,7 +102,7 @@ def edm_sampler(
             xs[i] = x_next
             metrics[0, i] = torch.norm(x_next)
 
-    return xs.numpy(), (t_steps.cpu().numpy(), )
+    return xs, (t_steps, )
 
 #----------------------------------------------------------------------------
 

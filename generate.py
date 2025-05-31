@@ -124,6 +124,7 @@ def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=
                 class_idx=class_labels, 
                 latents=latents,
                 batch_size=batch_size,
+                num_steps=16,
                 )
         cfg_vf = ConfigGuidanceVF(
                     type_latent     = "pixel",
@@ -133,14 +134,16 @@ def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=
                     template_path   = "data/input/cat_1.jpg",
                 )
 
+
         # Initialize vector field
         templates = load_templates(cfg_vf.template_path, device, dtype)
-        vf_guide = create_vf(cfg_vf, templates)
+        vf_guide = create_vf(cfg_vf, templates, verbose=False)
         
         sampler_kwargs = cfg_sampler.to_dict()
 
         # Generate images
-        images, _ = edm_sampler(net, vf_guide, None, device, **sampler_kwargs)
+        xs, _ = edm_sampler(net, vf_guide, None, device, **sampler_kwargs)
+        images = xs[-1]
 
         # Save images.
         images_np = (images * 127.5 + 128).clip(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
