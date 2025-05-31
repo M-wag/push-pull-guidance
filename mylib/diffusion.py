@@ -3,7 +3,8 @@ import tqdm
 import time
 import pickle
 import numpy as np
-import torch import os
+import torch 
+import os
 import itertools
 import dnnlib
 from PIL import Image
@@ -641,17 +642,17 @@ def create_vf(prms: ConfigGuidanceVF, templates, verbose=True):
 
 ### SCHEDULER ###
 
-def load_templates(cnfg : ConfigSimulation, for_torch=True):
+def load_templates(path device=None, dtype=None, for_torch=True,):
     # Load templates data
-    if isinstance(cnfg.guidance_vf, type(None)):
+    if isinstance(path, type(None)):
         return np.array([0])
-    elif os.path.isfile(cnfg.guidance_vf.template_path):
-        templates = torch.unsqueeze(read_image(cnfg.guidance_vf.template_path), 0)
+    elif os.path.isfile(path):
+        templates = torch.unsqueeze(read_image(path), 0)
 
-    elif os.path.isdir(cnfg.guidance_vf.template_path):
+    elif os.path.isdir(path):
         imgs = []
-        for fname in sorted(os.listdir(cnfg.guidance_vf.template_path)): # iterate through each file in directory
-            fpath = os.path.join(cnfg.guidance_vf.template_path, fname)
+        for fname in sorted(os.listdir(path)): # iterate through each file in directory
+            fpath = os.path.join(path, fname)
             if not os.path.isfile(fpath): 
                 continue
             imgs.append(read_image(fpath))
@@ -662,8 +663,13 @@ def load_templates(cnfg : ConfigSimulation, for_torch=True):
             f"Template path must be an existing file, directory, or None; "
             f"got {cnfg.guidance_vf.template_path!r} (type {type(cnfg.guidance_vf.template_path).__name__})"
     )
+
+    if device:
+        templates = templates.to(device=device)
+    if dtype:
+        templates = templates.to(dtype=dtype)
     if for_torch:
-        templates = (templates.to(device=cnfg.device, dtype=torch.float64) - 128) / 127.5 
+        templates = (templates - 128) / 127.5 
     return templates
 
 def schedule_diffusion(cnfg : ConfigSimulation):
