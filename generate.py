@@ -19,7 +19,7 @@ import PIL.Image
 import dnnlib
 from torch_utils import distributed as dist
 
-from mylib.diffusion import edm_sampler, create_vf, ConfigSampler, ConfigGuidanceVF
+from mylib.diffusion import edm_sampler, create_vf, ConfigSampler, ConfigGuidanceVF, load_templates
 
 #----------------------------------------------------------------------------
 # Wrapper for torch.Generator that allows specifying a different random seed
@@ -67,20 +67,7 @@ def parse_int_list(s):
 @click.option('--class', 'class_idx',      help='Class label  [default: random]', metavar='INT',                    type=click.IntRange(min=0), default=None)
 @click.option('--batch', 'max_batch_size', help='Maximum batch size', metavar='INT',                                type=click.IntRange(min=1), default=64, show_default=True)
 
- # Sampler Kwargs
-@click.option('--steps', 'num_steps',      help='Number of sampling steps', metavar='INT',                          type=click.IntRange(min=1), default=18, show_default=True)
-@click.option('--sigma_min',               help='Lowest noise level  [default: varies]', metavar='FLOAT',           type=click.FloatRange(min=0, min_open=True))
-@click.option('--sigma_max',               help='Highest noise level  [default: varies]', metavar='FLOAT',          type=click.FloatRange(min=0, min_open=True))
-@click.option('--rho',                     help='Time step exponent', metavar='FLOAT',                              type=click.FloatRange(min=0, min_open=True), default=7, show_default=True)
-@click.option('--S_churn', 'S_churn',      help='Stochasticity strength', metavar='FLOAT',                          type=click.FloatRange(min=0), default=0, show_default=True)
-@click.option('--S_min', 'S_min',          help='Stoch. min noise level', metavar='FLOAT',                          type=click.FloatRange(min=0), default=0, show_default=True)
-@click.option('--S_max', 'S_max',          help='Stoch. max noise level', metavar='FLOAT',                          type=click.FloatRange(min=0), default='inf', show_default=True)
-@click.option('--S_noise', 'S_noise',      help='Stoch. noise inflation', metavar='FLOAT',                          type=float, default=1, show_default=True)
-
-# TODO: add scaling 
-@click.option('--scaling',                 help='Ablate signal scaling s(t)', metavar='vp|none',                    type=click.Choice(['vp', 'none']))
-
-def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=torch.device('cuda'), **sampler_kwargs):
+def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=torch.device('cuda'), dtype=torch.float64):
     """Generate random images using the techniques described in the paper
     "Elucidating the Design Space of Diffusion-Based Generative Models".
 
@@ -133,6 +120,11 @@ def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=
             class_labels[:, class_idx] = 1
 
         # Set configs
+        cfg_sampler = ConfigSampler(
+                class_idx=class_labels, 
+                latents=latents,
+                batch_size=batch_size,
+                )
         cfg_vf = ConfigGuidanceVF(
                     type_latent     = "pixel",
                     decay_rate      = 1.0,
@@ -144,11 +136,11 @@ def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=
         # Initialize vector field
         templates = load_templates(cfg_vf.template_path, device, dtype)
         vf_guide = create_vf(cfg_vf, templates)
+        
+        sampler_kwargs = cfg_sampler.to_dict()
 
         # Generate images
-        images, _ = edm_sampler(net, vf_guide, None, device, 
-                                class_idx=class_labels, latents=latents, **sampler_kwargs
-                                )
+        images, _ = edm_sampler(net, vf_guide, None, device, **sampler_kwargs)
 
         # Save images.
         images_np = (images * 127.5 + 128).clip(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()

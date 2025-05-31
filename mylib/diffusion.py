@@ -197,6 +197,7 @@ class ConfigGuidanceVF(Config):
 @dataclass(frozen=True)
 class ConfigSampler(Config):
     class_idx:          int = None
+    latents:            float = None
     scale_model_score:  float = 1.0
     batch_size :        float = 9
     num_steps:          int = 32
