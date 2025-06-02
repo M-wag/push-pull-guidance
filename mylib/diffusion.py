@@ -303,6 +303,7 @@ class GuidanceVF:
             self._score = self._score_single_feature
 
         # Pre-process templates 
+        # TODO : ASSERT THIS IS (BATCH, N_FEATURES, D_LATENT)
         self.features_template = latent(self.flat(self.templates)) if flatten_input else latent(self.templates)
         # Device and type tracking
         self.device = self.templates.device
@@ -360,18 +361,13 @@ class PixelGuidanceVF(GuidanceVF):
         super().__init__(*args, **kwargs, latent=lambda x: x, latent_inv=lambda x: x)
 
     def _score_single_feature(self, x, t):
-        # (1, ) * (1, ) * ( (1, D) - (B,D))
-        # score = self.scale *  self.time_weight(t) * (self.templates - x) / self.noise(t) ** 2
-        score = self.scale * self.time_weight(t) * (self.templates- x) / self.noise(t)**2 
+        # (1, ) * (1, ) * ( (B, D) - (B,D))
+        score = self.scale * self.time_weight(t) * (self.templates - x) / self.noise(t)**2 
         return score
     
-    def test(self, x, t):
-        dirac_score_latent = -self.noise_dot(t) * (self.features_template - x) / self.noise(t)
-        return dirac_score_latent
-
     def _score_attention(self, x, t):
-        # (1, N, D) - (B, 1, D)
-        diffs = self.features_template.unsqueeze(0) - x.unsqueeze(1)
+        # (B, N, D) - (B, 1, D)
+        diffs = self.features_template - x.unsqueeze(1)
         diffs_normalized = self.attention_normalizer(diffs)
         # (B, N)
         attention = self.attention(diff_normalized, passing_diff=True)
@@ -672,6 +668,25 @@ def load_templates(path, device=None, dtype=None, for_torch=True):
     if for_torch:
         templates = (templates - 128) / 127.5 
     return templates
+
+def load_templates_batch(batch_template_info, device=None, dtype=None, for_torch=True):
+    """
+    batch_template_info: list of either paths, or list of filenames/indices to load from `template_dir`
+    template_dir: if `batch_template_info` contains filenames or indices
+    """
+
+    batch_templates = []
+    for entry in batch_template_info:
+        batch_templates.append(load_templates(entry, device, dtype, for_troch))
+    if for_torch:
+        batch_templates = torch.stack(batch_templates) 
+
+    if batch_templates == [] : 
+        batch_templates = None
+
+    return batch_templates
+
+
 
 def schedule_diffusion(cnfg : ConfigSimulation):
     # Set seed
