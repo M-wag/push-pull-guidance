@@ -8,7 +8,7 @@ import torch
 import pickle
 from einops import rearrange, repeat
 from dataclasses import replace
-from mylib.diffusion import schedule_diffusion, ConfigSimulation, ConfigDiffusion, ConfigGuidanceVF, load_templates
+from mylib.diffusion import schedule_diffusion, ConfigSimulation, ConfigSampler, ConfigGuidanceVF, load_templates
 from mylib.visual import visualize_from_path
 import math 
 import shutil
@@ -94,7 +94,7 @@ if __name__ == "__main__":
             seed          = 0,
             input_shape   = (3, 64, 64),
             guidance_vf   = guidance_vf,
-            diffusion     = ConfigDiffusion(num_steps=16, class_idx=282),
+            diffusion     = ConfigSampler(num_steps=16, class_idx=282),
         )
 
         # Set up the per-experiment directory
