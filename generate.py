@@ -134,7 +134,6 @@ def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=
                     template_path   = "data/input/cat_1.jpg",
                 )
 
-
         # Initialize vector field
         templates = load_templates(cfg_vf.template_path, device, dtype)
         vf_guide = create_vf(cfg_vf, templates, verbose=False)
@@ -160,6 +159,95 @@ def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=
     torch.distributed.barrier()
     dist.print0('Done.')
 
+def generate_images(
+    net,                                        # Main network. Path, URL, or torch.nn.Module.
+    gnet                = None,                 # Guiding network. None = same as main network.
+    encoder             = None,                 # Instance of training.encoders.Encoder. None = load from network pickle.
+    outdir              = None,                 # Where to save the output images. None = do not save.
+    subdirs             = False,                # Create subdirectory for every 1000 seeds?
+    seeds               = range(16, 24),        # List of random seeds.
+    class_idx           = None,                 # Class label. None = select randomly.
+    max_batch_size      = 32,                   # Maximum batch size for the diffusion model.
+    encoder_batch_size  = 4,                    # Maximum batch size for the encoder. None = default.
+    verbose             = True,                 # Enable status prints?
+    device              = torch.device('cuda'), # Which compute device to use.
+    sampler_fn          = edm_sampler,          # Which sampler function to use.
+    **sampler_kwargs,                           # Additional arguments for the sampler function.
+):
+    
+    # Rank 0 goes first.
+    if dist.get_rank() != 0:
+        torch.distributed.barrier()
+
+    # Load main network.
+    if isinstance(net, str):
+        if verbose:
+            dist.print0(f'Loading main network from {net} ...')
+        with dnnlib.util.open_url(net, verbose=(verbose and dist.get_rank() == 0)) as f:
+            data = pickle.load(f)
+        net = data['ema'].to(device)
+        if encoder is None:
+            encoder = data.get('encoder', None)
+            if encoder is None:
+                encoder = dnnlib.util.construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
+    assert net is not None
+
+    # TODO : Load guidance network.
+
+    # Other ranks follow.
+    if dist.get_rank() == 0:
+        torch.distributed.barrier()
+
+    # Divide seeds into batches.
+    num_batches = max((len(seeds) - 1) // (max_batch_size * dist.get_world_size()) + 1, 1) * dist.get_world_size()
+    rank_batches = np.array_split(np.arange(len(seeds)), num_batches)[dist.get_rank() :: dist.get_world_size()]
+    if verbose:
+        dist.print0(f'Generating {len(seeds)} images...')
+
+    # Return an iterable over the batches.
+    class ImageIterable:
+        def __len__(self):
+            return len(rank_batches)
+
+        def __iter__(self):
+            # Loop over batches.
+            for batch_idx, indices in enumerate(rank_batches):
+                r = dnnlib.EasyDict(images=None, labels=None, noise=None, batch_idx=batch_idx, num_batches=len(rank_batches), indices=indices)
+                r.seeds = [seeds[idx] for idx in indices]
+                if len(r.seeds) > 0:
+
+                    # Pick noise and labels.
+                    rnd = StackedRandomGenerator(device, r.seeds)
+                    r.noise = rnd.randn([len(r.seeds), net.img_channels, net.img_resolution, net.img_resolution], device=device)
+                    r.labels = None
+                    if net.label_dim > 0:
+                        r.labels = torch.eye(net.label_dim, device=device)[rnd.randint(net.label_dim, size=[len(r.seeds)], device=device)]
+                        if class_idx is not None:
+                            r.labels[:, :] = 0
+                            r.labels[:, class_idx] = 1
+
+                    # TODO : Initialize guidance vectorfield 
+                    templates_batch = 
+                    vf_guide = create_vf(cfg_vf, templates_batch, verbose=False)
+
+                    # TODO :Generate images
+                    xs, _ = edm_sampler(net, vf_guide, None, device, **sampler_kwargs)
+                    r.images = xs[-1]
+
+                    # Save images.
+                    images_np = (images * 127.5 + 128).clip(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
+                    if outdir is not None:
+                        for seed, image in zip(r.seeds, images_np):
+                            image_dir = os.path.join(outdir, f'{seed//1000*1000:06d}') if subdirs else outdir
+                            os.makedirs(image_dir, exist_ok=True)
+                            image_path = os.path.join(image_dir, f'{seed:06d}.png')
+                            PIL.Image.fromarray(image, 'RGB').save(image_path)
+
+                # Yield results.
+                torch.distributed.barrier() # keep the ranks in sync
+                yield r
+
+    return ImageIterable()
 #----------------------------------------------------------------------------
 
 if __name__ == "__main__":
