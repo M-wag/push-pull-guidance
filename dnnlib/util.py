@@ -1,4 +1,4 @@
-# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # This work is licensed under a Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -25,12 +25,10 @@ import hashlib
 import glob
 import tempfile
 import urllib
-import urllib.request
+import urllib.parse
 import uuid
 
-from distutils.util import strtobool
-from typing import Any, List, Tuple, Union, Optional
-
+from typing import Any, Callable, BinaryIO, List, Tuple, Union, Optional
 
 # Util classes
 # ------------------------------------------------------------------------------------------
@@ -163,16 +161,6 @@ def format_time_brief(seconds: Union[int, float]) -> str:
         return "{0}d {1:02}h".format(s // (24 * 60 * 60), (s // (60 * 60)) % 24)
 
 
-def ask_yes_no(question: str) -> bool:
-    """Ask the user the question until the user inputs a valid answer."""
-    while True:
-        try:
-            print("{0} [y/n]".format(question))
-            return strtobool(input().lower())
-        except ValueError:
-            pass
-
-
 def tuple_product(t: Tuple) -> Any:
     """Calculate the product of the tuple elements."""
     result = 1
@@ -289,15 +277,15 @@ def get_obj_by_name(name: str) -> Any:
     return get_obj_from_module(module, obj_name)
 
 
-def call_func_by_name(*args, func_name: str = None, **kwargs) -> Any:
+def call_func_by_name(*args, func_name: Union[str, Callable], **kwargs) -> Any:
     """Finds the python object with the given name and calls it as a function."""
     assert func_name is not None
-    func_obj = get_obj_by_name(func_name)
+    func_obj = get_obj_by_name(func_name) if isinstance(func_name, str) else func_name
     assert callable(func_obj)
     return func_obj(*args, **kwargs)
 
 
-def construct_class_by_name(*args, class_name: str = None, **kwargs) -> Any:
+def construct_class_by_name(*args, class_name: Union[str, type], **kwargs) -> Any:
     """Finds the python class with the given name and constructs it with the given arguments."""
     return call_func_by_name(*args, func_name=class_name, **kwargs)
 
@@ -318,14 +306,16 @@ def get_top_level_function_name(obj: Any) -> str:
     assert is_top_level_function(obj)
     module = obj.__module__
     if module == '__main__':
-        module = os.path.splitext(os.path.basename(sys.modules[module].__file__))[0]
+        fname = sys.modules[module].__file__
+        assert fname is not None
+        module = os.path.splitext(os.path.basename(fname))[0]
     return module + "." + obj.__name__
 
 
 # File system helpers
 # ------------------------------------------------------------------------------------------
 
-def list_dir_recursively_with_ignore(dir_path: str, ignores: List[str] = None, add_base_to_relative: bool = False) -> List[Tuple[str, str]]:
+def list_dir_recursively_with_ignore(dir_path: str, ignores: Optional[List[str]] = None, add_base_to_relative: bool = False) -> List[Tuple[str, str]]:
     """List all files recursively in a given directory while ignoring given file and directory names.
     Returns list of tuples containing both absolute and relative paths."""
     assert os.path.isdir(dir_path)
@@ -365,9 +355,7 @@ def copy_files_and_create_dirs(files: List[Tuple[str, str]]) -> None:
         target_dir_name = os.path.dirname(file[1])
 
         # will create all intermediate-level directories
-        if not os.path.exists(target_dir_name):
-            os.makedirs(target_dir_name)
-
+        os.makedirs(target_dir_name, exist_ok=True)
         shutil.copyfile(file[0], file[1])
 
 
@@ -381,25 +369,28 @@ def is_url(obj: Any, allow_file_urls: bool = False) -> bool:
     if allow_file_urls and obj.startswith('file://'):
         return True
     try:
-        res = requests.compat.urlparse(obj)
+        res = urllib.parse.urlparse(obj)
         if not res.scheme or not res.netloc or not "." in res.netloc:
             return False
-        res = requests.compat.urlparse(requests.compat.urljoin(obj, "/"))
+        res = urllib.parse.urlparse(urllib.parse.urljoin(obj, "/"))
         if not res.scheme or not res.netloc or not "." in res.netloc:
             return False
     except:
         return False
     return True
 
-
-def open_url(url: str, cache_dir: str = None, num_attempts: int = 10, verbose: bool = True, return_filename: bool = False, cache: bool = True) -> Any:
+# Note on static typing: a better API would be to split 'open_url' to 'openl_url' and
+# 'download_url' with separate return types (BinaryIO, str).  As the `return_filename=True`
+# case is somewhat uncommon, we just pretend like this function never returns a string
+# and type ignore return value for those cases.
+def open_url(url: str, cache_dir: Optional[str] = None, num_attempts: int = 10, verbose: bool = True, return_filename: bool = False, cache: bool = True) -> BinaryIO:
     """Download the given URL and return a binary-mode file object to access the data."""
     assert num_attempts >= 1
     assert not (return_filename and (not cache))
 
     # Doesn't look like an URL scheme so interpret it as a local filename.
     if not re.match('^[a-z]+://', url):
-        return url if return_filename else open(url, "rb")
+        return url if return_filename else open(url, "rb") # type: ignore
 
     # Handle file URLs.  This code handles unusual file:// patterns that
     # arise on Windows:
@@ -412,14 +403,14 @@ def open_url(url: str, cache_dir: str = None, num_attempts: int = 10, verbose: b
     # If you touch this code path, you should test it on both Linux and
     # Windows.
     #
-    # Some internet resources suggest using urllib.request.url2pathname() but
+    # Some internet resources suggest using urllib.request.url2pathname()
     # but that converts forward slashes to backslashes and this causes
     # its own set of problems.
     if url.startswith('file://'):
         filename = urllib.parse.urlparse(url).path
         if re.match(r'^/[a-zA-Z]:', filename):
             filename = filename[1:]
-        return filename if return_filename else open(filename, "rb")
+        return filename if return_filename else open(filename, "rb") # type: ignore
 
     assert is_url(url)
 
@@ -432,7 +423,7 @@ def open_url(url: str, cache_dir: str = None, num_attempts: int = 10, verbose: b
         cache_files = glob.glob(os.path.join(cache_dir, url_md5 + "_*"))
         if len(cache_files) == 1:
             filename = cache_files[0]
-            return filename if return_filename else open(filename, "rb")
+            return filename if return_filename else open(filename, "rb") # type: ignore
 
     # Download.
     url_name = None
@@ -452,7 +443,7 @@ def open_url(url: str, cache_dir: str = None, num_attempts: int = 10, verbose: b
                         if "download_warning" in res.headers.get("Set-Cookie", ""):
                             links = [html.unescape(link) for link in content_str.split('"') if "export=download" in link]
                             if len(links) == 1:
-                                url = requests.compat.urljoin(url, links[0])
+                                url = urllib.parse.urljoin(url, links[0])
                                 raise IOError("Google Drive virus checker nag")
                         if "Google Drive - Quota exceeded" in content_str:
                             raise IOError("Google Drive download quota exceeded -- please try again later")
@@ -473,8 +464,11 @@ def open_url(url: str, cache_dir: str = None, num_attempts: int = 10, verbose: b
                 if verbose:
                     print(".", end="", flush=True)
 
+    assert url_data is not None
+
     # Save to cache.
     if cache:
+        assert url_name is not None
         safe_name = re.sub(r"[^0-9a-zA-Z-._]", "_", url_name)
         safe_name = safe_name[:min(len(safe_name), 128)]
         cache_file = os.path.join(cache_dir, url_md5 + "_" + safe_name)
@@ -484,7 +478,7 @@ def open_url(url: str, cache_dir: str = None, num_attempts: int = 10, verbose: b
             f.write(url_data)
         os.replace(temp_file, cache_file) # atomic
         if return_filename:
-            return cache_file
+            return cache_file # type: ignore
 
     # Return data as file object.
     assert not return_filename
