@@ -175,6 +175,7 @@ cython_debug/
 
 # Folder Specific
 *.pkl
+*.swp
 
 # Ignore contents of data input and output
 data/output/*

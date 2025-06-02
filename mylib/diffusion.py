@@ -705,7 +705,11 @@ def schedule_diffusion(cnfg : ConfigSimulation):
     start_time = time.time()
     print(cnfg.diffusion.to_dict())
     for idx, cnfg_split in enumerate(cnfg.split()):
-        template_path = cnfg_split.guidance_vf.template_path
+        if cnfg_splt.guidance_vf:
+            template_path = cnfg_split.guidance_vf.template_path
+        else:
+            template_path is None
+
         templates = load_templates(template_path, device=cnfg.device, dtype=torch.float64)
         vf_guide = create_vf(cnfg_split.guidance_vf, templates)
         xs, (ts, ) = edm_sampler(net, vf_guide, cnfg.seed, cnfg.device,
