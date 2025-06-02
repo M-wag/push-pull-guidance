@@ -383,6 +383,106 @@ def ref(**opts):
 
 #----------------------------------------------------------------------------
 
+# Programatic variants
+def calculate_metrics_from_directory(
+    image_path: str,
+    ref_path: str,
+    metrics: List[str] = ['fid', 'fd_dinov2'],
+    num_images: int = 50000,
+    seed: int = 0,
+    max_batch_size: int = 64,
+    num_workers: int = 2,
+    verbose: bool = True,
+) -> Dict[str, float]:
+    """Calculate metrics for images in a directory/ZIP file."""
+
+    torch.multiprocessing.set_start_method('spawn')
+    dist.init()
+    if dist.get_rank() == 0:
+        ref = load_stats(path=ref_path) # do this first, just in case it fails
+    stats_iter = calculate_stats_for_files(metrics=metrics, **opts)
+    for r in tqdm.tqdm(stats_iter, unit='batch', disable=(dist.get_rank() != 0)):
+        pass
+    if dist.get_rank() == 0:
+        calculate_metrics_from_stats(stats=r.stats, ref=ref, metrics=metrics)
+    torch.distributed.barrier()
+
+
+def calculate_metrics_from_generator(
+    network_pkl: str,
+    ref_path: str,
+    metrics: List[str] = ['fid', 'fd_dinov2'],
+    num_images: int = 50000,
+    seed: int = 0,
+    max_batch_size: int = 32,
+    verbose: bool = True,
+) -> Dict[str, float]:
+    """Calculate metrics for a generative model."""
+    dist.init()
+    
+    # Load reference stats
+    if dist.get_rank() == 0:
+        ref = load_stats(ref_path) # do this first in case it fails
+    
+    # Generate images
+    seeds = range(seed, seed + num_images)
+    image_iter = generate_images.generate_images(
+        net=network_pkl,
+        seeds=seeds,
+        max_batch_size=max_batch_size
+    )
+    
+    # Calculate statistics
+    stats_iter = calculate_stats_for_iterable(
+        image_iter=image_iter,
+        metrics=metrics,
+        verbose=verbose
+    )
+    
+    for r in tqdm.tqdm(stats_iter, unit='batch', disable=(dist.get_rank() != 0)):
+        pass
+    
+    # Compute and return metrics
+    results = {}
+    if dist.get_rank() == 0:
+        results = calculate_metrics_from_stats(r.stats, ref, metrics, verbose)
+    
+    torch.distributed.barrier()
+    return results
+
+def generate_reference_stats(
+    image_path: str,
+    dest_path: str,
+    metrics: List[str] = ['fid', 'fd_dinov2'],
+    max_batch_size: int = 64,
+    num_workers: int = 2,
+    verbose: bool = True,
+) -> Optional[Dict]:
+    """Generate reference statistics for a dataset."""
+    torch.multiprocessing.set_start_method('spawn', force=True)
+    dist.init()
+    
+    # Calculate and save statistics
+    stats_iter = calculate_stats_for_files(
+        image_path=image_path,
+        metrics=metrics,
+        max_batch_size=max_batch_size,
+        num_workers=num_workers,
+        verbose=verbose,
+        dest_path=dest_path
+    )
+    
+    # Process batches
+    for r in tqdm.tqdm(stats_iter, unit='batch', disable=(dist.get_rank() != 0)):
+        pass
+    
+    # Return stats on rank 0
+    if dist.get_rank() == 0:
+        return r.stats
+    return None
+
+#----------------------------------------------------------------------------
+
 if __name__ == "__main__":
     cmdline()
 
