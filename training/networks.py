@@ -457,7 +457,9 @@ class DhariwalUNet(torch.nn.Module):
             skips.append(x)
 
         if self.save_skips:
+            print("saving skip")
             self.saved_skips = list(skips) # Copy skip connections
+            self.saved_emb = emb
 
         # Decoder.
         for block in self.dec.values():

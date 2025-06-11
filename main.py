@@ -8,7 +8,7 @@ import torch
 import pickle
 from einops import rearrange, repeat
 from dataclasses import replace
-from mylib.diffusion import edm_sampler, ConfigSimulation, ConfigSampler, ConfigGuidanceVF, load_templates, create_vf
+from mylib.diffusion import edm_sampler, ConfigSimulation, ConfigSampler, ConfigGuidanceVF, load_templates_batch, create_vf
 from mylib.visual import visualize_from_path
 from training.networks import EDMPrecond
 from torch_utils import misc
@@ -71,6 +71,13 @@ VF_LINEAR_HF = ConfigGuidanceVF(
         T = 1.0,
         )
 
+VF_UNET = ConfigGuidanceVF(
+        type_latent = "unet",
+        type_eval = "numdiff",
+        v_0 = [45, 30, 15],
+        scale = 1.0,
+        template_path = "data/data/cat_1.jpg",
+        )
 
 if __name__ == "__main__":
     cnfg = ConfigSimulation(
@@ -78,28 +85,31 @@ if __name__ == "__main__":
         device        = "cuda" if torch.cuda.is_available() else "cpu",
         seed          = 0,
         input_shape   = (3, 64, 64),
+        # guidance_vf   = VF_UNET.split()[0],
         guidance_vf   = VF_PIXEL.split()[0],
-        diffusion     = ConfigSampler(num_steps=5, class_idx=282),
+        diffusion     = ConfigSampler(
+            num_steps=32, 
+            class_idx=281,
+            batch_size=9,
+        ),
     )
 
     # Create network
     with dnnlib.util.open_url(cnfg.network_pkl) as f:
-        net_old = pickle.load(f)['ema']
+        net_old = pickle.load(f)['ema'].to(cnfg.device)
     net = EDMPrecond(*net_old.init_args, **net_old.init_kwargs).to(cnfg.device)
+    net.model.save_skips = True
     misc.copy_params_and_buffers(net_old, net, require_all=True)
     
-
-    for a, b in zip(net.state_dict().keys(), net_old.state_dict().keys()):
-        assert a == b
-    
-    for x in net_old.init_kwargs.items():
-        print(x)
-
     # Create guidance vectorfield
-    templates = load_templates(cnfg.guidance_vf.template_path)
-    vf = create_vf(cnfg.guidance_vf, templates)
+    templates = load_templates_batch([cnfg.guidance_vf.template_path] * cnfg.diffusion.batch_size, device=cnfg.device)
+    vf = create_vf(cnfg.guidance_vf, templates, net=net, cnfg_sim=cnfg)
+
 
     # Run sampler
-    edm_sampler(net_old, vf, seed=None, device=cnfg.device, **cnfg.diffusion.to_dict())
-    # print(net.model.saved_skips)
+    xs, _ = edm_sampler(net, vf, seed=None, device=cnfg.device, **cnfg.diffusion.to_dict())
+    plt.imshow(rearrange(xs[-1].detach().numpy(), "(b1 b2) c h w -> (b1 h) (b2 w) c ", b1=3))
+    plt.show()
+               
+
 

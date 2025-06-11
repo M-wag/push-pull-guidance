@@ -72,17 +72,11 @@ def edm_sampler(
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
 
     def gradient(x, t):
-        # Model score
         denoised = net(x, t, class_labels).to(torch.float64)
-        if isinstance(denoised, tuple):
-            denoised, skips = denoised
-            d_template = vf_template(x, t, skips)
-            [print(skip.shape) for skip in skips]
-        else:
-            d_template = vf_template(x, t)
-        d_model = scale_model_score * (x - denoised) / t
+        grad_template = vf_template(x, t)
+        grad_model = scale_model_score * (x - denoised) / t
 
-        return d_template + d_model
+        return grad_template + grad_model
 
     xs = None 
     # Intialize empty array to save intermediate timestaps
@@ -179,11 +173,18 @@ class Config:
 
 @dataclass(frozen=True)
 class ConfigGuidanceVFBase(Config):
-    type_latent:            Literal["pixel", "linear", "hf"] = None
+    type_latent:            Literal["pixel", "linear", "hf", "unet"] = None
     template_path:          str | None = None
     scale:                  float | list[float] | None  = 1.0
     decay_rate:             float | list[float] | None = 1.0
     v_0:                    float | list[float] | None = None
+
+    # Optional
+    flatten_input:          bool | None = False
+    threshold_weight:       float | list[float] = None
+    threshold_time_min:     float | list[float] | None = None
+    threshold_time_max:     float | list[float] | None = None
+
 
 @dataclass(frozen=True)
 class ConfigGuidanceVF(ConfigGuidanceVFBase):
@@ -192,18 +193,11 @@ class ConfigGuidanceVF(ConfigGuidanceVFBase):
     dim_feature:            float | list[int] | None = None
     seed_mat:               int | None = None
     T:                      int | list[int] | None = None
+
     # Hugging Face or Non-Linear
     hf_url:                 str = None
     type_eval:              Literal["jvp", "numdiff"] | None = None
-    # Optional
-    flatten_input:          bool | None = False
-    threshold_weight:       float | list[float] = None
-    threshold_time_min:     float | list[float] | None = None
-    threshold_time_max:     float | list[float] | None = None
-
-# @dataclass(frozen=True)
-# class ConfigVF_UNet(ConfigGuidanceVFBase):
-
+    
 @dataclass(frozen=True)
 class ConfigSampler(Config):
     class_idx:          int = None
@@ -598,7 +592,31 @@ class BuilderHuggingfaceVF(BuilderVFBase):
 
 class BuilderUNetEncoder(BuilderVFBase):
     @classmethod
-    def create(cls, prms, templates, *, net):
+    def create(cls, prms, templates, *, net, cnfg_sim):
+        kwargs, templates = cls._common_setup(prms, templates, 
+                                             extra_exclusions = ("hf_url", "n_skips") )
+        # Get information of simulation
+        device = cnfg_sim.device
+        batch_size = cnfg_sim.diffusion.batch_size
+        class_idx = cnfg_sim.diffusion.class_idx
+
+        # Handle class labels
+        if net.label_dim:
+            if class_idx is None:
+                # Use zeros (no class)
+                class_labels = torch.zeros([batch_size, net.label_dim], device=device)
+            elif isinstance(class_idx, int):
+                # Use one-hot encoded specified class
+                class_labels = torch.eye(net.label_dim, device=device)[batch_size * [class_idx]]
+            elif torch.is_tensor(class_idx):
+                # Use provided class labels directly
+                assert class_idx.shape == (batch_size, net.label_dim), \
+                    f"class_labels must have shape [{batch_size}, {net.label_dim}]"
+                class_labels = class_idx.to(device)
+            else:
+                raise ValueError("class_idx must be None, int, or tensor")
+        else:
+            class_labels = None
 
         # How pullback is evaluated
         # TODO Could change to globals()[prms.type_eval]
@@ -608,27 +626,34 @@ class BuilderUNetEncoder(BuilderVFBase):
             case "jvp":
                 VF = JVPGuidanceVF
 
+    
+        prms_latent = ConfigGuidanceVF(**kwargs)(type_latent="pixel")
+        net(templates, torch.tensor(0).to(device), class_labels)
+        features_template = net.model.saved_skips[-1]
+        
         def latent_fn(x):
-            return net.model.skips[-prms.n_skips:]
+            return net.model.saved_skips[-1]
         
         def latent_inv_fn(z):
-            skips_preserved = net.model.skips[:len(net.model.skips) - prms.n_skips)]  
-            skips = skips_preserved + z 
+            skips_preserved = net.model.saved_skips[:-1]
+            skips = skips_preserved + [z]
              
             # Decoder.
             for block in net.model.dec.values():
-                if x.shape[1] != block.in_channels:
-                    x = torch.cat([x, skips.pop()], dim=1)
-                x = block(x, emb)
-            x = net.model.out_conv(silu(net.model.out_norm(x)))
+                if z.shape[1] != block.in_channels:
+                    z = torch.cat([z, skips.pop()], dim=1)
+                z = block(z, net.model.saved_emb)
+            x = net.model.out_conv(torch.nn.functional.silu(net.model.out_norm(z)))
             return x
 
         vf = VF(
                 # **kwargs,
                 vf_latent = create_vf(prms_latent, features_template),
-                latent = latent_fn
-                latent_inv = latent_inv_fn
+                latent = latent_fn,
+                latent_inv = latent_inv_fn,
         )
+
+        return vf
 
 class BuilderLinearHFVF(BuilderVFBase):
     @classmethod
@@ -659,7 +684,7 @@ class BuilderLinearHFVF(BuilderVFBase):
         return vf
 
 
-def create_vf(prms: ConfigGuidanceVF, templates, verbose=True):
+def create_vf(prms: ConfigGuidanceVF, templates, verbose=True,  **vf_kwargs):
     if verbose: 
         print(f"\n{prms}")
         print(f"\ntemplates_shape \t= {tuple(templates.shape)}")
@@ -667,6 +692,8 @@ def create_vf(prms: ConfigGuidanceVF, templates, verbose=True):
     if prms is None:
         vf = lambda x, t: torch.zeros_like(x)
         return vf
+
+    # TODO: make config per type and match type
     match prms.type_latent:
         case "pixel":
             vf = BuilderPixelVF.create(prms, templates)
@@ -676,6 +703,8 @@ def create_vf(prms: ConfigGuidanceVF, templates, verbose=True):
             vf = BuilderHuggingfaceVF.create(prms, templates)
         case "hf-linear":
             vf = BuilderLinearHFVF.create(prms, templates)
+        case "unet":
+            vf = BuilderUNetEncoder.create(prms, templates, **vf_kwargs)
 
     return vf
 
@@ -720,9 +749,9 @@ def load_templates_batch(batch_template_info, device=None, dtype=None, for_torch
 
     batch_templates = []
     for entry in batch_template_info:
-        batch_templates.append(load_templates(entry, device, dtype, for_troch))
+        batch_templates.append(load_templates(entry, device, dtype, for_torch))
     if for_torch:
-        batch_templates = torch.stack(batch_templates) 
+        batch_templates = torch.concat(batch_templates) 
 
     if batch_templates == [] : 
         batch_templates = None
