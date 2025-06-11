@@ -20,6 +20,8 @@ from torch_utils import distributed as dist
 from torch_utils import misc
 from training import dataset
 import generate_images
+from typing import Optional
+
 
 #----------------------------------------------------------------------------
 # Abstract base class for feature detectors.
@@ -387,13 +389,13 @@ def ref(**opts):
 def calculate_metrics_from_directory(
     image_path: str,
     ref_path: str,
-    metrics: List[str] = ['fid', 'fd_dinov2'],
+    metrics: list[str] = ['fid', 'fd_dinov2'],
     num_images: int = 50000,
     seed: int = 0,
     max_batch_size: int = 64,
     num_workers: int = 2,
     verbose: bool = True,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Calculate metrics for images in a directory/ZIP file."""
 
     torch.multiprocessing.set_start_method('spawn')
@@ -411,12 +413,12 @@ def calculate_metrics_from_directory(
 def calculate_metrics_from_generator(
     network_pkl: str,
     ref_path: str,
-    metrics: List[str] = ['fid', 'fd_dinov2'],
+    metrics: list[str] = ['fid', 'fd_dinov2'],
     num_images: int = 50000,
     seed: int = 0,
     max_batch_size: int = 32,
     verbose: bool = True,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Calculate metrics for a generative model."""
     dist.init()
     
@@ -453,11 +455,11 @@ def calculate_metrics_from_generator(
 def generate_reference_stats(
     image_path: str,
     dest_path: str,
-    metrics: List[str] = ['fid', 'fd_dinov2'],
+    metrics: list[str] = ['fid', 'fd_dinov2'],
     max_batch_size: int = 64,
     num_workers: int = 2,
     verbose: bool = True,
-) -> Optional[Dict]:
+) -> Optional[dict]:
     """Generate reference statistics for a dataset."""
     torch.multiprocessing.set_start_method('spawn', force=True)
     dist.init()
