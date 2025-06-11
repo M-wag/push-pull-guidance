@@ -1,4 +1,3 @@
-
 import tqdm
 import time
 import pickle
@@ -703,17 +702,18 @@ def schedule_diffusion(cnfg : ConfigSimulation):
     raw_data = np.empty((len(cnfg.split()), cnfg.diffusion.num_steps, cnfg.diffusion.batch_size, *cnfg.input_shape)) # (N_combs, t, B, C, H, W)
     assert len(raw_data.shape) == 6, f"raw_data should have rank 6, got shape : {raw_data.shape}"
     start_time = time.time()
-    print(cnfg.diffusion.to_dict())
     for idx, cnfg_split in enumerate(cnfg.split()):
-        if cnfg_splt.guidance_vf:
+        if cnfg_split.guidance_vf:
             template_path = cnfg_split.guidance_vf.template_path
         else:
-            template_path is None
-
+            template_path = None
+        
         templates = load_templates(template_path, device=cnfg.device, dtype=torch.float64)
+        sampler_kwargs = cnfg.diffusion(class_idx=torch.eye(net.label_dim)[torch.randint(0, 1000, (cnfg.diffusion.batch_size,),  dtype=int)]).to_dict()
         vf_guide = create_vf(cnfg_split.guidance_vf, templates)
         xs, (ts, ) = edm_sampler(net, vf_guide, cnfg.seed, cnfg.device,
-                                     **cnfg.diffusion.to_dict())
+                                **sampler_kwargs)
+        
         raw_data[idx] = (xs * 127.5 + 128) / 255
     total_time = time.time() - start_time
     print(f"Total schedule_diffusion time: {total_time:.2f} s")
