@@ -73,20 +73,20 @@ def edm_sampler(
 
     def gradient(x, t):
         # Model score
-        print("Running network")
         denoised = net(x, t, class_labels).to(torch.float64)
-        d_model = scale_model_score * (x - denoised) / t
-
         if isinstance(denoised, tuple):
             denoised, skips = denoised
             d_template = vf_template(x, t, skips)
+            [print(skip.shape) for skip in skips]
         else:
             d_template = vf_template(x, t)
+        d_model = scale_model_score * (x - denoised) / t
 
         return d_template + d_model
 
     xs = None 
     # Intialize empty array to save intermediate timestaps
+    print("Running network")
     if save_all_timesteps:
         xs = torch.empty((num_steps, batch_size, net.img_channels, net.img_resolution, net.img_resolution))
         metrics = torch.empty((5, num_steps))
@@ -595,6 +595,40 @@ class BuilderHuggingfaceVF(BuilderVFBase):
         )
 
         return vf 
+
+class BuilderUNetEncoder(BuilderVFBase):
+    @classmethod
+    def create(cls, prms, templates, *, net):
+
+        # How pullback is evaluated
+        # TODO Could change to globals()[prms.type_eval]
+        match prms.type_eval:
+            case "numdiff":
+                VF = NumericalGuidanceVF
+            case "jvp":
+                VF = JVPGuidanceVF
+
+        def latent_fn(x):
+            return net.model.skips[-prms.n_skips:]
+        
+        def latent_inv_fn(z):
+            skips_preserved = net.model.skips[:len(net.model.skips) - prms.n_skips)]  
+            skips = skips_preserved + z 
+             
+            # Decoder.
+            for block in net.model.dec.values():
+                if x.shape[1] != block.in_channels:
+                    x = torch.cat([x, skips.pop()], dim=1)
+                x = block(x, emb)
+            x = net.model.out_conv(silu(net.model.out_norm(x)))
+            return x
+
+        vf = VF(
+                # **kwargs,
+                vf_latent = create_vf(prms_latent, features_template),
+                latent = latent_fn
+                latent_inv = latent_inv_fn
+        )
 
 class BuilderLinearHFVF(BuilderVFBase):
     @classmethod
