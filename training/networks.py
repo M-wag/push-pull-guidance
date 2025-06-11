@@ -384,6 +384,8 @@ class DhariwalUNet(torch.nn.Module):
         attn_resolutions    = [32,16,8],    # List of resolutions with self-attention.
         dropout             = 0.10,         # List of resolutions with self-attention.
         label_dropout       = 0,            # Dropout probability of class labels for classifier-free guidance.
+        
+        save_skips          = False,        # Whether to save and return the skip connections
     ):
         super().__init__()
         self.label_dropout = label_dropout
@@ -391,6 +393,8 @@ class DhariwalUNet(torch.nn.Module):
         init = dict(init_mode='kaiming_uniform', init_weight=np.sqrt(1/3), init_bias=np.sqrt(1/3))
         init_zero = dict(init_mode='kaiming_uniform', init_weight=0, init_bias=0)
         block_kwargs = dict(emb_channels=emb_channels, channels_per_head=64, dropout=dropout, init=init, init_zero=init_zero)
+        
+        self.save_skips = save_skips
 
         # Mapping.
         self.map_noise = PositionalEmbedding(num_channels=model_channels)
@@ -452,12 +456,16 @@ class DhariwalUNet(torch.nn.Module):
             x = block(x, emb) if isinstance(block, UNetBlock) else block(x)
             skips.append(x)
 
+        if self.save_skips:
+            self.saved_skips = list(skips) # Copy skip connections
+
         # Decoder.
         for block in self.dec.values():
             if x.shape[1] != block.in_channels:
                 x = torch.cat([x, skips.pop()], dim=1)
             x = block(x, emb)
         x = self.out_conv(silu(self.out_norm(x)))
+
         return x
 
 #----------------------------------------------------------------------------
