@@ -18,7 +18,8 @@ from torch import Tensor
 
 #----------------------------------------------------------------------------
 def edm_sampler(
-    net, vf_template,         # Vector field induced by tempaplate and features      
+    net, 
+    vf_template,         # Vector field induced by tempaplate and features      
     seed                : int , 
     device              ,
     *,
@@ -70,6 +71,20 @@ def edm_sampler(
     t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
 
+    def gradient(x, t):
+        # Model score
+        print("Running network")
+        denoised = net(x, t, class_labels).to(torch.float64)
+        d_model = scale_model_score * (x - denoised) / t
+
+        if isinstance(denoised, tuple):
+            denoised, skips = denoised
+            d_template = vf_template(x, t, skips)
+        else:
+            d_template = vf_template(x, t)
+
+        return d_template + d_model
+
     xs = None 
     # Intialize empty array to save intermediate timestaps
     if save_all_timesteps:
@@ -78,7 +93,6 @@ def edm_sampler(
 
     # Main sampling loop.
     x_next = latents.to(torch.float64) * t_steps[0]
-
     for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1): # 0, ..., N-1
         x_cur = x_next
 
@@ -87,14 +101,8 @@ def edm_sampler(
         t_hat = net.round_sigma(t_cur + gamma * t_cur)
         x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
 
-        # templates score
-        d_template = vf_template(x_hat, t_hat)
-
-        # model score
-        denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
-        d_model = scale_model_score * (x_hat - denoised) / t_hat
-        d_cur = (d_template + d_model) * (t_next - t_hat)
-        x_next = x_hat + d_cur
+        dx = gradient(x_hat, t_hat) * (t_next - t_hat)
+        x_next = x_hat + dx
 
         # Save intermediate timsteps
         if save_all_timesteps:
@@ -169,16 +177,16 @@ class Config:
         return tuple(collect_dims(self))
 
 
-# TODO: add way to net VF
 @dataclass(frozen=True)
-class ConfigGuidanceVF(Config):
-    # TODO : these should probably all require user values
-    # Core
+class ConfigGuidanceVFBase(Config):
     type_latent:            Literal["pixel", "linear", "hf"] = None
     template_path:          str | None = None
     scale:                  float | list[float] | None  = 1.0
     decay_rate:             float | list[float] | None = 1.0
     v_0:                    float | list[float] | None = None
+
+@dataclass(frozen=True)
+class ConfigGuidanceVF(ConfigGuidanceVFBase):
     # Linear
     n_features:             float | list[int] | None = None
     dim_feature:            float | list[int] | None = None
@@ -192,6 +200,9 @@ class ConfigGuidanceVF(Config):
     threshold_weight:       float | list[float] = None
     threshold_time_min:     float | list[float] | None = None
     threshold_time_max:     float | list[float] | None = None
+
+# @dataclass(frozen=True)
+# class ConfigVF_UNet(ConfigGuidanceVFBase):
 
 @dataclass(frozen=True)
 class ConfigSampler(Config):
@@ -375,7 +386,7 @@ class PixelGuidanceVF(GuidanceVF):
         score =  torch.einsum("BN, BN... -> B...", weights, recons) / self.noise(t) ** 2
         self.history_weight.append(attention)
         return score
-    
+
 class LinearGuidanceVF(GuidanceVF):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -448,7 +459,6 @@ class NumericalGuidanceVF(NonLinearGuidanceVFBase):
             f_original = self.latent_inv(x_latent)
             dx = (f_perturbed - f_original) / self.step_size  
         return  dx 
-
 
 # VF Builders
 class BuilderVFBase:
@@ -657,7 +667,7 @@ def load_templates(path, device=None, dtype=None, for_torch=True):
     else:
         raise ValueError(
             f"Template path must be an existing file, directory, or None; "
-            f"got {cnfg.guidance_vf.template_path!r} (type {type(cnfg.guidance_vf.template_path).__name__})"
+            f"got {path!r} (type {type(path).__name__})"
     )
 
     if device:
