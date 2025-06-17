@@ -457,7 +457,6 @@ class DhariwalUNet(torch.nn.Module):
             skips.append(x)
 
         if self.save_skips:
-            print("saving skip")
             self.saved_skips = list(skips) # Copy skip connections
             self.saved_emb = emb
 
@@ -467,7 +466,6 @@ class DhariwalUNet(torch.nn.Module):
                 x = torch.cat([x, skips.pop()], dim=1)
             x = block(x, emb)
         x = self.out_conv(silu(self.out_norm(x)))
-
         return x
 
 #----------------------------------------------------------------------------

@@ -38,9 +38,9 @@ VF_VAE_JVP = ConfigGuidanceVF(
         type_latent = "hf",
         type_eval = "jvp",
         hf_url = "stabilityai/sd-turbo",
-        v_0 = [40, 20, 10],
-        template_path = "data/input/cat_1.jpg",
-        threshold_weight = 0.1,
+        v_0 = [10, 20, 40],
+        template_path = "data/data/cat_1.jpg",
+        threshold_weight = 0.5,
         )
 
 VF_VAE_NUMDIFF = VF_VAE_JVP(type_eval="numdiff")
@@ -74,9 +74,11 @@ VF_LINEAR_HF = ConfigGuidanceVF(
 VF_UNET = ConfigGuidanceVF(
         type_latent = "unet",
         type_eval = "numdiff",
-        v_0 = [45, 30, 15],
-        scale = 1.0,
+        v_0 = 40,
+        # scale = 0.2,
+        # scale = 0.0,
         template_path = "data/data/cat_1.jpg",
+        n_skips = 1,
         )
 
 if __name__ == "__main__":
@@ -85,8 +87,9 @@ if __name__ == "__main__":
         device        = "cuda" if torch.cuda.is_available() else "cpu",
         seed          = 0,
         input_shape   = (3, 64, 64),
-        # guidance_vf   = VF_UNET.split()[0],
-        guidance_vf   = VF_PIXEL.split()[0],
+        # guidance_vf   = VF_VAE_NUMDIFF.split()[0],
+        guidance_vf   = VF_UNET.split()[0],
+        # guidance_vf   = VF_PIXEL.split()[0],
         diffusion     = ConfigSampler(
             num_steps=32, 
             class_idx=281,
@@ -99,16 +102,19 @@ if __name__ == "__main__":
         net_old = pickle.load(f)['ema'].to(cnfg.device)
     net = EDMPrecond(*net_old.init_args, **net_old.init_kwargs).to(cnfg.device)
     net.model.save_skips = True
+    net.eval()
     misc.copy_params_and_buffers(net_old, net, require_all=True)
     
     # Create guidance vectorfield
-    templates = load_templates_batch([cnfg.guidance_vf.template_path] * cnfg.diffusion.batch_size, device=cnfg.device)
+    templates = load_templates_batch([cnfg.guidance_vf.template_path] * cnfg.diffusion.batch_size, device=cnfg.device, dtype=torch.float64)
     vf = create_vf(cnfg.guidance_vf, templates, net=net, cnfg_sim=cnfg)
 
-
     # Run sampler
-    xs, _ = edm_sampler(net, vf, seed=None, device=cnfg.device, **cnfg.diffusion.to_dict())
-    plt.imshow(rearrange(xs[-1].detach().numpy(), "(b1 b2) c h w -> (b1 h) (b2 w) c ", b1=3))
+    with torch.no_grad():
+        xs, _ = edm_sampler(net, vf, seed=cnfg.seed, device=cnfg.device, **cnfg.diffusion.to_dict())
+
+    xs = (xs * 127.5 + 128) / 255
+    plt.imshow(rearrange(xs[-1].detach().numpy(), "(b1 b2) c h w -> (b1 h) (b2 w) c ", b1=int(np.sqrt(cnfg.diffusion.batch_size))))
     plt.show()
                
 

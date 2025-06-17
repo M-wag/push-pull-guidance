@@ -15,6 +15,7 @@ from typing import List, Any, Literal, Callable
 import torch.nn.functional as F
 from einops import rearrange
 from torch import Tensor
+from functools import partial
 
 #----------------------------------------------------------------------------
 def edm_sampler(
@@ -75,7 +76,6 @@ def edm_sampler(
         denoised = net(x, t, class_labels).to(torch.float64)
         grad_template = vf_template(x, t)
         grad_model = scale_model_score * (x - denoised) / t
-
         return grad_template + grad_model
 
     xs = None 
@@ -197,6 +197,9 @@ class ConfigGuidanceVF(ConfigGuidanceVFBase):
     # Hugging Face or Non-Linear
     hf_url:                 str = None
     type_eval:              Literal["jvp", "numdiff"] | None = None
+
+    # UNet
+    n_skips:               int = None
     
 @dataclass(frozen=True)
 class ConfigSampler(Config):
@@ -378,7 +381,7 @@ class PixelGuidanceVF(GuidanceVF):
         # (N, )
         weights =  attention * time_weight.unsqueeze(0) * self.scale
         score =  torch.einsum("BN, BN... -> B...", weights, recons) / self.noise(t) ** 2
-        self.history_weight.append(attention)
+        self.history_attention.append(attention)
         return score
 
 class LinearGuidanceVF(GuidanceVF):
@@ -452,7 +455,7 @@ class NumericalGuidanceVF(NonLinearGuidanceVFBase):
             f_perturbed = self.latent_inv(perturbed_latent)
             f_original = self.latent_inv(x_latent)
             dx = (f_perturbed - f_original) / self.step_size  
-        return  dx 
+        return dx 
 
 # VF Builders
 class BuilderVFBase:
@@ -626,31 +629,55 @@ class BuilderUNetEncoder(BuilderVFBase):
             case "jvp":
                 VF = JVPGuidanceVF
 
-    
         prms_latent = ConfigGuidanceVF(**kwargs)(type_latent="pixel")
-        net(templates, torch.tensor(0).to(device), class_labels)
-        features_template = net.model.saved_skips[-1]
+        sigma = torch.tensor(1.0).to(device)
+        net(templates, sigma, class_labels)
         
-        def latent_fn(x):
-            return net.model.saved_skips[-1]
-        
-        def latent_inv_fn(z):
-            skips_preserved = net.model.saved_skips[:-1]
-            skips = skips_preserved + [z]
-             
+        n_skips = prms.n_skips
+        idx_mod = list(range(8, 12))
+        idx_preserved = [x for x in range(0, len(net.model.saved_skips)) if x not in idx_mod] 
+        shapes_skips = [net.model.saved_skips[i].shape[1:] for i in idx_mod]
+
+
+        def latent_fn(x, *, net, n_skips):
+            skips = [net.model.saved_skips[i] for i in idx_mod]
+            skips_flat = torch.cat([x.flatten(start_dim=1) for x in skips], dim=1)
+            return skips_flat
+
+        def latent_inv_fn(z, *, net, n_skips, shapes):
+            # Split and unflatten diffused latent
+            lengths = [C*H*W for (C,H,W) in shapes_skips]
+            splits = z.split(lengths, dim=1)
+            batch_size = splits[0].shape[0]
+            skips_modded = [skip.view(batch_size, *shp) for skip, shp in zip(splits, shapes_skips)] 
+
+            # Recombine skips 
+            skips_preserved = [net.model.saved_skips[i] for i in idx_preserved]
+            skips = [None] * (len(idx_mod) + len(idx_preserved))
+            for i, skip in zip(idx_mod, skips_modded):
+                skips[i] = skip
+            for i, skip in zip(idx_preserved, skips_preserved):
+                skips[i] = skip
+
+            # Get noise embedding and bottleneck activation
+            emb = net.model.saved_emb
+            z = skips[-1]
+            
             # Decoder.
             for block in net.model.dec.values():
                 if z.shape[1] != block.in_channels:
                     z = torch.cat([z, skips.pop()], dim=1)
-                z = block(z, net.model.saved_emb)
+                z = block(z, emb)
             x = net.model.out_conv(torch.nn.functional.silu(net.model.out_norm(z)))
             return x
 
+        features_template = latent_fn(None, net=net, n_skips=n_skips)
+        assert not torch.any(torch.isnan(features_template)), "features_template has NaNs"
+
         vf = VF(
-                # **kwargs,
                 vf_latent = create_vf(prms_latent, features_template),
-                latent = latent_fn,
-                latent_inv = latent_inv_fn,
+                latent = partial(latent_fn, net=net, n_skips=n_skips),
+                latent_inv = partial(latent_inv_fn, net=net, n_skips=n_skips, shapes=shapes_skips),
         )
 
         return vf
@@ -757,8 +784,6 @@ def load_templates_batch(batch_template_info, device=None, dtype=None, for_torch
         batch_templates = None
 
     return batch_templates
-
-
 
 def schedule_diffusion(cnfg : ConfigSimulation):
     # Set seed
