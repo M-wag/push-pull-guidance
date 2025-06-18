@@ -103,6 +103,7 @@ def edm_sampler(
             xs[i] = x_next
             metrics[0, i] = torch.norm(x_next)
 
+    xs = (xs * 127.5 + 128) / 255
     return xs, (t_steps, )
 
 #----------------------------------------------------------------------------
@@ -791,28 +792,28 @@ def schedule_diffusion(cnfg : ConfigSimulation):
         torch.manual_seed(cnfg.seed)
         print(f"Setting config seed {cnfg.seed}")
 
-    # Load network
+    # Load network and update network 
     print(f'Loading network from "{cnfg.network_pkl}"...')
     with dnnlib.util.open_url(cnfg.network_pkl) as f:
-        net = pickle.load(f)['ema'].to(cnfg.device)
+        net_old = pickle.load(f)['ema'].to(cnfg.device)
+    net = EDMPrecond(*net_old.init_args, **net_old.init_kwargs).to(cnfg.device)
+    net.model.save_skips = True
+    net.eval()
+    misc.copy_params_and_buffers(net_old, net, require_all=True)
 
     # Iterate through combinations of parameters
     raw_data = np.empty((len(cnfg.split()), cnfg.diffusion.num_steps, cnfg.diffusion.batch_size, *cnfg.input_shape)) # (N_combs, t, B, C, H, W)
     assert len(raw_data.shape) == 6, f"raw_data should have rank 6, got shape : {raw_data.shape}"
     start_time = time.time()
     for idx, cnfg_split in enumerate(cnfg.split()):
-        if cnfg_split.guidance_vf:
-            template_path = cnfg_split.guidance_vf.template_path
-        else:
-            template_path = None
+        # Create guidance vectorfield
+        templates = load_templates_batch([cnfg_split.guidance_vf.template_path] * cnfg_split.diffusion.batch_size, device=cnfg_split.device, dtype=torch.float64)
+        vf = create_vf(cnfg_split.guidance_vf, templates, net=net, cnfg_split_sim=cnfg_split)
+
+        with torch.no_grad():
+            xs, _ = edm_sampler(net, vf, seed=cnfg_split.seed, device=cnfg_split.device, **cnfg_split.diffusion.to_dict())
+        raw_data[idx] = xs
         
-        templates = load_templates(template_path, device=cnfg.device, dtype=torch.float64)
-        sampler_kwargs = cnfg.diffusion(class_idx=torch.eye(net.label_dim)[torch.randint(0, 1000, (cnfg.diffusion.batch_size,),  dtype=int)]).to_dict()
-        vf_guide = create_vf(cnfg_split.guidance_vf, templates)
-        xs, (ts, ) = edm_sampler(net, vf_guide, cnfg.seed, cnfg.device,
-                                **sampler_kwargs)
-        
-        raw_data[idx] = (xs * 127.5 + 128) / 255
     total_time = time.time() - start_time
     print(f"Total schedule_diffusion time: {total_time:.2f} s")
     

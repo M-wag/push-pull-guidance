@@ -8,7 +8,7 @@ import torch
 import pickle
 from einops import rearrange, repeat
 from dataclasses import replace
-from mylib.diffusion import edm_sampler, ConfigSimulation, ConfigSampler, ConfigGuidanceVF, load_templates_batch, create_vf
+from mylib.diffusion import edm_sampler, ConfigSimulation, ConfigSampler, ConfigGuidanceVF, load_templates_batch, create_vf, schedule_diffusion
 from mylib.visual import visualize_from_path
 from training.networks import EDMPrecond
 from torch_utils import misc
@@ -113,7 +113,6 @@ if __name__ == "__main__":
     with torch.no_grad():
         xs, _ = edm_sampler(net, vf, seed=cnfg.seed, device=cnfg.device, **cnfg.diffusion.to_dict())
 
-    xs = (xs * 127.5 + 128) / 255
     plt.imshow(rearrange(xs[-1].detach().numpy(), "(b1 b2) c h w -> (b1 h) (b2 w) c ", b1=int(np.sqrt(cnfg.diffusion.batch_size))))
     plt.show()
                

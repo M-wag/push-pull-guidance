@@ -19,7 +19,8 @@ def create_figure(batch_size, n_conditions, img_shape, base_tile_size=1):
     fig_height = max(batch_size, 1) * tile_height  # Height determined by middle plot
     
     # Create figure with 3 subplots using GridSpec
-    fig = plt.figure(figsize=(fig_width, fig_height), constrained_layout=True)
+    # fig = plt.figure(figsize=(fig_width, fig_height), constrained_layout=True)
+    fig = plt.figure()
     gs = GridSpec(1, 3, figure=fig, width_ratios=[1, n_conditions, 1],
                   wspace=0.05, hspace=0)
     
