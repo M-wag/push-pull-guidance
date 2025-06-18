@@ -15,7 +15,6 @@ from typing import List, Any, Literal, Callable
 import torch.nn.functional as F
 from einops import rearrange
 from torch import Tensor
-from functools import partial
 
 #----------------------------------------------------------------------------
 def edm_sampler(
@@ -201,7 +200,7 @@ class ConfigGuidanceVF(ConfigGuidanceVFBase):
     type_eval:              Literal["jvp", "numdiff"] | None = None
 
     # UNet
-    n_skips:                int = None
+    idx_skips:              list[int] = None
 
     vf_latent:              Any = None
     
@@ -622,7 +621,7 @@ class BuilderUNetEncoder(BuilderVFBase):
     @classmethod
     def create(cls, prms, templates, *, net, cnfg_sim):
         kwargs, templates = cls._common_setup(prms, templates, 
-                                             extra_exclusions = ("hf_url", "n_skips") )
+                                             extra_exclusions = ("hf_url",  "idx_skips") )
         # Get information of simulation
         device = cnfg_sim.device
         batch_size = cnfg_sim.diffusion.batch_size
@@ -654,21 +653,19 @@ class BuilderUNetEncoder(BuilderVFBase):
             case "jvp":
                 VF = JVPGuidanceVF
 
-        sigma = torch.tensor(0.0001).to(device)
+        sigma = torch.tensor(1e-1).to(device).to(templates.dtype)
         net(templates, sigma, class_labels)
-        
-        n_skips = prms.n_skips
-        idx_mod = list(range(8, 12))
+        idx_mod = list(prms.idx_skips)
         idx_preserved = [x for x in range(0, len(net.model.saved_skips)) if x not in idx_mod] 
         shapes_skips = [net.model.saved_skips[i].shape[1:] for i in idx_mod]
 
 
-        def latent_fn(x, *, net, n_skips):
+        def latent_fn(x):
             skips = [net.model.saved_skips[i] for i in idx_mod]
             skips_flat = torch.cat([x.flatten(start_dim=1) for x in skips], dim=1)
             return skips_flat
 
-        def latent_inv_fn(z, *, net, n_skips, shapes):
+        def latent_inv_fn(z):
             # Split and unflatten diffused latent
             lengths = [C*H*W for (C,H,W) in shapes_skips]
             splits = z.split(lengths, dim=1)
@@ -695,13 +692,13 @@ class BuilderUNetEncoder(BuilderVFBase):
             x = net.model.out_conv(torch.nn.functional.silu(net.model.out_norm(z)))
             return x
 
-        features_template = latent_fn(None, net=net, n_skips=n_skips)
+        features_template = latent_fn(None)
         assert not torch.any(torch.isnan(features_template)), "features_template has NaNs"
 
         vf = VF(
                 vf_latent = create_vf(prms.vf_latent, features_template),
-                latent = partial(latent_fn, net=net, n_skips=n_skips),
-                latent_inv = partial(latent_inv_fn, net=net, n_skips=n_skips, shapes=shapes_skips),
+                latent = latent_fn,
+                latent_inv = latent_inv_fn,
         )
 
         return vf
