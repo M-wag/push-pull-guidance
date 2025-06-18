@@ -15,6 +15,7 @@ from typing import List, Any, Literal, Callable
 import torch.nn.functional as F
 from einops import rearrange
 from torch import Tensor
+from functools import partial
 
 #----------------------------------------------------------------------------
 def edm_sampler(
@@ -660,12 +661,12 @@ class BuilderUNetEncoder(BuilderVFBase):
         shapes_skips = [net.model.saved_skips[i].shape[1:] for i in idx_mod]
 
 
-        def latent_fn(x):
-            skips = [net.model.saved_skips[i] for i in idx_mod]
+        def latent_fn(x, *, _net):
+            skips = [_net.model.saved_skips[i] for i in idx_mod]
             skips_flat = torch.cat([x.flatten(start_dim=1) for x in skips], dim=1)
             return skips_flat
 
-        def latent_inv_fn(z):
+        def latent_inv_fn(z, *, _net):
             # Split and unflatten diffused latent
             lengths = [C*H*W for (C,H,W) in shapes_skips]
             splits = z.split(lengths, dim=1)
@@ -681,24 +682,24 @@ class BuilderUNetEncoder(BuilderVFBase):
                 skips[i] = skip
 
             # Get noise embedding and bottleneck activation
-            emb = net.model.saved_emb
+            emb = _net.model.saved_emb
             z = skips[-1]
             
             # Decoder.
-            for block in net.model.dec.values():
+            for block in _net.model.dec.values():
                 if z.shape[1] != block.in_channels:
                     z = torch.cat([z, skips.pop()], dim=1)
                 z = block(z, emb)
-            x = net.model.out_conv(torch.nn.functional.silu(net.model.out_norm(z)))
+            x = _net.model.out_conv(torch.nn.functional.silu(net.model.out_norm(z)))
             return x
 
-        features_template = latent_fn(None)
+        features_template = latent_fn(None, _net=net)
         assert not torch.any(torch.isnan(features_template)), "features_template has NaNs"
 
         vf = VF(
                 vf_latent = create_vf(prms.vf_latent, features_template),
-                latent = latent_fn,
-                latent_inv = latent_inv_fn,
+                latent = partial(latent_fn, _net=net),
+                latent_inv = partial(latent_inv_fn, _net=net),
         )
 
         return vf
