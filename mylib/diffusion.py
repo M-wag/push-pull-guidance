@@ -23,6 +23,7 @@ def edm_sampler(
     vf_template,         # Vector field induced by tempaplate and features      
     seed                : int , 
     device              ,
+    dtype               ,
     *,
     class_idx           : int , 
     latents             : float,
@@ -68,7 +69,7 @@ def edm_sampler(
     sigma_max = min(sigma_max, net.sigma_max)
 
     # Time step discretization.
-    step_indices = torch.arange(num_steps, dtype=torch.float64, device=device)
+    step_indices = torch.arange(num_steps, dtype=dtype, device=device)
     t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
 
@@ -224,6 +225,7 @@ class ConfigSampler(Config):
 class ConfigSimulation(Config):
     network_pkl:    str
     device:         str 
+    dtype:          Any 
     seed:           int | None 
     input_shape:    tuple[int]
     guidance_vf:    ConfigGuidanceVF 
@@ -414,7 +416,6 @@ class LinearGuidanceVF(GuidanceVF):
         return score
 
     def _score_attention(self, x, t):
-        breakpoint()
         # (B, F, L)
         features = self.latent(x)
         # (B, F * T, L)
@@ -509,13 +510,12 @@ class BuilderVFBase:
     @classmethod 
     def _create_attention(cls, prms, templates, latent_fn):
         """Create attention mechanism when there a multiple feature templates"""
-        
         means_attention = latent_fn(templates).flatten(start_dim=0, end_dim=1)
         n_feature_templates = means_attention.shape[0]
         std_attention =  prms.v_0 * torch.ones(n_feature_templates,
                                                device=templates.device, 
                                                dtype=templates.dtype)
-        weights_mixture = (torch.ones(n_feature_templates) / (n_feature_templates)).to(device=templates.device)
+        weights_mixture = (torch.ones(n_feature_templates) / (n_feature_templates)).to(device=templates.device, dtype=templates.dtype)
         
         # Assign to instance not class
         attention_fn = AttentionMixture(
@@ -543,7 +543,7 @@ class BuilderLinearVF(BuilderVFBase):
             device=templates.device,
             dtype=templates.dtype
         )
-        mat_latent_inv = torch.linalg.pinv(mat_latent)
+        mat_latent_inv = torch.linalg.pinv(mat_latent.to(dtype=torch.float64)).to(dtype=templates.dtype) # pinv not supported for fp16
 
         return mat_latent, mat_latent_inv
 
@@ -830,11 +830,11 @@ def schedule_diffusion(cnfg : ConfigSimulation):
     start_time = time.time()
     for idx, cnfg_split in enumerate(cnfg.split()):
         # Create guidance vectorfield
-        templates = load_templates_batch([cnfg_split.guidance_vf.template_path] * cnfg_split.diffusion.batch_size, device=cnfg_split.device, dtype=torch.float64)
+        templates = load_templates_batch([cnfg_split.guidance_vf.template_path] * cnfg_split.diffusion.batch_size, device=cnfg_split.device, dtype=cnfg.dtype)
         vf = create_vf(cnfg_split.guidance_vf, templates, net=net, cnfg_split_sim=cnfg_split)
 
         with torch.no_grad():
-            xs, _ = edm_sampler(net, vf, seed=cnfg_split.seed, device=cnfg_split.device, **cnfg_split.diffusion.to_dict())
+            xs, _ = edm_sampler(net, vf, seed=cnfg_split.seed, device=cnfg_split.device, dtype=cnfg.dtype, **cnfg_split.diffusion.to_dict())
         raw_data[idx] = xs
         
     total_time = time.time() - start_time

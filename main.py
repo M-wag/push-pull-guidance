@@ -92,6 +92,7 @@ if __name__ == "__main__":
     cnfg = ConfigSimulation(
         network_pkl   = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl',
         device        = "cuda" if torch.cuda.is_available() else "cpu",
+        dtype         = torch.float16,
         seed          = 0,
         input_shape   = (3, 64, 64),
         guidance_vf   = VF_UNET.split()[0],
@@ -111,12 +112,12 @@ if __name__ == "__main__":
     misc.copy_params_and_buffers(net_old, net, require_all=True)
     
     # Create guidance vectorfield
-    templates = load_templates_batch([cnfg.guidance_vf.template_path] * cnfg.diffusion.batch_size, device=cnfg.device, dtype=torch.float64)
+    templates = load_templates_batch([cnfg.guidance_vf.template_path] * cnfg.diffusion.batch_size, device=cnfg.device, dtype=torch.float16)
     vf = create_vf(cnfg.guidance_vf, templates, net=net, cnfg_sim=cnfg)
 
     # Run sampler
     with torch.no_grad():
-        xs, _ = edm_sampler(net, vf, seed=cnfg.seed, device=cnfg.device, **cnfg.diffusion.to_dict())
+        xs, _ = edm_sampler(net, vf, seed=cnfg.seed, device=cnfg.device, dtype=templates.dtype, **cnfg.diffusion.to_dict(),)
 
     plt.imshow(rearrange(xs[-1].detach().numpy(), "(b1 b2) c h w -> (b1 h) (b2 w) c ", b1=int(np.sqrt(cnfg.diffusion.batch_size))))
     plt.show()
