@@ -74,11 +74,18 @@ VF_LINEAR_HF = ConfigGuidanceVF(
 VF_UNET = ConfigGuidanceVF(
         type_latent = "unet",
         type_eval = "numdiff",
-        v_0 = 40,
-        # scale = 0.2,
-        # scale = 0.0,
         template_path = "data/data/cat_1.jpg",
         n_skips = 1,
+            vf_latent = ConfigGuidanceVF(
+                type_latent = "linear",
+                decay_rate = 1.0,
+                v_0 = 20,
+                scale = 1.0,
+                seed_mat = 0,
+                n_features = 5,
+                dim_feature = 32,
+                T = 1.0,
+            )
         )
 
 if __name__ == "__main__":
@@ -87,9 +94,7 @@ if __name__ == "__main__":
         device        = "cuda" if torch.cuda.is_available() else "cpu",
         seed          = 0,
         input_shape   = (3, 64, 64),
-        # guidance_vf   = VF_VAE_NUMDIFF.split()[0],
         guidance_vf   = VF_UNET.split()[0],
-        # guidance_vf   = VF_PIXEL.split()[0],
         diffusion     = ConfigSampler(
             num_steps=32, 
             class_idx=281,

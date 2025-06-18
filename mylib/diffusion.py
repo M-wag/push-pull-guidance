@@ -200,7 +200,10 @@ class ConfigGuidanceVF(ConfigGuidanceVFBase):
     type_eval:              Literal["jvp", "numdiff"] | None = None
 
     # UNet
-    n_skips:               int = None
+    n_skips:                int = None
+
+    vf_latent:              Any = None
+    
     
 @dataclass(frozen=True)
 class ConfigSampler(Config):
@@ -391,24 +394,45 @@ class LinearGuidanceVF(GuidanceVF):
         # (N_u, N_f, L) -> (N_u * N_f, L) 
         self.features_template = self.features_template.flatten(0, 1)
 
-    def _dirac_score(self, x, t):
+    def _score_single_feature(self, x, t):
+        # (1, ) * (1, ) * ( (B, D) - (B,D))
+        features = self.latent(x)
+        score = self.scale * self.time_weight(t) * self.latent_inv(self.features_templates - features) / self.noise(t)**2 
+        return score
+
+    def _score_attention(self, x, t):
+        features = self.latent(x)
+        # (B, N, D) - (B, 1, D)
+        diffs = self.features_template - x.unsqueeze(1)
+        diffs_normalized = self.attention_normalizer(diffs)
+        # (B, N)
+        attention = self.attention(diff_normalized, passing_diff=True)
+        # (N, )
+        weights =  attention * time_weight.unsqueeze(0) * self.scale
+        score =  torch.einsum("BN, BN... -> B...", weights, recons) / self.noise(t) ** 2
+        self.history_attention.append(attention)
+        return score
+
+    def _score_attention(self, x, t):
+        breakpoint()
         # (B, F, L)
         features = self.latent(x)
         # (B, F * T, L)
-        features_copied = torch.repeat_interleave(features, dim=1, repeats=self.templates.shape[0])
-        # (B, F * T, L) = (1, F * T, L) - (B, F * T, L) 
-        diff_features = self.features_template.unsqueeze(0) - features_copied
-        # (B, F*T, D) 
+        features = torch.repeat_interleave(features, dim=1, repeats=self.templates.shape[0])
+        # (B, F * T, L) = (B, F * T, L) - (B, F * T, L) 
+        diff_features = self.features_template - features
+        # (B, F * T, D) 
         recons = self.latent_inv(diff_features)
-        # (B, F * T)
         # TODO : make this a parameter
         diff_features_normalized = (diff_features - torch.mean(diff_features, dim=1, keepdim=True)) / torch.std(diff_features, dim=1,keepdim=True)
+        # (B, F * T)
         attention = self.attention(diff_features_normalized, passing_diff=True)
+        # (B, F * T) * (1, ) * (1, )
+        weights = attention * self.time_weight(t) * self.scale 
+        # (B, F * T)  , (B, F * T, D) -> (B, D)
+        score =  torch.einsum("BN, BN... -> B...", weights, recons) / self.noise(t) ** 2
         self.history_weight.append(attention)
-        # (B, D) = (B, F * T) o (B, F * T, D) 
-        # dirac_score =  -1/t * torch.einsum("BN, BN... -> B...", attention, recons)
-        dirac_score =  -1/t  * torch.einsum("BN, BN... -> B...", attention, recons)
-        return dirac_score
+        return score
 
 class NonLinearGuidanceVFBase():
     def __init__(self, vf_latent, latent, latent_inv):
@@ -630,8 +654,7 @@ class BuilderUNetEncoder(BuilderVFBase):
             case "jvp":
                 VF = JVPGuidanceVF
 
-        prms_latent = ConfigGuidanceVF(**kwargs)(type_latent="pixel")
-        sigma = torch.tensor(1.0).to(device)
+        sigma = torch.tensor(0.0001).to(device)
         net(templates, sigma, class_labels)
         
         n_skips = prms.n_skips
@@ -676,7 +699,7 @@ class BuilderUNetEncoder(BuilderVFBase):
         assert not torch.any(torch.isnan(features_template)), "features_template has NaNs"
 
         vf = VF(
-                vf_latent = create_vf(prms_latent, features_template),
+                vf_latent = create_vf(prms.vf_latent, features_template),
                 latent = partial(latent_fn, net=net, n_skips=n_skips),
                 latent_inv = partial(latent_inv_fn, net=net, n_skips=n_skips, shapes=shapes_skips),
         )
