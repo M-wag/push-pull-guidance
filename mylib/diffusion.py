@@ -23,6 +23,7 @@ def edm_sampler(
     vf_template,         # Vector field induced by tempaplate and features      
     seed                : int , 
     device              ,
+    dtype               ,
     *,
     class_idx           : int , 
     latents             : float,
@@ -68,7 +69,7 @@ def edm_sampler(
     sigma_max = min(sigma_max, net.sigma_max)
 
     # Time step discretization.
-    step_indices = torch.arange(num_steps, dtype=torch.float64, device=device)
+    step_indices = torch.arange(num_steps, dtype=dtype, device=device)
     t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
 
@@ -200,7 +201,10 @@ class ConfigGuidanceVF(ConfigGuidanceVFBase):
     type_eval:              Literal["jvp", "numdiff"] | None = None
 
     # UNet
-    n_skips:               int = None
+    idx_skips:              list[int] = None
+
+    vf_latent:              Any = None
+    
     
 @dataclass(frozen=True)
 class ConfigSampler(Config):
@@ -221,6 +225,7 @@ class ConfigSampler(Config):
 class ConfigSimulation(Config):
     network_pkl:    str
     device:         str 
+    dtype:          Any 
     seed:           int | None 
     input_shape:    tuple[int]
     guidance_vf:    ConfigGuidanceVF 
@@ -391,24 +396,44 @@ class LinearGuidanceVF(GuidanceVF):
         # (N_u, N_f, L) -> (N_u * N_f, L) 
         self.features_template = self.features_template.flatten(0, 1)
 
-    def _dirac_score(self, x, t):
+    def _score_single_feature(self, x, t):
+        # (1, ) * (1, ) * ( (B, D) - (B,D))
+        features = self.latent(x)
+        score = self.scale * self.time_weight(t) * self.latent_inv(self.features_templates - features) / self.noise(t)**2 
+        return score
+
+    def _score_attention(self, x, t):
+        features = self.latent(x)
+        # (B, N, D) - (B, 1, D)
+        diffs = self.features_template - x.unsqueeze(1)
+        diffs_normalized = self.attention_normalizer(diffs)
+        # (B, N)
+        attention = self.attention(diff_normalized, passing_diff=True)
+        # (N, )
+        weights =  attention * time_weight.unsqueeze(0) * self.scale
+        score =  torch.einsum("BN, BN... -> B...", weights, recons) / self.noise(t) ** 2
+        self.history_attention.append(attention)
+        return score
+
+    def _score_attention(self, x, t):
         # (B, F, L)
         features = self.latent(x)
         # (B, F * T, L)
-        features_copied = torch.repeat_interleave(features, dim=1, repeats=self.templates.shape[0])
-        # (B, F * T, L) = (1, F * T, L) - (B, F * T, L) 
-        diff_features = self.features_template.unsqueeze(0) - features_copied
-        # (B, F*T, D) 
+        features = torch.repeat_interleave(features, dim=1, repeats=self.templates.shape[0])
+        # (B, F * T, L) = (B, F * T, L) - (B, F * T, L) 
+        diff_features = self.features_template - features
+        # (B, F * T, D) 
         recons = self.latent_inv(diff_features)
-        # (B, F * T)
         # TODO : make this a parameter
         diff_features_normalized = (diff_features - torch.mean(diff_features, dim=1, keepdim=True)) / torch.std(diff_features, dim=1,keepdim=True)
+        # (B, F * T)
         attention = self.attention(diff_features_normalized, passing_diff=True)
+        # (B, F * T) * (1, ) * (1, )
+        weights = attention * self.time_weight(t) * self.scale 
+        # (B, F * T)  , (B, F * T, D) -> (B, D)
+        score =  torch.einsum("BN, BN... -> B...", weights, recons) / self.noise(t) ** 2
         self.history_weight.append(attention)
-        # (B, D) = (B, F * T) o (B, F * T, D) 
-        # dirac_score =  -1/t * torch.einsum("BN, BN... -> B...", attention, recons)
-        dirac_score =  -1/t  * torch.einsum("BN, BN... -> B...", attention, recons)
-        return dirac_score
+        return score
 
 class NonLinearGuidanceVFBase():
     def __init__(self, vf_latent, latent, latent_inv):
@@ -485,13 +510,12 @@ class BuilderVFBase:
     @classmethod 
     def _create_attention(cls, prms, templates, latent_fn):
         """Create attention mechanism when there a multiple feature templates"""
-        
         means_attention = latent_fn(templates).flatten(start_dim=0, end_dim=1)
         n_feature_templates = means_attention.shape[0]
         std_attention =  prms.v_0 * torch.ones(n_feature_templates,
                                                device=templates.device, 
                                                dtype=templates.dtype)
-        weights_mixture = (torch.ones(n_feature_templates) / (n_feature_templates)).to(device=templates.device)
+        weights_mixture = (torch.ones(n_feature_templates) / (n_feature_templates)).to(device=templates.device, dtype=templates.dtype)
         
         # Assign to instance not class
         attention_fn = AttentionMixture(
@@ -519,7 +543,7 @@ class BuilderLinearVF(BuilderVFBase):
             device=templates.device,
             dtype=templates.dtype
         )
-        mat_latent_inv = torch.linalg.pinv(mat_latent)
+        mat_latent_inv = torch.linalg.pinv(mat_latent.to(dtype=torch.float64)).to(dtype=templates.dtype) # pinv not supported for fp16
 
         return mat_latent, mat_latent_inv
 
@@ -598,7 +622,7 @@ class BuilderUNetEncoder(BuilderVFBase):
     @classmethod
     def create(cls, prms, templates, *, net, cnfg_sim):
         kwargs, templates = cls._common_setup(prms, templates, 
-                                             extra_exclusions = ("hf_url", "n_skips") )
+                                             extra_exclusions = ("hf_url",  "idx_skips") )
         # Get information of simulation
         device = cnfg_sim.device
         batch_size = cnfg_sim.diffusion.batch_size
@@ -630,22 +654,19 @@ class BuilderUNetEncoder(BuilderVFBase):
             case "jvp":
                 VF = JVPGuidanceVF
 
-        prms_latent = ConfigGuidanceVF(**kwargs)(type_latent="pixel")
-        sigma = torch.tensor(1.0).to(device)
+        sigma = torch.tensor(1e-1).to(device).to(templates.dtype)
         net(templates, sigma, class_labels)
-        
-        n_skips = prms.n_skips
-        idx_mod = list(range(8, 12))
+        idx_mod = list(prms.idx_skips)
         idx_preserved = [x for x in range(0, len(net.model.saved_skips)) if x not in idx_mod] 
         shapes_skips = [net.model.saved_skips[i].shape[1:] for i in idx_mod]
 
 
-        def latent_fn(x, *, net, n_skips):
-            skips = [net.model.saved_skips[i] for i in idx_mod]
+        def latent_fn(x, *, _net):
+            skips = [_net.model.saved_skips[i] for i in idx_mod]
             skips_flat = torch.cat([x.flatten(start_dim=1) for x in skips], dim=1)
             return skips_flat
 
-        def latent_inv_fn(z, *, net, n_skips, shapes):
+        def latent_inv_fn(z, *, _net):
             # Split and unflatten diffused latent
             lengths = [C*H*W for (C,H,W) in shapes_skips]
             splits = z.split(lengths, dim=1)
@@ -661,24 +682,24 @@ class BuilderUNetEncoder(BuilderVFBase):
                 skips[i] = skip
 
             # Get noise embedding and bottleneck activation
-            emb = net.model.saved_emb
+            emb = _net.model.saved_emb
             z = skips[-1]
             
             # Decoder.
-            for block in net.model.dec.values():
+            for block in _net.model.dec.values():
                 if z.shape[1] != block.in_channels:
                     z = torch.cat([z, skips.pop()], dim=1)
                 z = block(z, emb)
-            x = net.model.out_conv(torch.nn.functional.silu(net.model.out_norm(z)))
+            x = _net.model.out_conv(torch.nn.functional.silu(net.model.out_norm(z)))
             return x
 
-        features_template = latent_fn(None, net=net, n_skips=n_skips)
+        features_template = latent_fn(None, _net=net)
         assert not torch.any(torch.isnan(features_template)), "features_template has NaNs"
 
         vf = VF(
-                vf_latent = create_vf(prms_latent, features_template),
-                latent = partial(latent_fn, net=net, n_skips=n_skips),
-                latent_inv = partial(latent_inv_fn, net=net, n_skips=n_skips, shapes=shapes_skips),
+                vf_latent = create_vf(prms.vf_latent, features_template),
+                latent = partial(latent_fn, _net=net),
+                latent_inv = partial(latent_inv_fn, _net=net),
         )
 
         return vf
@@ -807,11 +828,11 @@ def schedule_diffusion(cnfg : ConfigSimulation):
     start_time = time.time()
     for idx, cnfg_split in enumerate(cnfg.split()):
         # Create guidance vectorfield
-        templates = load_templates_batch([cnfg_split.guidance_vf.template_path] * cnfg_split.diffusion.batch_size, device=cnfg_split.device, dtype=torch.float64)
+        templates = load_templates_batch([cnfg_split.guidance_vf.template_path] * cnfg_split.diffusion.batch_size, device=cnfg_split.device, dtype=cnfg.dtype)
         vf = create_vf(cnfg_split.guidance_vf, templates, net=net, cnfg_split_sim=cnfg_split)
 
         with torch.no_grad():
-            xs, _ = edm_sampler(net, vf, seed=cnfg_split.seed, device=cnfg_split.device, **cnfg_split.diffusion.to_dict())
+            xs, _ = edm_sampler(net, vf, seed=cnfg_split.seed, device=cnfg_split.device, dtype=cnfg.dtype, **cnfg_split.diffusion.to_dict())
         raw_data[idx] = xs
         
     total_time = time.time() - start_time
