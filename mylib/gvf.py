@@ -1,0 +1,466 @@
+from functools import partial
+import torch
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Literal, Any, Optional, Union, List, Type 
+from .helpers import Config
+
+class Register:
+    _registry = {}
+
+    @classmethod 
+    def register(cls, name: str):
+        def wrapper(config_cls):
+            cls._registry[name] = config_cls
+            return config_cls
+        return wrapper
+
+    @classmethod
+    def registry(cls):
+        """Get all registered config classes"""
+        return cls._registry.copy()
+
+@Register.register('base')
+@dataclass(frozen=True)
+class ConfigGVFBase(Config):
+    template_path: Optional[str] = None
+    flatten_input: bool = False
+    threshold_weight: Optional[Union[float, List[float]]] = None
+    threshold_time_min: Optional[Union[float, List[float]]] = None
+    threshold_time_max: Optional[Union[float, List[float]]] = None
+
+@Register.register('ambient')
+@dataclass(frozen=True)
+class ConfigGVFAmbient(ConfigGVFBase):
+    scale: Union[float, List[float]] = 1.0
+    decay_rate: Union[float, List[float]] = 1.0
+    v_0: Optional[Union[float, List[float]]] = 30.0
+
+@Register.register('linear')
+@dataclass(frozen=True)
+class ConfigGVFLinear(ConfigGVFAmbient):
+    n_features: Optional[Union[int, List[int]]] = None
+    dim_feature: Optional[Union[int, List[int]]] = None
+    seed_mat: Optional[int] = None
+    T: Optional[Union[int, List[int]]] = None
+
+@Register.register('base_nonlinear')
+@dataclass(frozen=True)
+class ConfigGVFNonLinear(ConfigGVFBase):
+    type_eval: Optional[Literal["jvp", "numdiff"]] = None
+    vf_latent: Any = None
+
+@Register.register('hf')
+@dataclass(frozen=True)
+class ConfigGVFHuggingFace(ConfigGVFNonLinear):
+    hf_url: Optional[str] = None
+
+@Register.register('unet')
+@dataclass(frozen=True)
+class ConfigGVFUnet(ConfigGVFNonLinear):
+    idx_skips: Optional[List[int]] = None
+
+# --- Guidance Vector Fields ---
+
+class AttentionMixture:
+    def __init__(self, means, stds, weights_mixture):
+        # means: (N, D), stds: (N,), weights_mixture: (N,)
+        self.means = means
+        self.stds = stds
+        self.weights_mixture = weights_mixture
+        self.D = means.size(-1)  # Dimension of the data
+
+        # Validate that mixture weights sum to 1.0
+        if not torch.isclose(torch.sum(weights_mixture), torch.tensor(1.0, dtype=weights_mixture.dtype), atol=1e-6):
+            raise ValueError(f"weights_mixture must sum to 1.0, got sum={torch.sum(weights_mixture).item():.4f}")
+
+    def __call__(self, x, T=1.0, passing_diff=False):
+        """
+        Args:
+            x: Input tensor of shape (B, D) where B is batch size
+            T: Temperature parameter (>0) controlling softmax sharpness
+        Returns:
+            weights_attention : Attention assocciated with gradient of log-density of mixture model, shape (B, D)
+        """
+        if passing_diff:
+            diff = x 
+        else:
+            B, D = x.shape
+            N, _ = self.means.shape
+
+            # Compute squared distances between x and all means (B, N)
+            diff = self.means.unsqueeze(0) - x.unsqueeze(1)  # (1, N, D) - (B, 1, D) → (B, N, D)
+
+
+        mahalanobis = (diff ** 2).sum(dim=-1) / self.stds.unsqueeze(0)  # (B, N)
+        energy_mahalana = -0.5 * mahalanobis  ** 2  # (B,N)
+
+        # Compute log terms for each component 
+        log_weights = torch.log(self.weights_mixture + 1e-8)                     # (N,)
+        log_std_term = -self.D * torch.log(self.stds + 1e-8)                    # (N,)
+
+        # Combine, drop the constant -(D/2)*ln(2π) 
+        energy = energy_mahalana + log_weights.unsqueeze(0) + log_std_term.unsqueeze(0)  # (B,N)
+
+        # Apply temperature and compute attention weights (B, N)
+        weights_attn = F.softmax(T * energy, dim=-1)
+        return weights_attn
+
+class GuidanceVF:
+    def flat(self, x):
+        return rearrange(x, "... c h w -> ... (c h w)")
+    
+    def unflat(self, x):
+        return rearrange(x, "... (c h w) -> ... c h w", c=self.templates.shape[-3], h=self.templates.shape[-2], w=self.templates.shape[-1])
+
+    def __init__(self, templates, scale, v_0, decay_rate, latent, latent_inv,  *, 
+                 flatten_input=False, 
+                 threshold_weight=None,
+                 threshold_time_min=None,
+                 threshold_time_max=None,
+                 attention=None,
+                 **kwargs
+                 ):
+
+        # Core parameters
+        self.templates = templates
+        self.scale = scale
+        self.v_0 = v_0
+        self.decay_rate = decay_rate
+        self.latent = latent
+        self.latent_inv = latent_inv
+        self.noise = lambda x: x 
+        self.noise_dot = lambda x : 1 
+        self.time_weight = lambda t: torch.sigmoid(self.decay_rate * (self.noise(t) - self.v_0)) 
+        # Optional features
+        self.flatten_input = flatten_input
+        self.threshold_weight = threshold_weight
+        self.threshold_time_min = threshold_time_min
+        self.threshold_time_max = threshold_time_max
+
+        self.attention = attention
+        # Determine to use attention or not 
+        if self.attention:
+            self._score = self._score_attention
+        else:
+            self._score = self._score_single_feature
+
+        # Pre-process templates 
+        # TODO : ASSERT THIS IS (BATCH, N_FEATURES, D_LATENT)
+        self.features_template = latent(self.flat(self.templates)) if flatten_input else latent(self.templates)
+        # Device and type tracking
+        self.device = self.templates.device
+        self.dtype = self.templates.dtype
+        # For testing
+        self.history_weight = []
+        self.history_apply_score = []
+        self.history_attention = []
+        
+    def __call__(self, x, t):
+        if self.flatten_input:
+            x = self.flat(x) 
+        
+        if self.should_apply_score(t):
+            dx_guidance = self.reverse_step(x, t)
+        else:
+            dx_guidance = torch.zeros_like(x)
+        
+        if self.flatten_input:
+            dx_guidance = self.unflat(dx_guidance) 
+
+        return dx_guidance
+
+    def should_apply_score(self, t) -> bool:
+        weight = torch.max(torch.sigmoid(self.decay_rate * (self.noise(t) - self.v_0)) * self.scale)
+        apply_score = True
+        # Check weight threshold
+        if self.threshold_weight is not None and weight < self.threshold_weight:
+            apply_score = False
+        # Check time thresholds
+        if self.threshold_time_min is not None and t < self.threshold_time_min:
+            apply_score = False
+        if self.threshold_time_max is not None and t > self.threshold_time_max:
+            apply_score = False
+        self.history_weight.append(weight)
+        self.history_apply_score.append(apply_score)
+
+        return apply_score 
+
+
+    def reverse_step(self, x, t):
+        return -self.noise_dot(t) * self.noise(t)  * self.score(x, t)
+
+    def score(self, x, t):
+        return self._score(x, t)
+
+    def _score_single_feature(self, x, t):
+        raise NotImplementedError("Subclasses must implement this method")
+
+    def _score_attention(self, x, t):
+        raise NotImplementedError("Subclasses must implement this method")
+
+class AmbientGVF(GuidanceVF):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs, latent=lambda x: x, latent_inv=lambda x: x)
+
+    def _score_single_feature(self, x, t):
+        # (1, ) * (1, ) * ( (B, D) - (B,D))
+        score = self.scale * self.time_weight(t) * (self.templates - x) / self.noise(t)**2 
+        return score
+    
+    def _score_attention(self, x, t):
+        # (B, N, D) - (B, 1, D)
+        diffs = self.features_template - x.unsqueeze(1)
+        diffs_normalized = self.attention_normalizer(diffs)
+        # (B, N)
+        attention = self.attention(diff_normalized, passing_diff=True)
+        # (N, )
+        weights =  attention * time_weight.unsqueeze(0) * self.scale
+        score =  torch.einsum("BN, BN... -> B...", weights, recons) / self.noise(t) ** 2
+        self.history_attention.append(attention)
+        return score
+
+class LinearGuidanceVF(GuidanceVF):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # (N_u, N_f, L) -> (N_u * N_f, L) 
+        self.features_template = self.features_template.flatten(0, 1)
+
+    def _score_single_feature(self, x, t):
+        # (1, ) * (1, ) * ( (B, D) - (B,D))
+        features = self.latent(x)
+        score = self.scale * self.time_weight(t) * self.latent_inv(self.features_templates - features) / self.noise(t)**2 
+        return score
+
+    def _score_attention(self, x, t):
+        features = self.latent(x)
+        # (B, N, D) - (B, 1, D)
+        diffs = self.features_template - x.unsqueeze(1)
+        diffs_normalized = self.attention_normalizer(diffs)
+        # (B, N)
+        attention = self.attention(diff_normalized, passing_diff=True)
+        # (N, )
+        weights =  attention * time_weight.unsqueeze(0) * self.scale
+        score =  torch.einsum("BN, BN... -> B...", weights, recons) / self.noise(t) ** 2
+        self.history_attention.append(attention)
+        return score
+
+    def _score_attention(self, x, t):
+        # (B, F, L)
+        features = self.latent(x)
+        # (B, F * T, L)
+        features = torch.repeat_interleave(features, dim=1, repeats=self.templates.shape[0])
+        # (B, F * T, L) = (B, F * T, L) - (B, F * T, L) 
+        diff_features = self.features_template - features
+        # (B, F * T, D) 
+        recons = self.latent_inv(diff_features)
+        # TODO : make this a parameter
+        diff_features_normalized = (diff_features - torch.mean(diff_features, dim=1, keepdim=True)) / torch.std(diff_features, dim=1,keepdim=True)
+        # (B, F * T)
+        attention = self.attention(diff_features_normalized, passing_diff=True)
+        # (B, F * T) * (1, ) * (1, )
+        weights = attention * self.time_weight(t) * self.scale 
+        # (B, F * T)  , (B, F * T, D) -> (B, D)
+        score =  torch.einsum("BN, BN... -> B...", weights, recons) / self.noise(t) ** 2
+        self.history_weight.append(attention)
+        return score
+
+class NonLinearGuidanceVFBase():
+    def __init__(self, vf_latent, latent, latent_inv):
+        self.vf_latent = vf_latent
+        self.latent = latent
+        self.latent_inv = latent_inv
+        self.noise = lambda x : x 
+        self.noise_dot = lambda x : 1
+
+    def __call__(self, x, t):
+        if self.should_apply_score(t):
+            dx_guidance = self.reverse_step(x, t)
+        else:
+            dx_guidance = torch.zeros_like(x)
+        return dx_guidance
+
+    def reverse_step(self, x, t):
+        with torch.no_grad():
+            x_latent = self.latent(x)
+            score_latent = self.vf_latent.score(x_latent, t)
+            score = self._pullback(x_latent, score_latent)
+            dx = -self.noise_dot(t) * self.noise(t) * score
+        return dx
+
+    def should_apply_score(self, t):
+        return self.vf_latent.should_apply_score(t)
+    
+    def _pullback(self, x_latent, dx_latent):
+        raise NotImplementedError("Subclasses must implement this method")
+
+class JVPGuidanceVF(NonLinearGuidanceVFBase):
+    def _pullback(self, x_latent, dx_latent):
+        with torch.no_grad():
+            _, dx = jvp(self.latent_inv, x_latent, dx_latent, strict=False)
+        return dx
+
+class NumericalGuidanceVF(NonLinearGuidanceVFBase):
+    def __init__(self, *args, step_size=1e-3, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.step_size = step_size  
+
+    def _pullback(self, x_latent, dx_latent):
+        with torch.no_grad():
+            perturbed_latent = x_latent + self.step_size * dx_latent
+            f_perturbed = self.latent_inv(perturbed_latent)
+            f_original = self.latent_inv(x_latent)
+            dx = (f_perturbed - f_original) / self.step_size  
+        return dx 
+
+# --- Builders --- 
+
+@dataclass
+class ContextBuilder:
+    device      : Literal["cuda", "cpu"] = "cpu"
+    dtype       : Literal[torch.float16, torch.float32, torch.float64] = torch.float64
+    net         : Optional[Any] = None
+    class_idx   : Optional[Any] = None
+
+class BuilderBase(ABC):
+    def __init__(self, config: ConfigGVFBase, templates: torch.Tensor, **context):
+        self.config = config
+        self.templates = templates
+        self.ctx = ContextBuilder(**context)
+        self.latent_fn = None
+        self.latent_inv_fn = None
+        self.features_template = None
+        self.device = context.get('device', "cpu")
+        self.dtype = self.templates.dtype
+        self.batch_size = self.templates.shape[0]
+        
+    @abstractmethod
+    @torch.no_grad
+    def build(self) -> callable:
+        pass
+
+class BuilderAmbientGVF(BuilderBase):
+    """Builder for ambient-space vector fields"""
+    def build(self):
+        return AmbientGVF(templates=self.templates, **self.config.to_dict() )
+    
+class BuilderNonLinearBase(BuilderBase):
+    """Builder for pixel-space vector fields"""
+
+    @abstractmethod
+    def _setup_latents(self):
+        """Method to setup the latent and latent inverse functions"""
+        pass
+
+    @abstractmethod
+    def _create_features_template(self):
+        """Main method to create the latent features template"""
+        return self.latent_fn(self.templates)
+
+    def build(self):
+        self._setup_latents()
+        self.features_template = self._create_features_template()
+        
+        match self.config.type_eval:
+            case "numdiff" : vf_class = NumericalGuidanceVF
+            case "jvp" : vf_class = JVPGuidanceVF
+            case _: raise ValueError(f"Unknown eval type: {self.config.type_eval}")
+        vf_latent = create_vf(self.config.vf_latent, self.features_template)
+        
+        vf = vf_class(
+            vf_latent=vf_latent,
+            latent=self.latent_fn,
+            latent_inv=self.latent_inv_fn
+        )
+        return vf 
+
+class BuilderHFGVF(BuilderNonLinearBase):
+    def _setup_latents(self):
+        from diffusers import AutoencoderKL
+        
+        vae = AutoencoderKL.from_pretrained(
+            self.config.hf_url, 
+            subfolder="vae",
+            use_safetensors=True
+        ).to(self.ctx.device)
+        
+        self.latent_fn = lambda x: vae.encode(x).latent_dist.sample()
+        self.latent_inv_fn = lambda x: vae.decode(x).sample
+
+class BuidlerUNetGVF(BuilderNonLinearBase):
+    def _setup_latents(self):
+        idx_mod = list(self.config.idx_skips)
+        idx_preserved = [x for x in range(0, len(self.ctx.net.model.saved_skips)) if x not in idx_mod] 
+        shapes_skips = [self.ctx.net.model.saved_skips[i].shape[1:] for i in idx_mod]
+
+        def latent_fn(x, *, net):
+            skips = [net.model.saved_skips[i] for i in idx_mod]
+            skips_flat = torch.cat([x.flatten(start_dim=1) for x in skips], dim=1)
+            return skips_flat
+
+        def latent_inv_fn(z, *, net):
+            # Split latent vector
+            lengths = [C*H*W for (C,H,W) in shapes_skips]
+            splits = z.split(lengths, dim=1)
+            skips_modded = [skip.view(self.batch_size, *shp) for skip, shp in zip(splits, shapes_skips)] 
+
+            # Recombine skips 
+            skips_preserved = [torch.zeros_like(net.model.saved_skips[i]) for i in idx_preserved]
+            full_skips = [None] * (len(idx_mod) + len(idx_preserved))
+            for i, skip in zip(idx_mod, skips_modded):
+                full_skips[i] = skip
+            for i, skip in zip(idx_preserved, skips_preserved):
+                full_skips[i] = skip
+
+            # Decoder.
+            emb = self.ctx.net.model.saved_emb
+            z = full_skips[-1]
+            for block in self.ctx.net.model.dec.values():
+                if z.shape[1] != block.in_channels:
+                    z = torch.cat([z, full_skips.pop()], dim=1)
+                z = block(z, emb)
+            x = self.ctx.net.model.out_conv(torch.nn.functional.silu(net.model.out_norm(z)))
+            return x
+
+        self.latent_fn = partial(latent_fn, net=self.ctx.net)
+        self.latent_inv_fn = partial(latent_inv_fn, net=self.ctx.net)
+
+    def _create_features_template(self):
+        # Determine class labelsj
+        if self.ctx.class_idx is None:
+            # Use zeros (no class)
+            class_labels = torch.zeros([self.batch_size, self.ctx.net.label_dim], device=self.device)
+        elif isinstance(self.ctx.class_idx, int):
+            # Use one-hot encoded specified class
+            class_labels = torch.eye(self.ctx.net.label_dim, device=self.device)[self.batch_size * [class_idx]]
+        elif torch.is_tensor(self.ctx.class_idx):
+            # Use provided class labels directly
+            assert self.ctx.class_idx.shape == (self.batch_size, self.ctx.net.label_dim), \
+                f"class_labels must have shape [{batch_size}, {net.label_dim}]"
+            class_labels = self.ctx.class_idx.to(self.device)
+        else:
+            raise ValueError("class_idx must be None, int, or tensor")
+
+        sigma = torch.tensor(1e-1).to(self.device).to(self.dtype)
+        self.ctx.net(self.templates, sigma, class_labels)
+        features_template = self.latent_fn(None)
+        assert not torch.any(torch.isnan(features_template)), "features_template has NaNs"
+        return features_template
+
+def create_vf(cfg: ConfigGVFBase, templates: torch.Tensor, verbose: bool = True, **ctx) -> callable:
+    if verbose:
+        print(f"\nConfig: {cfg}")
+        print(f"Templates shape: {templates.shape}")
+    
+    if cfg is None:
+        return lambda x, t: torch.zeros_like(x)
+
+    match cfg:
+        case ConfigGVFAmbient()     : builder = BuilderAmbientGVF(cfg, templates, **ctx)
+        case ConfigGVFLinear()      : builder = BuilderLinearVF(cfg, templates, **ctx)
+        case ConfigGVFHuggingFace() : builder = BuilderHuggingfaceVF(cfg, templates, **ctx)
+        case ConfigGVFUnet()        : builder = BuilderUNetEncoder(cfg, templates, **ctx)
+        case _                      : raise ValueError(f"Unknown config type: {type(cfg).__name__}")
+
+    return builder.build()
+

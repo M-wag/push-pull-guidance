@@ -26,7 +26,6 @@ def edm_sampler(
     dtype               ,
     *,
     class_idx           : int , 
-    latents             : float,
     batch_size          : int,
     num_steps           : int, 
     sigma_min           : float,
@@ -38,13 +37,15 @@ def edm_sampler(
     S_noise             : float, 
     scale_model_score   : float, 
     save_all_timesteps  : bool = True,
+    latents             : Any = None,
 ):
     if seed is not None:
         torch.manual_seed(seed)
 
     # Pick latents and labels.
     if latents is None:
-        latents = torch.randn([batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device)
+        g = torch.Generator(device=device).manual_seed(seed)
+        latents = torch.randn([batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device, generator=g)
 
     # Handle class labels
     if net.label_dim:
@@ -87,7 +88,7 @@ def edm_sampler(
         metrics = torch.empty((5, num_steps))
 
     # Main sampling loop.
-    x_next = latents.to(torch.float64) * t_steps[0]
+    x_next = latents.to(dtype) * t_steps[0]
     for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1): # 0, ..., N-1
         x_cur = x_next
 
@@ -209,7 +210,6 @@ class ConfigGuidanceVF(ConfigGuidanceVFBase):
 @dataclass(frozen=True)
 class ConfigSampler(Config):
     class_idx:          int = None
-    latents:            float = None
     scale_model_score:  float = 1.0
     batch_size :        float = 9
     num_steps:          int = 32
@@ -484,6 +484,7 @@ class NumericalGuidanceVF(NonLinearGuidanceVFBase):
         return dx 
 
 # VF Builders
+
 class BuilderVFBase:
     @classmethod
     def create(cls, prms : ConfigGuidanceVF, templates):
@@ -589,76 +590,43 @@ class BuilderLinearVF(BuilderVFBase):
         return vf
 
 class BuilderHuggingfaceVF(BuilderVFBase):
+    def create_latents(self):
+        # Import model from Hugging face
+        from diffusers import AutoencoderKL
+        vae = AutoencoderKL.from_pretrained(prms.hf_url, subfolder="vae", use_safetensors=True)
+        latent_fn = lambda x : vae.encode(x).latent_dist.sample(),
+        latent_inv_fn = lambda x: vae.decode(x).sample,
+        return latent_fn, latent_inv_fn
+
     @classmethod
     def create(cls, prms, templates):
         kwargs, templates = cls._common_setup(prms, templates, 
                                              extra_exclusions = ("hf_url",) )
-        # How pullback is evaluated
         match prms.type_eval:
-            case "numdiff":
-                VF = NumericalGuidanceVF
-            case "jvp":
-                VF = JVPGuidanceVF
+            case "numdiff": VF = NumericalGuidanceVF
+            case "jvp": VF = JVPGuidanceVF
 
-        # Import model from Hugging face
-        from diffusers import AutoencoderKL
-        vae = AutoencoderKL.from_pretrained(prms.hf_url, subfolder="vae", use_safetensors=True)
-        vae = vae.to(device=templates.device, dtype=templates.dtype)
 
-        #TODO : ensure kwargs -> Config goess well
-        prms_latent = ConfigGuidanceVF(**kwargs)(type_latent="pixel")
-        features_template = vae.encode(templates).latent_dist.sample()
+        features_template = ...
 
         vf = VF(
-                # **kwargs,
-                vf_latent = create_vf(prms_latent, features_template),
-                latent = lambda x : vae.encode(x).latent_dist.sample(),
-                latent_inv = lambda x: vae.decode(x).sample,
+                vf_latent = create_vf(prms.vf_latent, features_template),
+                latent = latent_fn,
+                latent_inv = latent_inv_fn,
         )
 
         return vf 
 
 class BuilderUNetEncoder(BuilderVFBase):
-    @classmethod
-    def create(cls, prms, templates, *, net, cnfg_sim):
-        kwargs, templates = cls._common_setup(prms, templates, 
-                                             extra_exclusions = ("hf_url",  "idx_skips") )
-        # Get information of simulation
-        device = cnfg_sim.device
-        batch_size = cnfg_sim.diffusion.batch_size
-        class_idx = cnfg_sim.diffusion.class_idx
-
-        # Handle class labels
-        if net.label_dim:
-            if class_idx is None:
-                # Use zeros (no class)
-                class_labels = torch.zeros([batch_size, net.label_dim], device=device)
-            elif isinstance(class_idx, int):
-                # Use one-hot encoded specified class
-                class_labels = torch.eye(net.label_dim, device=device)[batch_size * [class_idx]]
-            elif torch.is_tensor(class_idx):
-                # Use provided class labels directly
-                assert class_idx.shape == (batch_size, net.label_dim), \
-                    f"class_labels must have shape [{batch_size}, {net.label_dim}]"
-                class_labels = class_idx.to(device)
-            else:
-                raise ValueError("class_idx must be None, int, or tensor")
-        else:
-            class_labels = None
-
-        # How pullback is evaluated
-        # TODO Could change to globals()[prms.type_eval]
-        match prms.type_eval:
-            case "numdiff":
-                VF = NumericalGuidanceVF
-            case "jvp":
-                VF = JVPGuidanceVF
-
-        sigma = torch.tensor(1e-1).to(device).to(templates.dtype)
-        net(templates, sigma, class_labels)
+    @classmethod 
+    def create_latents(cls):
         idx_mod = list(prms.idx_skips)
         idx_preserved = [x for x in range(0, len(net.model.saved_skips)) if x not in idx_mod] 
         shapes_skips = [net.model.saved_skips[i].shape[1:] for i in idx_mod]
+
+        # Get information of simulation
+        device = cnfg_sim.device
+        batch_size = cnfg_sim.diffusion.batch_size
 
 
         def latent_fn(x, *, _net):
@@ -674,7 +642,8 @@ class BuilderUNetEncoder(BuilderVFBase):
             skips_modded = [skip.view(batch_size, *shp) for skip, shp in zip(splits, shapes_skips)] 
 
             # Recombine skips 
-            skips_preserved = [net.model.saved_skips[i] for i in idx_preserved]
+            # skips_preserved = [net.model.saved_skips[i] for i in idx_preserved]
+            skips_preserved = [torch.zeros_like(net.model.saved_skips[i]) for i in idx_preserved]
             skips = [None] * (len(idx_mod) + len(idx_preserved))
             for i, skip in zip(idx_mod, skips_modded):
                 skips[i] = skip
@@ -693,8 +662,30 @@ class BuilderUNetEncoder(BuilderVFBase):
             x = _net.model.out_conv(torch.nn.functional.silu(net.model.out_norm(z)))
             return x
 
+        return partial(latent_fn, _net=net), partial(latent_inv_fn, _net=net)
+    
+    def create_features_template():
+        sigma = torch.tensor(1e-1).to(device).to(templates.dtype)
+        net(templates, sigma, class_labels)
         features_template = latent_fn(None, _net=net)
         assert not torch.any(torch.isnan(features_template)), "features_template has NaNs"
+        return features_template
+
+
+    @classmethod
+    def create(cls, prms, templates, *, net, cnfg_sim):
+        kwargs, templates = cls._common_setup(prms, templates, 
+                                             extra_exclusions = ("hf_url",  "idx_skips") )
+        # Get information of simulation
+        device = cnfg_sim.device
+        batch_size = cnfg_sim.diffusion.batch_size
+
+        # How pullback is evaluated
+        match prms.type_eval:
+            case "numdiff": VF = NumericalGuidanceVF
+            case "jvp": VF = JVPGuidanceVF
+
+        features_template = cls.features_template
 
         vf = VF(
                 vf_latent = create_vf(prms.vf_latent, features_template),
@@ -702,34 +693,6 @@ class BuilderUNetEncoder(BuilderVFBase):
                 latent_inv = partial(latent_inv_fn, _net=net),
         )
 
-        return vf
-
-class BuilderLinearHFVF(BuilderVFBase):
-    @classmethod
-    def create(cls, prms, templates):
-        kwargs, templates = cls._common_setup(prms, templates, 
-                                             extra_exclusions = ("n_features", "dim_feature", "seed_mat", "T", "hf_url"))
-        match prms.type_eval:
-            case "numdiff":
-                VF = NumericalGuidanceVF
-            case "jvp":
-                VF = JVPGuidanceVF
-
-        from diffusers import AutoencoderKL
-        vae = AutoencoderKL.from_pretrained(prms.hf_url, subfolder="vae", use_safetensors=True)
-        vae = vae.to(device=templates.device, dtype=templates.dtype)
-
-        vf = VF(
-                **kwargs,
-                templates=templates,
-                latent = lambda x : vae.encode(x).latent_dist.sample(),
-                latent_inv = lambda x: vae.decode(x).sample
-        )
-        prms_linear = prms(hf_url=None, scale=10.0) 
-
-        # TODO: is this dirac score or just score
-        vf._dirac_score_latent = BuilderLinearVF.create(prms_linear, vf.features_template)
-        
         return vf
 
 
@@ -763,7 +726,7 @@ def create_vf(prms: ConfigGuidanceVF, templates, verbose=True,  **vf_kwargs):
 def load_templates(path, device=None, dtype=None, for_torch=True):
     # Load templates data
     if isinstance(path, type(None)):
-        return np.array([0])
+        return torch.tensor([0])
     elif os.path.isfile(path):
         templates = torch.unsqueeze(read_image(path), 0)
 
