@@ -125,3 +125,36 @@ def test_attention_becomes_uniform_as_noise_increases(setup_attention):
 
 def test_batched_attention_of_singles_is_ones():
     pass
+
+def test_unet_latents():
+    cnfgs = ConfigSimulation(
+        network_pkl   = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl',
+        device        = "cuda" if torch.cuda.is_available() else "cpu",
+        dtype         = torch.float16,
+        seed          = 0,
+        input_shape   = (3, 64, 64),
+        guidance_vf   = VF_UNET,
+        diffusion     = ConfigSampler(
+            num_steps=24, 
+            class_idx=281,
+            batch_size=16,
+        ),
+    )
+
+    # Create network
+    with dnnlib.util.open_url(cnfgs.network_pkl) as f:
+        net_old = pickle.load(f)['ema'].to(cnfgs.device)
+    net = EDMPrecond(*net_old.init_args, **net_old.init_kwargs).to(cnfgs.device)
+    net.model.save_skips = True
+    net.eval()
+    misc.copy_params_and_buffers(net_old, net, require_all=True)
+
+    x = torch.randn((1, net.img_channels, net.img_resolution, net.img_resolution), device="cpu")
+    t = torch.rand(1) * 80
+    y = net(x, t)
+
+def test_gvf_init():
+    pass
+
+
+
