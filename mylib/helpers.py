@@ -1,4 +1,5 @@
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace, fields
+import itertools
 
 @dataclass(frozen=True)
 class Config:
