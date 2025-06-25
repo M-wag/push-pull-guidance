@@ -32,14 +32,27 @@ if __name__ == "__main__":
     net.eval()
     misc.copy_params_and_buffers(net_old, net, require_all=True)
 
-    while True:
-        sigma = torch.tensor(1e-1).to(device).to(dtype)
-        y = net(templates, sigma)
-        y  = (y * 127.5 + 128) / 255
+    sigma = torch.tensor(1e-1).to(device).to(dtype)
+    y = net(templates, sigma)
+    y  = (y * 127.5 + 128) / 255
 
-        builder = BuidlerUNetGVF(cfg, templates, device=device, dtype=dtype, net=net)
-        builder._setup_latents()
+    builder = BuidlerUNetGVF(cfg, templates, device=device, dtype=dtype, net=net)
+    builder._setup_latents()
 
-        y_test = builder.latent_inv_fn(builder.latent_fn(templates))
-        y_test  = (y_test * 127.5 + 128) / 255
+    y_test = builder.latent_inv_fn(builder.latent_fn(templates))
+    y_test  = (y_test * 127.5 + 128) / 255
+
+    assert torch.all(torch.isclose(y, y_test))
+    assert torch.equal(y, y_test)
+    import matplotlib.pyplot as plt 
+    
+    fig, axes = plt.subplots(1, 2)
+    axes[0].imshow(rearrange(y[-1].detach().cpu(), "C H W -> H W C"))
+    axes[1].imshow(rearrange(y_test[-1].detach().cpu(), "C H W -> H W C"))
+    plt.show()
+
+
+
+
+    
 
