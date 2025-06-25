@@ -665,6 +665,9 @@ class EDMPrecond(torch.nn.Module):
         class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
         dtype = torch.float16 if (self.use_fp16 and not force_fp32 and x.device.type == 'cuda') else torch.float32
 
+        self.saved_sigma = sigma
+        self.saved_x = x
+
         c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
         c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt()
         c_in = 1 / (self.sigma_data ** 2 + sigma ** 2).sqrt()
