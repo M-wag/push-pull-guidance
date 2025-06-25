@@ -390,27 +390,32 @@ class BuilderHFGVF(BuilderNonLinearBase):
 class BuidlerUNetGVF(BuilderNonLinearBase):
     def _setup_latents(self):
         idx_mod = list(self.config.idx_skips)
-        idx_preserved = [x for x in range(0, len(self.ctx.net.model.saved_skips)) if x not in idx_mod] 
+        total_skips = len(self.ctx.net.model.saved_skips)
+        idx_preserved = [i for i in range(0, total_skips) if i not in idx_mod] 
         shapes_skips = [self.ctx.net.model.saved_skips[i].shape[1:] for i in idx_mod]
 
         def latent_fn(x, *, net):
+            # Only capture modified skips
             skips = [net.model.saved_skips[i] for i in idx_mod]
             skips_flat = torch.cat([x.flatten(start_dim=1) for x in skips], dim=1)
             return skips_flat
 
         def latent_inv_fn(z, *, net):
             # Split latent vector
-            lengths = [C*H*W for (C,H,W) in shapes_skips]
+            lengths = [torch.prod(torch.tensor(shape)) for shape in shapes_skips]
             splits = z.split(lengths, dim=1)
-            skips_modded = [skip.view(self.batch_size, *shp) for skip, shp in zip(splits, shapes_skips)] 
+            skips_modded = [
+                split.view(-1, *shape) 
+                for split, shape in zip(splits, shapes_skips)
+            ]
 
             # Recombine skips 
-            skips_preserved = [torch.zeros_like(net.model.saved_skips[i]) for i in idx_preserved]
-            full_skips = [None] * (len(idx_mod) + len(idx_preserved))
-            for i, skip in zip(idx_mod, skips_modded):
-                full_skips[i] = skip
-            for i, skip in zip(idx_preserved, skips_preserved):
-                full_skips[i] = skip
+            full_skips = [] 
+            for i in range(total_skips):
+                if i in idx_mod:
+                    full_skips.append(skips_modded[idx_mod.index(i)])
+                else: 
+                    full_skips.append(self.ctx.net.model.saved_skips[i])
 
             # Decoder.
             emb = self.ctx.net.model.saved_emb
@@ -419,8 +424,12 @@ class BuidlerUNetGVF(BuilderNonLinearBase):
                 if z.shape[1] != block.in_channels:
                     z = torch.cat([z, full_skips.pop()], dim=1)
                 z = block(z, emb)
-            x = self.ctx.net.model.out_conv(torch.nn.functional.silu(net.model.out_norm(z)))
-            return x
+            F_x = net.model.out_conv(torch.nn.functional.silu(net.model.out_norm(z)))
+
+            c_skip = net.sigma_data ** 2 / (net.saved_sigma ** 2 + net.sigma_data ** 2)
+            c_out = net.saved_sigma * net.sigma_data / (net.saved_sigma ** 2 + net.sigma_data ** 2).sqrt()
+            D_x = c_skip * net.saved_x + c_out * F_x
+            return D_x
 
         self.latent_fn = partial(latent_fn, net=self.ctx.net)
         self.latent_inv_fn = partial(latent_inv_fn, net=self.ctx.net)
@@ -459,7 +468,7 @@ def create_vf(cfg: ConfigGVFBase, templates: torch.Tensor, verbose: bool = True,
         case ConfigGVFAmbient()     : builder = BuilderAmbientGVF(cfg, templates, **ctx)
         case ConfigGVFLinear()      : builder = BuilderLinearVF(cfg, templates, **ctx)
         case ConfigGVFHuggingFace() : builder = BuilderHuggingfaceVF(cfg, templates, **ctx)
-        case ConfigGVFUnet()        : builder = BuilderUNetEncoder(cfg, templates, **ctx)
+        case ConfigGVFUnet()        : builder = BuidlerUNetGVF(cfg, templates, **ctx)
         case _                      : raise ValueError(f"Unknown config type: {type(cfg).__name__}")
 
     return builder.build()
