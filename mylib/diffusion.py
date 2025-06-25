@@ -10,12 +10,13 @@ from PIL import Image
 from einops import rearrange, repeat
 from torchvision.io import read_image, read_file
 from torch.autograd.functional import jvp
-from dataclasses import dataclass, asdict, replace, fields
+from dataclasses import dataclass
 from typing import List, Any, Literal, Callable
 import torch.nn.functional as F
 from einops import rearrange
 from torch import Tensor
 from functools import partial
+from .helpers import Config
 
 #----------------------------------------------------------------------------
 def edm_sampler(
@@ -109,70 +110,6 @@ def edm_sampler(
     return xs, (t_steps, )
 
 #----------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class Config:
-    def to_dict(self):
-        return asdict(self)
-
-    def __str__(self):
-        lines = []
-        max_key_len = max(len(k) for k in self.__dataclass_fields__)
-
-        for key in self.__dataclass_fields__:
-            value = getattr(self, key)
-            if value is None:
-                continue
-            formatted_value = (
-                f"[{', '.join(map(str, value))}]" if isinstance(value, list)
-                else repr(value)
-            )
-            lines.append(f"{key:<{max_key_len}} = {formatted_value}")
-        return "\n".join(lines)
-    
-    def __call__(self, **kwargs) -> 'Config':
-        """  eturn a new instance of this Config with specified fields replaced."""
-        invalid  = set(kwargs) - set(self.__dataclass_fields__)
-        if invalid:
-            raise AttributeError(f"Unknown fields for {type(self).__name__}: {invalid}")
-        return replace(self, **kwargs)
-
-    def split(self):
-        # Split fields based on whether they contains lists
-        fields_list = {}
-        fields_no_list = {}
-        for field in fields(self):
-            value = getattr(self, field.name)
-            if isinstance(value, Config):
-                fields_list[field.name] = value.split()
-            elif isinstance(value, list):
-                fields_list[field.name] = value
-            else:
-                fields_no_list[field.name] = value
-
-        # Make every combination of values and make new configs
-        combinations = [dict(zip(fields_list.keys(), vals)) for vals in itertools.product(*fields_list.values())]
-        cnfgs_split = []
-        for combo in combinations:
-            cnfgs_split.append(type(self)(**combo, **fields_no_list))
-
-        return cnfgs_split 
-
-    @property
-    def shape_combination(self) -> tuple[int]:
-
-        def collect_dims(cfg) -> list[int]:
-            dims = []
-            for field in fields(cfg):
-                val = getattr(cfg, field.name)
-                if isinstance(val, list):
-                    dims.append(len(val))
-                elif isinstance(val, Config):
-                    dims.extend(collect_dims(val))
-            return dims
-
-        return tuple(collect_dims(self))
-
 
 @dataclass(frozen=True)
 class ConfigGuidanceVFBase(Config):
