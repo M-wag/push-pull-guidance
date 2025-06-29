@@ -13,12 +13,37 @@ from torch.autograd.functional import jvp
 from dataclasses import dataclass
 from typing import List, Any, Literal, Callable
 import torch.nn.functional as F
+from torch import Tensor
 from einops import rearrange
 from torch import Tensor
 from functools import partial
 from .helpers import Config
 
 ### Samplers ###
+@dataclass(frozen=True)
+class ConfigSampler(Config):
+    class_idx:          int = None
+    scale_model_score:  float = 1.0
+    batch_size :        float = 9
+    num_steps:          int = 32
+    sigma_min:          float = 0.002  
+    sigma_max:          float = 80
+    rho:                float = 7
+    S_churn:            float = 0.0
+    S_min:              float = 0.0
+    S_max:              float = float('inf')
+    S_noise:            float = 1
+
+@dataclass(frozen=True)
+class ConfigSimulation(Config):
+    network_pkl:    str
+    device:         str 
+    dtype:          Any 
+    seed:           int | None 
+    input_shape:    tuple[int]
+    guidance_vf:    ConfigGuidanceVF 
+    diffusion:      ConfigSampler 
+
 def edm_sampler(
     net, 
     vf_template,         # Vector field induced by tempaplate and features      
@@ -189,3 +214,17 @@ def schedule_diffusion(cnfg : ConfigSimulation):
     
     return raw_data
 
+### Hooks ### 
+
+@dataclass
+class HookSaved:
+    """Container for hook-specific parameters"""
+    x:  Optional[Tensor] = None
+    t:  Optional[Tensor] = None
+    
+class HookManager:
+    """Manages multiple hooks through the forward pass"""
+    def __init__(self):
+        self.attention : Optional[callable] = None
+        self.saved: HookSaved = field(default_factory=HookSaved)
+        
