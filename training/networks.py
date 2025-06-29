@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torch_utils import persistence
 from torch.nn.functional import silu
-
+from typing import Optional
 #----------------------------------------------------------------------------
 # Unified routine for initializing weights and biases.
 
@@ -126,6 +126,22 @@ class AttentionOp(torch.autograd.Function):
         return dq, dk
 
 #----------------------------------------------------------------------------
+# Hook Mangers for EDMPreCond and DhariwalUNet
+# Allows dynamic saving and loading of variables during run time
+
+@dataclass
+class HookSaved:
+    """Container for hook-specific parameters"""
+    x:  Optional[Tensor] = None
+    t:  Optional[Tensor] = None
+    
+class HookManager:
+    """Manages multiple hooks through the forward pass"""
+    def __init__(self):
+        self.attention : Optional[callable] = None
+        self.saved: HookSaved = field(default_factory=HookSaved)
+        
+#----------------------------------------------------------------------------
 # Unified U-Net block with optional up/downsampling and self-attention.
 # Represents the union of all features employed by the DDPM++, NCSN++, and
 # ADM architectures.
@@ -137,6 +153,7 @@ class UNetBlock(torch.nn.Module):
         num_heads=None, channels_per_head=64, dropout=0, skip_scale=1, eps=1e-5,
         resample_filter=[1,1], resample_proj=False, adaptive_scale=True,
         init=dict(), init_zero=dict(init_weight=0), init_attn=None,
+        name=None,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -163,7 +180,7 @@ class UNetBlock(torch.nn.Module):
             self.qkv = Conv2d(in_channels=out_channels, out_channels=out_channels*3, kernel=1, **(init_attn if init_attn is not None else init))
             self.proj = Conv2d(in_channels=out_channels, out_channels=out_channels, kernel=1, **init_zero)
 
-    def forward(self, x, emb):
+    def forward(self, x, emb, hook_manager=None):
         orig = x
         x = self.conv0(silu(self.norm0(x)))
 
@@ -182,6 +199,14 @@ class UNetBlock(torch.nn.Module):
             q, k, v = self.qkv(self.norm2(x)).reshape(x.shape[0] * self.num_heads, x.shape[1] // self.num_heads, 3, -1).unbind(2)
             w = AttentionOp.apply(q, k)
             a = torch.einsum('nqk,nck->ncq', w, v)
+
+            if hook_manager is not None:
+                if hook_manager.attention is not None: 
+                    if hook_manager.attention.save_attn is True:
+                        hook_manager.attention.save(a, block_name=self.name)
+                    else:
+                        a = hook_manager.attention.load(a, block_name=self.name)
+
             x = self.proj(a.reshape(*x.shape)).add_(x)
             x = x * self.skip_scale
         return x
@@ -413,11 +438,13 @@ class DhariwalUNet(torch.nn.Module):
                 cout = model_channels * mult
                 self.enc[f'{res}x{res}_conv'] = Conv2d(in_channels=cin, out_channels=cout, kernel=3, **init)
             else:
-                self.enc[f'{res}x{res}_down'] = UNetBlock(in_channels=cout, out_channels=cout, down=True, **block_kwargs)
+                block_name = f'{res}x{res}_down'
+                self.enc[block_name] = UNetBlock(in_channels=cout, out_channels=cout, down=True, name=block_name, **block_kwargs)
             for idx in range(num_blocks):
                 cin = cout
                 cout = model_channels * mult
-                self.enc[f'{res}x{res}_block{idx}'] = UNetBlock(in_channels=cin, out_channels=cout, attention=(res in attn_resolutions), **block_kwargs)
+                block_name = f'{res}x{res}_block{idx}'
+                self.enc[block_name] = UNetBlock(in_channels=cin, out_channels=cout, attention=(res in attn_resolutions), name=block_name, **block_kwargs)
         skips = [block.out_channels for block in self.enc.values()]
 
         # Decoder.
@@ -436,7 +463,7 @@ class DhariwalUNet(torch.nn.Module):
         self.out_norm = GroupNorm(num_channels=cout)
         self.out_conv = Conv2d(in_channels=cout, out_channels=out_channels, kernel=3, **init_zero)
 
-    def forward(self, x, noise_labels, class_labels, augment_labels=None):
+    def forward(self, x, noise_labels, class_labels, augment_labels=None, hook_manager: Optional[HookManager]=None):
         # Mapping.
         emb = self.map_noise(noise_labels)
         if self.map_augment is not None and augment_labels is not None:
@@ -453,7 +480,7 @@ class DhariwalUNet(torch.nn.Module):
         # Encoder.
         skips = []
         for block in self.enc.values():
-            x = block(x, emb) if isinstance(block, UNetBlock) else block(x)
+            x = block(x, emb, hook_manager=hook_manager) if isinstance(block, UNetBlock) else block(x)
             skips.append(x)
 
         if self.save_skips:
@@ -659,7 +686,8 @@ class EDMPrecond(torch.nn.Module):
         self.sigma_data = sigma_data
         self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
 
-    def forward(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
+    def forward(self, x, sigma, class_labels=None, force_fp32=False, 
+                hook_manager: Optional[HookManager] = None, **model_kwargs):
         x = x.to(torch.float32)
         sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
         class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
@@ -673,7 +701,13 @@ class EDMPrecond(torch.nn.Module):
         c_in = 1 / (self.sigma_data ** 2 + sigma ** 2).sqrt()
         c_noise = sigma.log() / 4
 
-        F_x = self.model((c_in * x).to(dtype), c_noise.flatten(), class_labels=class_labels, **model_kwargs)
+        F_x = self.model(
+                (c_in * x).to(dtype), 
+                c_noise.flatten(), 
+                class_labels=class_labels, 
+                hook_manager=hook_manager,
+                **model_kwargs
+        )
         assert F_x.dtype == dtype
         D_x = c_skip * x + c_out * F_x.to(torch.float32)
         return D_x
