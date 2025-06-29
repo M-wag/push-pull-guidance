@@ -76,7 +76,7 @@ def edm_sampler(
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
 
     def gradient(x, t):
-        denoised = net(x, t, class_labels).to(torch.float64)
+        denoised = net(x, t, class_labels).to(dtype)
         grad_template = vf_template(x, t)
         grad_model = scale_model_score * (x - denoised) / t
         return grad_template + grad_model
