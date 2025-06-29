@@ -11,13 +11,14 @@ from einops import rearrange, repeat
 from torchvision.io import read_image, read_file
 from torch.autograd.functional import jvp
 from dataclasses import dataclass
-from typing import List, Any, Literal, Callable
+from typing import List, Any, Literal, Callable, Optional
 import torch.nn.functional as F
 from torch import Tensor
 from einops import rearrange
 from torch import Tensor
 from functools import partial
 from .helpers import Config
+from mylib.gvf import ConfigGVFBase
 
 ### Samplers ###
 @dataclass(frozen=True)
@@ -41,7 +42,7 @@ class ConfigSimulation(Config):
     dtype:          Any 
     seed:           int | None 
     input_shape:    tuple[int]
-    guidance_vf:    ConfigGuidanceVF 
+    guidance_vf:    ConfigGVFBase
     diffusion:      ConfigSampler 
 
 def edm_sampler(
@@ -214,17 +215,3 @@ def schedule_diffusion(cnfg : ConfigSimulation):
     
     return raw_data
 
-### Hooks ### 
-
-@dataclass
-class HookSaved:
-    """Container for hook-specific parameters"""
-    x:  Optional[Tensor] = None
-    t:  Optional[Tensor] = None
-    
-class HookManager:
-    """Manages multiple hooks through the forward pass"""
-    def __init__(self):
-        self.attention : Optional[callable] = None
-        self.saved: HookSaved = field(default_factory=HookSaved)
-        
