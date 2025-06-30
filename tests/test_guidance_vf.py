@@ -1,6 +1,12 @@
 import pytest
 import torch
-from mylib.diffusion import ConfigGuidanceVF, create_guidance_vf, AttentionMixture
+
+from mylib.gvf import ConfigGVFAmbient, ConfigGVFUnet, ConfigGVFUnetAttention,  create_vf, AttentionMixture, BuidlerUNetGVF
+from mylib.diffusion import load_templates_batch, ConfigSimulation
+import dnnlib
+import pickle
+from training.networks import EDMPrecond
+from torch_utils import misc
 
 #-------Thresholding-------
 
@@ -123,38 +129,73 @@ def test_attention_becomes_uniform_as_noise_increases(setup_attention):
     pass
     # TODO: calculate KL divergence as noise increase and ensure it's monotonic
 
-def test_batched_attention_of_singles_is_ones():
-    pass
+    raise NotImplementedError()
 
-def test_unet_latents():
-    cnfgs = ConfigSimulation(
-        network_pkl   = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl',
-        device        = "cuda" if torch.cuda.is_available() else "cpu",
-        dtype         = torch.float16,
-        seed          = 0,
-        input_shape   = (3, 64, 64),
-        guidance_vf   = VF_UNET,
-        diffusion     = ConfigSampler(
-            num_steps=24, 
-            class_idx=281,
-            batch_size=16,
-        ),
+def test_batched_attention_of_singles_is_ones():
+    raise NotImplementedError()
+
+def test_unet_skip_latents():
+    MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
+
+    cfg = ConfigGVFUnet(
+        type_eval = "numdiff",
+        idx_skips = (15, ),
+        vf_latent = ConfigGVFAmbient()
     )
 
-    # Create network
-    with dnnlib.util.open_url(cnfgs.network_pkl) as f:
-        net_old = pickle.load(f)['ema'].to(cnfgs.device)
-    net = EDMPrecond(*net_old.init_args, **net_old.init_kwargs).to(cnfgs.device)
+    device= "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+    templates = load_templates_batch(["data/data/cat_1.jpg"], device=device, dtype=dtype) 
+    network_pkl   = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl'
+
+    with dnnlib.util.open_url(network_pkl) as f:
+        net_old = pickle.load(f)['ema'].to(device)
+    net = EDMPrecond(*net_old.init_args, **net_old.init_kwargs).to(device)
     net.model.save_skips = True
     net.eval()
     misc.copy_params_and_buffers(net_old, net, require_all=True)
 
-    x = torch.randn((1, net.img_channels, net.img_resolution, net.img_resolution), device="cpu")
-    t = torch.rand(1) * 80
-    y = net(x, t)
+    sigma = torch.tensor(1e-1).to(device).to(dtype)
+    y = net(templates, sigma)
+    y  = (y * 127.5 + 128) / 255
 
-def test_gvf_init():
-    pass
+    builder = BuidlerUNetGVF(cfg, templates, device=device, dtype=dtype, net=net)
+    builder._setup_latents()
 
+    y_test = builder.latent_inv_fn(builder.latent_fn(templates))
+    y_test  = (y_test * 127.5 + 128) / 255
 
+    assert torch.equal(y, y_test)
 
+def test_unet_attention_latents():
+    MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
+
+    cfg = ConfigGVFUnetAttention(
+        type_eval = "numdiff",
+        idxs = tuple(range(4, 16)),
+        vf_latent = ConfigGVFAmbient()
+    )
+
+    device= "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+    templates = load_templates_batch(["data/data/cat_1.jpg"], device=device, dtype=dtype) 
+    network_pkl   = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl'
+
+    with dnnlib.util.open_url(network_pkl) as f:
+        net_old = pickle.load(f)['ema'].to(device)
+    net = EDMPrecond(*net_old.init_args, **net_old.init_kwargs).to(device)
+    net.model.save_skips = True
+    net.eval()
+    misc.copy_params_and_buffers(net_old, net, require_all=True)
+
+    sigma = torch.tensor(1e-1).to(device).to(dtype)
+    y = net(templates, sigma)
+    y  = (y * 127.5 + 128) / 255
+
+    builder = BuidlerUNetAttentionGVF(cfg, templates, device=device, dtype=dtype, net=net)
+    builder._setup_latents()
+
+    y_test = builder.latent_inv_fn(builder.latent_fn(templates))
+    y_test  = (y_test * 127.5 + 128) / 255
+
+    assert torch.equal(y, y_test)

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Literal, Any, Optional, Union, List, Type 
 from .helpers import Config
 
+from training.networs import HookManager
+
 class Register:
     _registry = {}
 
@@ -59,6 +61,11 @@ class ConfigGVFHuggingFace(ConfigGVFNonLinear):
 @dataclass(frozen=True)
 class ConfigGVFUnet(ConfigGVFNonLinear):
     idx_skips: Optional[List[int]] = None
+
+@Register.register('unet_attn')
+@dataclass(frozen=True)
+class ConfigGVFUnetAttention(ConfigGVFNonLinear):
+    idxs: Optional[List[int]] = None
 
 # --- Guidance Vector Fields ---
 
@@ -352,7 +359,6 @@ class BuilderNonLinearBase(BuilderBase):
         """Method to setup the latent and latent inverse functions"""
         pass
 
-    @abstractmethod
     def _create_features_template(self):
         """Main method to create the latent features template"""
         return self.latent_fn(self.templates)
@@ -382,7 +388,7 @@ class BuilderHFGVF(BuilderNonLinearBase):
             self.config.hf_url, 
             subfolder="vae",
             use_safetensors=True
-        ).to(self.ctx.device)
+        ).to(device=self.ctx.device, dtype=self.ctx.dtype)
         
         self.latent_fn = lambda x: vae.encode(x).latent_dist.sample()
         self.latent_inv_fn = lambda x: vae.decode(x).sample
@@ -416,10 +422,12 @@ class BuidlerUNetGVF(BuilderNonLinearBase):
                     full_skips.append(skips_modded[idx_mod.index(i)])
                 else: 
                     full_skips.append(self.ctx.net.model.saved_skips[i])
-
-            # Decoder.
+            
+            # Middle information
             emb = self.ctx.net.model.saved_emb
             z = full_skips[-1]
+
+            # Decoder.
             for block in self.ctx.net.model.dec.values():
                 if z.shape[1] != block.in_channels:
                     z = torch.cat([z, full_skips.pop()], dim=1)
@@ -456,6 +464,69 @@ class BuidlerUNetGVF(BuilderNonLinearBase):
         assert not torch.any(torch.isnan(features_template)), "features_template has NaNs"
         return features_template
 
+class BuilderUNetAttentionGVF(BuilderNonLinearBase):
+    def _setup_latents(self):
+        # Track which blocks have attention
+        name_to_idx = {}
+        for i, (name, block) in enumerate(self.ctx.net.model.enc.items)():
+            # Check if block uses attention
+            if getattr(block, n_heads, 0) > 0:
+                # Log the name 
+                name_to_idx[name] = i
+        idx_to_name = {idx : name for name, idx in idx_to_name.items()}
+        assert len(name_to_idx.keys()) == len(idx_to_name)
+        total_blocks = len(name_to_block_idx.keys())
+
+        # Determine index for modded and preserved blocks
+        idxs_modded = list(self.config.idxs)
+        idxs_preserved = [i for i in range(0, total_blocks) if i not in idxs_modded] 
+
+        def latent_fn(x, *, net):
+            # TODO: NO CLUE IF THE DIMENSIONALITY OF THIS MAKES SENSE FOR OUR CODE
+            z = [hook_manager.attention.load(idx_to_name[i]) for i in idx_modded]
+            z = torch.stack(list(z), dim=0)
+            return z
+
+        def latent_inv_fn(z, *, net):
+            # Recombine modified and unmodified block attentions
+            attns_modded = list(torch.unbind(z, dim=0))
+            for i in range(total_blocks):
+                if i in idx_mod:
+                    attns_block.append(attns_modded[idx_mod.index(i)])
+                    hook_manager.attention.save()
+
+            # Run net 
+            hook_manager.attention.save_attn = True
+            x, sigma, class_labels = hook_manager.x, hook_manager.sigma, hook_manager.class_labels # TODO shouldn't be calling properties directly
+            x = net(x, sigma, class_labels, hook_manager)
+            hook_manager.attention.save_attn = False
+            return x 
+
+        self.latent_fn = partial(latent_fn, net=self.ctx.net)
+        self.latent_inv_fn = partial(latent_inv_fn, net=self.ctx.net)
+
+    def _create_features_template(self):
+        # Determine class labelsj
+        if self.ctx.class_idx is None:
+            # Use zeros (no class)
+            class_labels = torch.zeros([self.batch_size, self.ctx.net.label_dim], device=self.device)
+        elif isinstance(self.ctx.class_idx, int):
+            # Use one-hot encoded specified class
+            class_labels = torch.eye(self.ctx.net.label_dim, device=self.device)[self.batch_size * [class_idx]]
+        elif torch.is_tensor(self.ctx.class_idx):
+            # Use provided class labels directly
+            assert self.ctx.class_idx.shape == (self.batch_size, self.ctx.net.label_dim), \
+                f"class_labels must have shape [{batch_size}, {net.label_dim}]"
+            class_labels = self.ctx.class_idx.to(self.device)
+        else:
+            raise ValueError("class_idx must be None, int, or tensor")
+
+        sigma = torch.tensor(1e-1).to(self.device).to(self.dtype)
+        self.ctx.net(self.templates, sigma, class_labels)
+        features_template = self.latent_fn(None)
+        assert not torch.any(torch.isnan(features_template)), "features_template has NaNs"
+        return features_template
+
 def create_vf(cfg: ConfigGVFBase, templates: torch.Tensor, verbose: bool = True, **ctx) -> callable:
     if verbose:
         print(f"\nConfig: {cfg}")
@@ -464,12 +535,13 @@ def create_vf(cfg: ConfigGVFBase, templates: torch.Tensor, verbose: bool = True,
     if cfg is None:
         return lambda x, t: torch.zeros_like(x)
 
-    match cfg:
-        case ConfigGVFAmbient()     : builder = BuilderAmbientGVF(cfg, templates, **ctx)
-        case ConfigGVFLinear()      : builder = BuilderLinearVF(cfg, templates, **ctx)
-        case ConfigGVFHuggingFace() : builder = BuilderHuggingfaceVF(cfg, templates, **ctx)
-        case ConfigGVFUnet()        : builder = BuidlerUNetGVF(cfg, templates, **ctx)
-        case _                      : raise ValueError(f"Unknown config type: {type(cfg).__name__}")
+    if type(cfg) is ConfigGVFAmbient:        builder = BuilderAmbientGVF(cfg, templates, **ctx)
+    elif type(cfg) is ConfigGVFLinear:       builder = BuilderLinearVF(cfg, templates, **ctx)
+    elif type(cfg) is ConfigGVFHuggingFace:  builder = BuilderHFGVF(cfg, templates, **ctx)
+    elif type(cfg) is ConfigGVFUnet:         builder = BuidlerUNetGVF(cfg, templates, **ctx)
+    else: raise ValueError(f"Unknown config type: {type(cfg).__name__}")
+
+    breakpoint()
 
     return builder.build()
 
