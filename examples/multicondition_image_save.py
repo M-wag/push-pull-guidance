@@ -7,7 +7,7 @@ import pickle
 from einops import rearrange, repeat
 from dataclasses import replace
 from mylib.diffusion import edm_sampler, ConfigSimulation, ConfigSampler, load_templates_batch
-from mylib.gvf import create_vf, ConfigGVFUnet,ConfigGVFUnetAttention, ConfigGVFAmbient, ConfigGVFLinear
+from mylib.gvf import create_vf, ConfigGVFUnet,ConfigGVFUnetAttention, ConfigGVFHuggingFace, ConfigGVFAmbient, ConfigGVFLinear
 from mylib.visual import visualize_from_path
 from training.networks import EDMPrecond
 from torch_utils import misc
@@ -19,22 +19,22 @@ from PIL import Image
 MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
 
 VF_AMBIENT = ConfigGVFAmbient(
-    scale = np.power(2,  [0, 1, 2]).tolist(),
-    v_0 = 30,
+    scale = 100.0,
+    v_0 = 15,
 )
 
 VF_LINEAR = ConfigGVFLinear(
-    scale = [1/2, 1, 2],
-    v_0 = 30,
+    scale = 1.0,
+    v_0 = 15,
     n_features= 2,
-    dim_feature= [64, 128, 256],
+    dim_feature= 32,
 )
 
 VF_UNET = ConfigGVFUnet(
     type_eval = "numdiff",
     template_path = "data/data/cat_1.jpg",
-    idx_skips = [(i, ) for i in range(0, 16, 3)],
-    vf_latent = VF_AMBIENT
+    idx_skips = tuple(range(4, 8)),
+    vf_latent = VF_AMBIENT,
 )
 
 VF_UNET_ATTENTION = ConfigGVFUnetAttention(
@@ -43,18 +43,28 @@ VF_UNET_ATTENTION = ConfigGVFUnetAttention(
     idxs = range(6, 9),
     vf_latent = VF_AMBIENT
 )
+
+VF_HF = ConfigGVFHuggingFace(
+    type_eval = "numdiff",
+    template_path = "data/data/cat_1.jpg",
+    hf_url = "stabilityai/sd-turbo",
+    vf_latent = VF_LINEAR,
+)
+
+
+
 if __name__ == "__main__":
     cnfgs = ConfigSimulation(
         network_pkl   = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl',
         device        = "cuda" if torch.cuda.is_available() else "cpu",
-        dtype         = torch.float16,
+        dtype         = torch.float32,
         seed          = 0,
         input_shape   = (3, 64, 64),
         guidance_vf   = VF_UNET_ATTENTION,
         diffusion     = ConfigSampler(
-            num_steps=24, 
+            num_steps=16, 
             class_idx=281,
-            batch_size=16,
+            batch_size=9,
         ),
     )
 
@@ -92,19 +102,29 @@ if __name__ == "__main__":
                     latents=latents, 
                 )
 
-            idx_skips = cnfg.guidance_vf.idx_skips[0]
             v_0 = cnfg.guidance_vf.vf_latent.v_0
             scale = cnfg.guidance_vf.vf_latent.scale
-            dim_feature = cnfg.guidance_vf.vf_latent.dim_feature
 
-            dirname = f"data/parameter_evaluation/skips_{idx_skips}_scale_{scale}_v0_{v_0}_dimfeature_{dim_feature}"
+            dirname = f"data/parameter_evaluation/scale_{scale}_v0_{v_0}"
+            if False:
+                if isinstance(cnfg.guidance_vf.vf_latent, ConfigGVFLinear):
+                    dim_feature = cnfg.guidance_vf.vf_latent.dim_feature
+                    dirname = f"data/parameter_evaluation/skips_{str(idx_skips)}_scale_{scale}_v0_{v_0}_dimfeature_{dim_feature}"
+                elif isinstance(cnfg.guidance_vf.vf_latent, ConfigGVFUnet):
+                    idx_skips = cnfg.guidance_vf.idx_skips
+                    dirname = f"data/parameter_evaluation/skips_{str(idx_skips)}_scale_{scale}_v0_{v_0}"
+                else:
+                    dirname = f"data/parameter_evaluation/scale_{scale}_v0_{v_0}"
+
+            print(dirname)
+
             os.makedirs(dirname, exist_ok=True)
 
-            arr = rearrange(xs[-1], "(b1 b2) C H W -> (b1 H) (b2 W) C", b1=4)
+            arr = rearrange(xs[-1], "(b1 b2) C H W -> (b1 H) (b2 W) C", b1=int(np.sqrt(cnfg.diffusion.batch_size)))
             arr = arr.detach().cpu().numpy().clip(0, 1)  
             arr = (arr * 255).astype(np.uint8)          
             img = Image.fromarray(arr)
-            img.save(dirname + f"/batch.png")
+            img.save(os.path.dirname(dirpath) + f"/batch.png")
 
             for i, arr in enumerate(rearrange(xs[-1], "B C H W -> B H W C")):
                 arr = arr.detach().cpu().numpy().clip(0, 1)  

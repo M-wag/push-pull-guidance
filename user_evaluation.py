@@ -8,7 +8,12 @@ import numpy as np
 class ImageLabelingApp:
     def __init__(self, image_dir, questions, output_file="responses.json", max_display_size=(1200, 800)):
         self.image_dir = image_dir
-        self.image_files = [f for f in os.listdir(image_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        self.image_files = [
+            os.path.join(root, f)
+            for root, _, files in os.walk(image_dir)
+            for f in files
+            if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+        ]
         self.questions = questions
         self.output_file = output_file
         self.max_display_size = max_display_size
@@ -70,7 +75,7 @@ class ImageLabelingApp:
             self.root.destroy()
             return
 
-        image_path = os.path.join(self.image_dir, self.image_files[self.current_index])
+        image_path =  self.image_files[self.current_index]
         image = Image.open(image_path)
 
         # Optional duplication (remove if unnecessary)
@@ -117,9 +122,9 @@ class ImageLabelingApp:
 
 if __name__ == "__main__":
     questions = [
-        "Corrupted",
+        "Uncorrupted",
         "Changed",
         "Similar to template"
     ]
-    image_dir = "data/data"
+    image_dir = "data/parameter_evaluation"
     ImageLabelingApp(image_dir, questions)
