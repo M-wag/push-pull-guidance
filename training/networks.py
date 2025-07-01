@@ -1,4 +1,4 @@
-# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright (c) 2022, NVIDI
 #
 # This work is licensed under a Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -13,7 +13,7 @@ import torch
 from torch_utils import persistence
 from torch.nn.functional import silu
 from typing import Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 #----------------------------------------------------------------------------
 # Unified routine for initializing weights and biases.
 
@@ -161,10 +161,11 @@ class HookManager:
         return (self.load_blocks is True and name in self.registered_names)
 
     def save(self, name, item):
-        if self.should_save(name):
-            self.saved_items[name] = item.detach().clone() 
-        if self.save_current_run:
-            self.saved_items_current[name] = item.detach().clone() 
+        if name in self.registered_names:
+            if self.should_save(name):
+                self.saved_items[name] = item.detach().clone() 
+            if self.save_current_run:
+                self.saved_items_current[name] = item.detach().clone() 
         else:
             raise RuntimeError(f"Cannot save '{name}': either it is not registered or saving is not enabled for it.")
             
@@ -197,6 +198,11 @@ class HookManager:
 
     def reset_fwd(self):
         self.fwd_vars = None
+
+    def dump_fwd(self):
+        if not self.save_fwd:
+            raise RuntimeError(f"Cannot dump forward pass variable when self.save_fwd is False")
+        return asdict(self.fwd_vars).values()
 
 #----------------------------------------------------------------------------
 # Unified U-Net block with optional up/downsampling and self-attention.
