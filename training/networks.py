@@ -129,18 +129,52 @@ class AttentionOp(torch.autograd.Function):
 # Hook Mangers for EDMPreCond and DhariwalUNet
 # Allows dynamic saving and loading of variables during run time
 
-@dataclass
-class HookSaved:
-    """Container for hook-specific parameters"""
-    x:  Optional[Tensor] = None
-    t:  Optional[Tensor] = None
-    
 class HookManager:
     """Manages multiple hooks through the forward pass"""
     def __init__(self):
-        self.attention : Optional[callable] = None
-        self.saved: HookSaved = field(default_factory=HookSaved)
-        
+        self.registered_names = [] 
+        self.save_blocks = False
+        self.load_blocks = False
+        self.save_current_run = False
+        self.saved_items = {}
+        self.saved_items_current = {}
+
+    def register(self, name: str):
+        self.registered_names.append(name)
+
+    def should_save (self, name):
+        return (self.save_blocks is True and name in self.registered_names)
+
+    def should_load(self, name):
+        return (self.load_blocks is True and name in self.registered_names)
+
+    @torch.no_grad
+    def save(self, name, item):
+        if self.should_save(name):
+            self.saved_items[name] = item
+        if self.save_current_run:
+            self.saved_items_current[name] = item
+        else:
+            raise RuntimeError(f"Cannot save '{name}': either it is not registered or saving is not enabled for it.")
+            
+    @torch.no_grad
+    def load(self, name=None):
+        if self.should_load(name):
+            return self.saved_items[name]
+        else:
+            raise RuntimeError(f"Cannot load '{name}': either it is not registered or saving is not enabled for it.")
+
+    @torch.no_grad
+    def load_all(self):
+        return list(self.saved_items.values())
+
+    @torch.no_grad
+    def load_current(self):
+        return list(self.saved_items_current.values())
+
+    def reset_current(self):
+        self.saved_items_current = {}
+            
 #----------------------------------------------------------------------------
 # Unified U-Net block with optional up/downsampling and self-attention.
 # Represents the union of all features employed by the DDPM++, NCSN++, and
@@ -171,6 +205,8 @@ class UNetBlock(torch.nn.Module):
         self.conv1 = Conv2d(in_channels=out_channels, out_channels=out_channels, kernel=3, **init_zero)
 
         self.skip = None
+        
+        self.name = name
         if out_channels != in_channels or up or down:
             kernel = 1 if resample_proj or out_channels!= in_channels else 0
             self.skip = Conv2d(in_channels=in_channels, out_channels=out_channels, kernel=kernel, up=up, down=down, resample_filter=resample_filter, **init)
@@ -180,7 +216,8 @@ class UNetBlock(torch.nn.Module):
             self.qkv = Conv2d(in_channels=out_channels, out_channels=out_channels*3, kernel=1, **(init_attn if init_attn is not None else init))
             self.proj = Conv2d(in_channels=out_channels, out_channels=out_channels, kernel=1, **init_zero)
 
-    def forward(self, x, emb, hook_manager=None):
+    def forward(self, x, emb, hook_manager: Optional[HookManager]=None):
+
         orig = x
         x = self.conv0(silu(self.norm0(x)))
 
@@ -195,20 +232,21 @@ class UNetBlock(torch.nn.Module):
         x = x.add_(self.skip(orig) if self.skip is not None else orig)
         x = x * self.skip_scale
 
-        if self.num_heads:
+        if not self.num_heads:
+            return x
+
+        if hook_manager is not None and hook_manager.should_load(self.name):
+            a = hook_manager.load(self.name)
+        else:
             q, k, v = self.qkv(self.norm2(x)).reshape(x.shape[0] * self.num_heads, x.shape[1] // self.num_heads, 3, -1).unbind(2)
             w = AttentionOp.apply(q, k)
             a = torch.einsum('nqk,nck->ncq', w, v)
 
-            if hook_manager is not None:
-                if hook_manager.attention is not None: 
-                    if hook_manager.attention.save_attn is True:
-                        hook_manager.attention.save(a, block_name=self.name)
-                    else:
-                        a = hook_manager.attention.load(a, block_name=self.name)
-
-            x = self.proj(a.reshape(*x.shape)).add_(x)
-            x = x * self.skip_scale
+            if hook_manager is not None and hook_manager.should_save(self.name):
+                hook_manager.save(self.name, a)
+            
+        x = self.proj(a.reshape(*x.shape)).add_(x)
+        x = x * self.skip_scale
         return x
 
 #----------------------------------------------------------------------------
@@ -674,6 +712,7 @@ class EDMPrecond(torch.nn.Module):
         sigma_max       = float('inf'),     # Maximum supported noise level.
         sigma_data      = 0.5,              # Expected standard deviation of the training data.
         model_type      = 'DhariwalUNet',   # Class name of the underlying model.
+        hook_manager    =  None,            # Hook Manager for editing values at runtime
         **model_kwargs,                     # Keyword arguments for the underlying model.
     ):
         super().__init__()
@@ -685,9 +724,9 @@ class EDMPrecond(torch.nn.Module):
         self.sigma_max = sigma_max
         self.sigma_data = sigma_data
         self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
+        self.hook_manager = hook_manager
 
-    def forward(self, x, sigma, class_labels=None, force_fp32=False, 
-                hook_manager: Optional[HookManager] = None, **model_kwargs):
+    def forward(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
         x = x.to(torch.float32)
         sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
         class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
@@ -705,7 +744,7 @@ class EDMPrecond(torch.nn.Module):
                 (c_in * x).to(dtype), 
                 c_noise.flatten(), 
                 class_labels=class_labels, 
-                hook_manager=hook_manager,
+                hook_manager=self.hook_manager,
                 **model_kwargs
         )
         assert F_x.dtype == dtype

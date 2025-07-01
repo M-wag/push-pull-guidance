@@ -1,11 +1,11 @@
 import pytest
 import torch
 
-from mylib.gvf import ConfigGVFAmbient, ConfigGVFUnet, ConfigGVFUnetAttention,  create_vf, AttentionMixture, BuidlerUNetGVF
-from mylib.diffusion import load_templates_batch, ConfigSimulation
+from mylib.gvf import ConfigGVFAmbient, ConfigGVFUnet, ConfigGVFUnetAttention,  create_vf, AttentionMixture, BuidlerUNetGVF, BuilderUNetAttentionGVF
+from mylib.diffusion import load_templates, load_templates_batch, ConfigSimulation
 import dnnlib
 import pickle
-from training.networks import EDMPrecond
+from training.networks import EDMPrecond, HookManager
 from torch_utils import misc
 
 #-------Thresholding-------
@@ -167,7 +167,7 @@ def test_unet_skip_latents():
 
     assert torch.equal(y, y_test)
 
-def test_unet_attention_latents():
+def test_unet_attention_latents_equal_denoiser():
     MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
 
     cfg = ConfigGVFUnetAttention(
@@ -192,10 +192,78 @@ def test_unet_attention_latents():
     y = net(templates, sigma)
     y  = (y * 127.5 + 128) / 255
 
-    builder = BuidlerUNetAttentionGVF(cfg, templates, device=device, dtype=dtype, net=net)
+    builder = BuilderUNetAttentionGVF(cfg, templates, device=device, dtype=dtype, net=net)
     builder._setup_latents()
 
     y_test = builder.latent_inv_fn(builder.latent_fn(templates))
     y_test  = (y_test * 127.5 + 128) / 255
 
     assert torch.equal(y, y_test)
+
+@torch.no_grad()
+def test_hook():
+    MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
+
+    cfg = ConfigGVFUnetAttention(
+        type_eval = "numdiff",
+        idxs = tuple(range(4, 16)),
+        vf_latent = ConfigGVFAmbient()
+    )
+
+    device= "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+    templates = load_templates_batch(["data/data/cat_1.jpg"], device=device, dtype=dtype) 
+    network_pkl   = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl'
+
+    with dnnlib.util.open_url(network_pkl) as f:
+        net_old = pickle.load(f)['ema'].to(device)
+    net = EDMPrecond(*net_old.init_args, **net_old.init_kwargs).to(device)
+    net.model.save_skips = True
+    net.eval()
+    misc.copy_params_and_buffers(net_old, net, require_all=True)
+
+    # Load two images
+    x_1 = load_templates("data/data/cat_1.jpg")
+    x_2 = load_templates("data/data/cat_2.jpg")
+    sigma = torch.tensor(10).to(device).to(dtype)
+
+    # Register UNet Block 4 - 16 
+    hook_manager = HookManager()
+
+    blocks_with_attention = []
+    for name, block in net.model.enc.items():
+        # Check if block uses attention
+        if getattr(block, "num_heads", 0) > 0:
+            # Log the name 
+            blocks_with_attention.append(name)
+            hook_manager.register(name)
+    assert len(blocks_with_attention) == 9
+    net.hook_manager = hook_manager
+
+    # Enable saving each run
+    hook_manager.save_current_run = True
+    # Get attention for first image and save weights for later
+    hook_manager.save_blocks = True
+    net(x_1, sigma)
+    attn_1  = hook_manager.load_current()
+    hook_manager.reset_current()
+    hook_manager.save_blocks = False
+    # Get attention for second image
+    net(x_2, sigma)
+    attn_2  = hook_manager.load_current()
+    hook_manager.reset_current()
+    # Run second image again
+    hook_manager.load_blocks = True
+    net(x_2, sigma)
+    attn_combined = hook_manager.load_current()
+    hook_manager.reset_current()
+
+    # Assert attention for two images are not the same
+    for idx, (a, b) in enumerate(zip(attn_1, attn_2)):
+        assert not torch.equal(a, b), f"Attention matches at index = {idx}"
+
+    # Assert 1-3 match Image 2 and 4-9 match Image 1
+    for idx, (a, b) in enumerate(zip(attn_combined, attn_2[:3] + attn_1[3::])):
+        assert torch.equal(a, b), f"Attention doesn't match at index = {idx}"
+
+

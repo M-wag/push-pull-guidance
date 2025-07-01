@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Literal, Any, Optional, Union, List, Type 
 from .helpers import Config
 
-from training.networs import HookManager
+from training.networks import HookManager
 
 class Register:
     _registry = {}
@@ -466,40 +466,36 @@ class BuidlerUNetGVF(BuilderNonLinearBase):
 
 class BuilderUNetAttentionGVF(BuilderNonLinearBase):
     def _setup_latents(self):
-        # Track which blocks have attention
-        name_to_idx = {}
-        for i, (name, block) in enumerate(self.ctx.net.model.enc.items)():
+        # Initialize Hook Manager
+        hook_manger = HookManager()
+
+        # Register which blocks ahve attention
+        names_registered_blocks = []
+        for name, block in self.ctx.net.model.enc.items():
             # Check if block uses attention
-            if getattr(block, n_heads, 0) > 0:
+            if getattr(block, "n_heads", 0) > 0:
                 # Log the name 
-                name_to_idx[name] = i
-        idx_to_name = {idx : name for name, idx in idx_to_name.items()}
-        assert len(name_to_idx.keys()) == len(idx_to_name)
-        total_blocks = len(name_to_block_idx.keys())
-
-        # Determine index for modded and preserved blocks
-        idxs_modded = list(self.config.idxs)
-        idxs_preserved = [i for i in range(0, total_blocks) if i not in idxs_modded] 
-
+                hook_manager.register(name)
+                registered_blocks.append(name)
+        # 
+        self.ctx.net.hook_manger = hook_manger 
+ 
         def latent_fn(x, *, net):
-            # TODO: NO CLUE IF THE DIMENSIONALITY OF THIS MAKES SENSE FOR OUR CODE
-            z = [hook_manager.attention.load(idx_to_name[i]) for i in idx_modded]
-            z = torch.stack(list(z), dim=0)
+            z = list(hook_manger.load().values())
+            z = torch.stack(list(z), dim=0) # TODO: NO CLUE IF THE DIMENSIONALITY OF THIS MAKES SENSE FOR OUR CODE
             return z
 
         def latent_inv_fn(z, *, net):
             # Recombine modified and unmodified block attentions
             attns_modded = list(torch.unbind(z, dim=0))
-            for i in range(total_blocks):
-                if i in idx_mod:
-                    attns_block.append(attns_modded[idx_mod.index(i)])
-                    hook_manager.attention.save()
+            for name, attention in zip(names_registered_blocks, attns_modded):
+                hook_manager.write(name, attention)
 
             # Run net 
-            hook_manager.attention.save_attn = True
+            hook_manager.replace_from_register(True)
             x, sigma, class_labels = hook_manager.x, hook_manager.sigma, hook_manager.class_labels # TODO shouldn't be calling properties directly
             x = net(x, sigma, class_labels, hook_manager)
-            hook_manager.attention.save_attn = False
+            hook_manager.replace_from_register(False)
             return x 
 
         self.latent_fn = partial(latent_fn, net=self.ctx.net)
