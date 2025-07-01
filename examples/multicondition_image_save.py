@@ -7,7 +7,7 @@ import pickle
 from einops import rearrange, repeat
 from dataclasses import replace
 from mylib.diffusion import edm_sampler, ConfigSimulation, ConfigSampler, load_templates_batch
-from mylib.gvf import create_vf, ConfigGVFUnet, ConfigGVFAmbient, ConfigGVFLinear
+from mylib.gvf import create_vf, ConfigGVFUnet,ConfigGVFUnetAttention, ConfigGVFAmbient, ConfigGVFLinear
 from mylib.visual import visualize_from_path
 from training.networks import EDMPrecond
 from torch_utils import misc
@@ -37,6 +37,13 @@ VF_UNET = ConfigGVFUnet(
     vf_latent = VF_AMBIENT
 )
 
+
+VF_UNET_ATTENTION = ConfigGVFUnetAttention(
+    type_eval = "numdiff",
+    template_path = "data/data/cat_1.jpg",
+    idxs = range(6, 9),
+    vf_latent = VF_AMBIENT
+)
 if __name__ == "__main__":
     cnfgs = ConfigSimulation(
         network_pkl   = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl',
@@ -44,7 +51,7 @@ if __name__ == "__main__":
         dtype         = torch.float16,
         seed          = 0,
         input_shape   = (3, 64, 64),
-        guidance_vf   = VF_UNET,
+        guidance_vf   = VF_UNET_ATTENTION,
         diffusion     = ConfigSampler(
             num_steps=24, 
             class_idx=281,
