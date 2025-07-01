@@ -37,7 +37,6 @@ VF_UNET = ConfigGVFUnet(
     vf_latent = VF_AMBIENT
 )
 
-
 VF_UNET_ATTENTION = ConfigGVFUnetAttention(
     type_eval = "numdiff",
     template_path = "data/data/cat_1.jpg",
