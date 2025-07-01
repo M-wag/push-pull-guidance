@@ -467,36 +467,43 @@ class BuidlerUNetGVF(BuilderNonLinearBase):
 class BuilderUNetAttentionGVF(BuilderNonLinearBase):
     def _setup_latents(self):
         # Initialize Hook Manager
-        hook_manger = HookManager()
+        hook_manager = HookManager()
 
-        # Register which blocks ahve attention
-        names_registered_blocks = []
+        # Register which blocks get modified
+        name_blocks_with_attention = []
         for name, block in self.ctx.net.model.enc.items():
             # Check if block uses attention
-            if getattr(block, "n_heads", 0) > 0:
+            if getattr(block, "num_heads", 0) > 0:
                 # Log the name 
-                hook_manager.register(name)
-                registered_blocks.append(name)
-        # 
-        self.ctx.net.hook_manger = hook_manger 
- 
+                name_blocks_with_attention.append(name)
+        assert len(name_blocks_with_attention) == 9
+
+        for i in self.config.idxs:
+            hook_manager.register(name_blocks_with_attention[i])
+        assert len(hook_manager.registered_names) == len(self.config.idxs)
+
+        self.ctx.net.hook_manager = hook_manager
+        hook_manager.save_blocks = True
+        hook_manager.save_fwd = True
         def latent_fn(x, *, net):
-            z = list(hook_manger.load().values())
+            # z = [hook_manager.load(name) for name in hook_manager.registered_names] 
+            z = hook_manager.load_all()
+            [print(x.shape) for x in z]
             z = torch.stack(list(z), dim=0) # TODO: NO CLUE IF THE DIMENSIONALITY OF THIS MAKES SENSE FOR OUR CODE
+            
             return z
 
         def latent_inv_fn(z, *, net):
-            # Recombine modified and unmodified block attentions
-            attns_modded = list(torch.unbind(z, dim=0))
-            for name, attention in zip(names_registered_blocks, attns_modded):
-                hook_manager.write(name, attention)
-
-            # Run net 
-            hook_manager.replace_from_register(True)
-            x, sigma, class_labels = hook_manager.x, hook_manager.sigma, hook_manager.class_labels # TODO shouldn't be calling properties directly
-            x = net(x, sigma, class_labels, hook_manager)
-            hook_manager.replace_from_register(False)
-            return x 
+            # Disable saving, Enable loading
+            hook_manager.save_blocks = False
+            hook_manager.load_blocks  = True
+            # Run model with hybrid attention
+            x, sigma, class_labels, force_fp32, model_kwargs = hook_manager.dump_fwd()
+            y = net(x, sigma, class_labels, force_fp32, **model_kwargs)
+            # Re-enable saving, Disable loading
+            hook_manager.save_blocks = True
+            hook_manager.load_blocks  = False 
+            return y
 
         self.latent_fn = partial(latent_fn, net=self.ctx.net)
         self.latent_inv_fn = partial(latent_inv_fn, net=self.ctx.net)
@@ -536,8 +543,6 @@ def create_vf(cfg: ConfigGVFBase, templates: torch.Tensor, verbose: bool = True,
     elif type(cfg) is ConfigGVFHuggingFace:  builder = BuilderHFGVF(cfg, templates, **ctx)
     elif type(cfg) is ConfigGVFUnet:         builder = BuidlerUNetGVF(cfg, templates, **ctx)
     else: raise ValueError(f"Unknown config type: {type(cfg).__name__}")
-
-    breakpoint()
 
     return builder.build()
 

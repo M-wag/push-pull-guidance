@@ -172,7 +172,7 @@ def test_unet_attention_latents_equal_denoiser():
 
     cfg = ConfigGVFUnetAttention(
         type_eval = "numdiff",
-        idxs = tuple(range(4, 16)),
+        idxs = tuple(range(6, 9)),
         vf_latent = ConfigGVFAmbient()
     )
 
@@ -188,12 +188,13 @@ def test_unet_attention_latents_equal_denoiser():
     net.eval()
     misc.copy_params_and_buffers(net_old, net, require_all=True)
 
-    sigma = torch.tensor(1e-1).to(device).to(dtype)
-    y = net(templates, sigma)
-    y  = (y * 127.5 + 128) / 255
 
     builder = BuilderUNetAttentionGVF(cfg, templates, device=device, dtype=dtype, net=net)
     builder._setup_latents()
+
+    sigma = torch.tensor(1e-1).to(device).to(dtype)
+    y = net(templates, sigma)
+    y  = (y * 127.5 + 128) / 255
 
     y_test = builder.latent_inv_fn(builder.latent_fn(templates))
     y_test  = (y_test * 127.5 + 128) / 255
