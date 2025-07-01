@@ -13,6 +13,7 @@ import torch
 from torch_utils import persistence
 from torch.nn.functional import silu
 from typing import Optional
+from dataclasses import dataclass, field
 #----------------------------------------------------------------------------
 # Unified routine for initializing weights and biases.
 
@@ -128,6 +129,13 @@ class AttentionOp(torch.autograd.Function):
 #----------------------------------------------------------------------------
 # Hook Mangers for EDMPreCond and DhariwalUNet
 # Allows dynamic saving and loading of variables during run time
+@dataclass
+class ForwardVariables:
+    x: torch.Tensor
+    sigma: torch.Tensor
+    class_labels: Optional[torch.Tensor] = None
+    force_fp32: bool = False
+    model_kwargs: dict = field(default_factory=dict)
 
 class HookManager:
     """Manages multiple hooks through the forward pass"""
@@ -139,6 +147,10 @@ class HookManager:
         self.saved_items = {}
         self.saved_items_current = {}
 
+        # Forward pass tracking
+        self.save_fwd = False
+        self.fwd_vars: Optional[ForwardVariables] = None
+
     def register(self, name: str):
         self.registered_names.append(name)
 
@@ -148,33 +160,44 @@ class HookManager:
     def should_load(self, name):
         return (self.load_blocks is True and name in self.registered_names)
 
-    @torch.no_grad
     def save(self, name, item):
         if self.should_save(name):
-            self.saved_items[name] = item
+            self.saved_items[name] = item.detach().clone() 
         if self.save_current_run:
-            self.saved_items_current[name] = item
+            self.saved_items_current[name] = item.detach().clone() 
         else:
             raise RuntimeError(f"Cannot save '{name}': either it is not registered or saving is not enabled for it.")
             
-    @torch.no_grad
     def load(self, name=None):
         if self.should_load(name):
             return self.saved_items[name]
         else:
             raise RuntimeError(f"Cannot load '{name}': either it is not registered or saving is not enabled for it.")
 
-    @torch.no_grad
     def load_all(self):
         return list(self.saved_items.values())
 
-    @torch.no_grad
     def load_current(self):
         return list(self.saved_items_current.values())
 
     def reset_current(self):
         self.saved_items_current = {}
-            
+
+    def capture_fwd(self, x, sigma, class_labels, force_fp32, model_kwargs, step_index=None):
+        if self.save_fwd:
+            self.fwd_vars = ForwardVariables(
+                x=x.detach().clone(),
+                sigma=sigma.detach().clone(),
+                class_labels=class_labels.detach().clone() if class_labels is not None else None,
+                force_fp32=force_fp32,
+                model_kwargs=model_kwargs.copy(),
+            )
+        else:
+            raise RuntimeError(f"Cannot save forward pass when self.save_fwd is False")
+
+    def reset_fwd(self):
+        self.fwd_vars = None
+
 #----------------------------------------------------------------------------
 # Unified U-Net block with optional up/downsampling and self-attention.
 # Represents the union of all features employed by the DDPM++, NCSN++, and
@@ -727,6 +750,10 @@ class EDMPrecond(torch.nn.Module):
         self.hook_manager = hook_manager
 
     def forward(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
+        # Capture forward variables if requested
+        if self.hook_manager and self.hook_manager.save_fwd:
+            self.hook_manager.capture_fwd( x, sigma, class_labels, force_fp32, model_kwargs)
+
         x = x.to(torch.float32)
         sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
         class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
@@ -740,6 +767,7 @@ class EDMPrecond(torch.nn.Module):
         c_in = 1 / (self.sigma_data ** 2 + sigma ** 2).sqrt()
         c_noise = sigma.log() / 4
 
+
         F_x = self.model(
                 (c_in * x).to(dtype), 
                 c_noise.flatten(), 
@@ -747,6 +775,7 @@ class EDMPrecond(torch.nn.Module):
                 hook_manager=self.hook_manager,
                 **model_kwargs
         )
+
         assert F_x.dtype == dtype
         D_x = c_skip * x + c_out * F_x.to(torch.float32)
         return D_x

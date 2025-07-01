@@ -210,6 +210,7 @@ def test_hook():
         vf_latent = ConfigGVFAmbient()
     )
 
+    MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
     device= "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float16 if torch.cuda.is_available() else torch.float32
     templates = load_templates_batch(["data/data/cat_1.jpg"], device=device, dtype=dtype) 
@@ -267,3 +268,41 @@ def test_hook():
         assert torch.equal(a, b), f"Attention doesn't match at index = {idx}"
 
 
+def test_forward_capture():
+    # Setup
+    MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
+    device= "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+    templates = load_templates_batch(["data/data/cat_1.jpg"], device=device, dtype=dtype) 
+    network_pkl   = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl'
+
+    with dnnlib.util.open_url(network_pkl) as f:
+        net_old = pickle.load(f)['ema'].to(device)
+    net = EDMPrecond(*net_old.init_args, **net_old.init_kwargs).to(device)
+    net.model.save_skips = True
+    net.eval()
+    misc.copy_params_and_buffers(net_old, net, require_all=True)
+    
+    # Test data
+    x = torch.randn(1, 3, 64, 64)
+    sigma = torch.tensor([0.5])
+    labels = None
+    
+    # Execute
+    hook_manager = HookManager()
+    hook_manager.save_fwd = True
+    net.hook_manager = hook_manager
+    net(x, sigma, class_labels=labels, force_fp32=True, augment_labels=None)
+    
+    # Verify
+    fwd_vars = hook_manager.fwd_vars
+    assert torch.equal(fwd_vars.x, x)
+    assert torch.equal(fwd_vars.sigma, sigma)
+    assert fwd_vars.class_labels == labels
+    assert fwd_vars.force_fp32 is True
+    assert fwd_vars.model_kwargs["augment_labels"] == None
+    
+    # Test reset
+    hook_manager.reset_fwd()
+    assert hook_manager.fwd_vars is None
+    
