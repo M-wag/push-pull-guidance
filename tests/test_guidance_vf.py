@@ -1,6 +1,5 @@
 import pytest
 import torch
-
 from mylib.gvf import ConfigGVFAmbient, ConfigGVFUnet, ConfigGVFUnetAttention,  create_vf, AttentionMixture, BuidlerUNetGVF, BuilderUNetAttentionGVF
 from mylib.diffusion import load_templates, load_templates_batch, ConfigSimulation
 import dnnlib

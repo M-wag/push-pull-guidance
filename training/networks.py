@@ -164,10 +164,11 @@ class HookManager:
         if name in self.registered_names:
             if self.should_save(name):
                 self.saved_items[name] = item.detach().clone() 
+                return 
             if self.save_current_run:
                 self.saved_items_current[name] = item.detach().clone() 
-        else:
-            raise RuntimeError(f"Cannot save '{name}': either it is not registered or saving is not enabled for it.")
+                return
+        raise RuntimeError(f"Cannot save '{name}': either it is not registered or saving is not enabled for it.")
             
     def load(self, name=None):
         if self.should_load(name):
