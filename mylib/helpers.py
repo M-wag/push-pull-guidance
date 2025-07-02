@@ -37,7 +37,15 @@ class Config:
             if isinstance(value, Config):
                 fields_list[field.name] = value.split()
             elif isinstance(value, list):
-                fields_list[field.name] = value
+                # Check if value in list is a config
+                flat = []
+                for elem in value:
+                    if isinstance(elem, Config):
+                        flat.extend(elem.split())
+                    else:
+                        flat.append(elem)
+                fields_list[field.name] = flat
+
             else:
                 fields_no_list[field.name] = value
 

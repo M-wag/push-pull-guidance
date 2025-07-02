@@ -106,3 +106,28 @@ def test_config_shape_combination_nested():
         f"Expected shape_combination (4, 2, 3), got {cnfg.shape_combination}"
     )
 
+def test_config_split_list_of_configs():
+    cnfg = ConfigTest(
+            x=[ConfigNested(a=1, b=[2,3]), ConfigNested(a=[1, 2], b=4)],
+            y=2,
+            z=[1, 2], 
+    )
+
+    manual_cnfgs = [
+        ConfigTest(x=ConfigNested(a=1, b=2), y=2, z=1),
+        ConfigTest(x=ConfigNested(a=1, b=2), y=2, z=2),
+        ConfigTest(x=ConfigNested(a=1, b=3), y=2, z=1),
+        ConfigTest(x=ConfigNested(a=1, b=3), y=2, z=2),
+        ConfigTest(x=ConfigNested(a=1, b=4), y=2, z=1),
+        ConfigTest(x=ConfigNested(a=1, b=4), y=2, z=2),
+        ConfigTest(x=ConfigNested(a=2, b=4), y=2, z=1),
+        ConfigTest(x=ConfigNested(a=2, b=4), y=2, z=2),
+    ]
+
+    for idx, (auto, manual) in enumerate(zip(cnfg.split(), manual_cnfgs)):
+        if auto != manual:
+            pytest.fail(
+                f"Mismatch at index {idx}:\n"
+                f"  auto:   {auto!r}\n"
+                f"  manual: {manual!r}"
+            )
