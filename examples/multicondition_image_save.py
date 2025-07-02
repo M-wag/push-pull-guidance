@@ -19,8 +19,8 @@ from PIL import Image
 MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
 
 VF_AMBIENT = ConfigGVFAmbient(
-    scale = 100.0,
-    v_0 = 15,
+    scale = [0.2, 0.4, 0.6, 0.8],
+    v_0 = 30.0,
 )
 
 VF_LINEAR = ConfigGVFLinear(
@@ -48,7 +48,7 @@ VF_HF = ConfigGVFHuggingFace(
     type_eval = "numdiff",
     template_path = "data/data/cat_1.jpg",
     hf_url = "stabilityai/sd-turbo",
-    vf_latent = VF_LINEAR,
+    vf_latent = VF_AMBIENT,
 )
 
 
@@ -60,11 +60,11 @@ if __name__ == "__main__":
         dtype         = torch.float32,
         seed          = 0,
         input_shape   = (3, 64, 64),
-        guidance_vf   = VF_UNET_ATTENTION,
+        guidance_vf   = VF_HF,
         diffusion     = ConfigSampler(
-            num_steps=16, 
+            num_steps=32, 
             class_idx=281,
-            batch_size=9,
+            batch_size=1,
         ),
     )
 
@@ -85,6 +85,7 @@ if __name__ == "__main__":
         # Create latents 
         g = torch.Generator(device=cnfg.device).manual_seed(cnfg.seed)
         latents = torch.randn([cnfg.diffusion.batch_size, net.img_channels, net.img_resolution, net.img_resolution], 
+
                               device=cnfg.device,
                               dtype=cnfg.dtype,
                               generator=g
@@ -92,7 +93,7 @@ if __name__ == "__main__":
 
         # Run sampler
         with torch.no_grad():
-            xs, _ = edm_sampler(
+            xs, (time_steps, stats) = edm_sampler(
                     net, 
                     vf, 
                     seed=cnfg.seed, 
@@ -124,8 +125,15 @@ if __name__ == "__main__":
             arr = arr.detach().cpu().numpy().clip(0, 1)  
             arr = (arr * 255).astype(np.uint8)          
             img = Image.fromarray(arr)
-            img.save(os.path.dirname(dirpath) + f"/batch.png")
 
+
+            img.save(os.path.dirname(dirname) + f"/batch.png")
+            if type(cnfg) == ConfigGVFHuggingFace:
+                np.save(os.path.dirname(dirname) + f"/{scale}_{v_0}.npy", stats)
+            else:
+                np.save(os.path.dirname(dirname) + f"/hf_{scale}_{v_0}.npy", stats)
+
+            np.save(os.path.dirname(dirname) + f"/time.npy", time_steps)
             for i, arr in enumerate(rearrange(xs[-1], "B C H W -> B H W C")):
                 arr = arr.detach().cpu().numpy().clip(0, 1)  
                 arr = (arr * 255).astype(np.uint8)          
