@@ -486,18 +486,18 @@ class BuilderUNetAttentionGVF(BuilderNonLinearBase):
         hook_manager.save_blocks = True
         hook_manager.save_fwd = True
         def latent_fn(x, *, net):
-            # z = [hook_manager.load(name) for name in hook_manager.registered_names] 
             z = hook_manager.load_all()
-            [print(x.shape) for x in z]
-            z = torch.stack(list(z), dim=0) # TODO: NO CLUE IF THE DIMENSIONALITY OF THIS MAKES SENSE FOR OUR CODE
-            
+            z = torch.stack(list(z), dim=1) # TODO: NO CLUE IF THE DIMENSIONALITY OF THIS MAKES SENSE FOR OUR CODE
             return z
 
         def latent_inv_fn(z, *, net):
             # Disable saving, Enable loading
+            # Load in guided attention
+            for name, attn in zip(hook_manager.registered_names, torch.unbind(z, dim=1)):
+                hook_manager.save(name, attn)
+            # Run model with hybrid attention
             hook_manager.save_blocks = False
             hook_manager.load_blocks  = True
-            # Run model with hybrid attention
             x, sigma, class_labels, force_fp32, model_kwargs = hook_manager.dump_fwd()
             y = net(x, sigma, class_labels, force_fp32, **model_kwargs)
             # Re-enable saving, Disable loading
@@ -526,7 +526,7 @@ class BuilderUNetAttentionGVF(BuilderNonLinearBase):
 
         sigma = torch.tensor(1e-1).to(self.device).to(self.dtype)
         self.ctx.net(self.templates, sigma, class_labels)
-        features_template = self.latent_fn(None)
+        features_template = self.latent_fn(None).detach().clone()
         assert not torch.any(torch.isnan(features_template)), "features_template has NaNs"
         return features_template
 
@@ -538,10 +538,11 @@ def create_vf(cfg: ConfigGVFBase, templates: torch.Tensor, verbose: bool = True,
     if cfg is None:
         return lambda x, t: torch.zeros_like(x)
 
-    if type(cfg) is ConfigGVFAmbient:        builder = BuilderAmbientGVF(cfg, templates, **ctx)
-    elif type(cfg) is ConfigGVFLinear:       builder = BuilderLinearVF(cfg, templates, **ctx)
-    elif type(cfg) is ConfigGVFHuggingFace:  builder = BuilderHFGVF(cfg, templates, **ctx)
-    elif type(cfg) is ConfigGVFUnet:         builder = BuidlerUNetGVF(cfg, templates, **ctx)
+    if type(cfg) is ConfigGVFAmbient:           builder = BuilderAmbientGVF(cfg, templates, **ctx)
+    elif type(cfg) is ConfigGVFLinear:          builder = BuilderLinearVF(cfg, templates, **ctx)
+    elif type(cfg) is ConfigGVFHuggingFace:     builder = BuilderHFGVF(cfg, templates, **ctx)
+    elif type(cfg) is ConfigGVFUnet:            builder = BuidlerUNetGVF(cfg, templates, **ctx)
+    elif type(cfg) is ConfigGVFUnetAttention:   builder = BuilderUNetAttentionGVF(cfg, templates, **ctx)
     else: raise ValueError(f"Unknown config type: {type(cfg).__name__}")
 
     return builder.build()
