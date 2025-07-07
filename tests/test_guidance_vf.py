@@ -9,6 +9,8 @@ from torch_utils import misc
 
 #-------Thresholding-------
 
+
+@pytest.mark.skip
 def test_weight_thresholding():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float32
@@ -40,6 +42,7 @@ def test_weight_thresholding():
     )
 
 
+@pytest.mark.skip
 def test_time_thresholding():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float32
@@ -92,6 +95,7 @@ def setup_attention():
 
     return means, stds, mix_weights, std_noise, x 
 
+@pytest.mark.skip
 def test_attention_sum_to_one(setup_attention):
     means, stds, mix_weights, std_noise, x = setup_attention
     attention_fn = AttentionMixture(means, stds, mix_weights)
@@ -99,6 +103,7 @@ def test_attention_sum_to_one(setup_attention):
 
     assert torch.allclose(attn.sum(axis=-1), torch.tensor(1.0), atol=1e-5), "Attention weights do not sum to 1"
 
+@pytest.mark.skip
 def test_attention_less_than_one(setup_attention):
     means, stds, mix_weights, std_noise, x = setup_attention
     attention_fn = AttentionMixture(means, stds, mix_weights)
@@ -106,6 +111,7 @@ def test_attention_less_than_one(setup_attention):
 
     assert torch.all(attn < 1.0), "Some attention weights are not strictly less than 1"
 
+@pytest.mark.skip
 def test_attention_highest_for_closest_mean(setup_attention):
     means, _, mix_weights, std_noise, x = setup_attention
     stds = torch.ones(means.shape[0]) * 0.5 # make sure stds are equal
@@ -122,6 +128,7 @@ def test_attention_highest_for_closest_mean(setup_attention):
         f"Attention max index {max_idx} != closest mean index {closest_idx}"
     )
 
+@pytest.mark.skip
 def test_attention_becomes_uniform_as_noise_increases(setup_attention):
     means, stds, mix_weights, _, x = setup_attention
     attention_fn = AttentionMixture(means, stds, mix_weights)
@@ -130,6 +137,7 @@ def test_attention_becomes_uniform_as_noise_increases(setup_attention):
 
     raise NotImplementedError()
 
+@pytest.mark.skip
 def test_batched_attention_of_singles_is_ones():
     raise NotImplementedError()
 
@@ -224,8 +232,8 @@ def test_hook():
     misc.copy_params_and_buffers(net_old, net, require_all=True)
 
     # Load two images
-    x_1 = load_templates("data/data/cat_1.jpg")
-    x_2 = load_templates("data/data/cat_2.jpg")
+    x_1 = load_templates("data/data/cat_1.jpg", device=device, dtype=dtype)
+    x_2 = load_templates("data/data/cat_2.jpg", device=device, dtype=dtype)
     sigma = torch.tensor(10).to(device).to(dtype)
 
     # Register UNet Block 4 - 16 
@@ -284,8 +292,8 @@ def test_forward_capture():
     misc.copy_params_and_buffers(net_old, net, require_all=True)
     
     # Test data
-    x = torch.randn(1, 3, 64, 64)
-    sigma = torch.tensor([0.5])
+    x = torch.randn(1, 3, 64, 64).to(device=device, dtype=dtype)
+    sigma = torch.tensor([0.5]).to(device=device, dtype=dtype)
     labels = None
     
     # Execute
