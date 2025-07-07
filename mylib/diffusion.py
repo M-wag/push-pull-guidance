@@ -20,6 +20,7 @@ from functools import partial
 from .helpers import Config
 from mylib.gvf import ConfigGVFBase
 
+DISABLE_TQDM = False
 ### Samplers ###
 @dataclass(frozen=True)
 class ConfigSampler(Config):
@@ -45,6 +46,15 @@ class ConfigSimulation(Config):
     guidance_vf:    ConfigGVFBase
     diffusion:      ConfigSampler 
 
+@dataclass
+class StatsSampler:
+    x_T:        Optional[np.array] = None
+    x_0:        Optional[np.array] = None
+    t_steps:    Optional[np.array] = None
+    max_mag:    Optional[np.array] = None
+    grads:      Optional[np.array] = None
+
+@torch.no_grad()
 def edm_sampler(
     net, 
     vf_template,         # Vector field induced by tempaplate and features      
@@ -101,10 +111,20 @@ def edm_sampler(
     t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
 
+    stats = StatsSampler()
+    stats.grads = np.empty((2, num_steps, batch_size, 3, 64, 64))
+    stats.max_mag = np.empty((2, num_steps))
+    stats.t_steps = t_steps.detach().cpu()
+    # TODO: Collect stats by hook or wrapper
     def gradient(x, t):
         denoised = net(x, t, class_labels).to(dtype)
         grad_template = vf_template(x, t)
         grad_model = scale_model_score * (x - denoised) / t
+
+        stats.max_mag[0, t_steps.tolist().index(t)] = grad_model.detach().cpu().max()
+        stats.max_mag[1, t_steps.tolist().index(t)] = grad_template.detach().cpu().max()
+        stats.grads[0, t_steps.tolist().index(t)] = grad_model.detach().cpu()
+        stats.grads[1, t_steps.tolist().index(t)] = grad_template.detach().cpu()
         return grad_template + grad_model
 
     xs = None 
@@ -112,11 +132,10 @@ def edm_sampler(
     print("Running network")
     if save_all_timesteps:
         xs = torch.empty((num_steps, batch_size, net.img_channels, net.img_resolution, net.img_resolution))
-        metrics = torch.empty((5, num_steps))
 
     # Main sampling loop.
     x_next = latents.to(dtype) * t_steps[0]
-    for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1): # 0, ..., N-1
+    for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1, disable=DISABLE_TQDM): # 0, ..., N-1
         x_cur = x_next
 
         # Increase noise temporarily.
@@ -126,14 +145,13 @@ def edm_sampler(
 
         dx = gradient(x_hat, t_hat) * (t_next - t_hat)
         x_next = x_hat + dx
-
-        # Save intermediate timsteps
         if save_all_timesteps:
             xs[i] = x_next
-            metrics[0, i] = torch.norm(x_next)
 
     xs = (xs * 127.5 + 128) / 255
-    return xs, (t_steps, )
+    stats.x_0 = xs[-1].detach().cpu().numpy()
+    stats.x_T = xs[-0].detach().cpu().numpy()
+    return xs, (t_steps.cpu().numpy(), stats)
 
 def load_templates(path, device=None, dtype=None, for_torch=True):
     # Load templates data
