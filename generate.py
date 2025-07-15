@@ -19,7 +19,9 @@ import PIL.Image
 import dnnlib
 from torch_utils import distributed as dist
 
-from mylib.diffusion import edm_sampler, create_vf, ConfigSampler, ConfigGuidanceVF, load_templates
+from mylib.helpers import update_EDM
+from mylib.diffusion import edm_sampler, load_templates_batch
+from mylib.gvf import create_vf
 
 #----------------------------------------------------------------------------
 # Wrapper for torch.Generator that allows specifying a different random seed
@@ -126,7 +128,7 @@ def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=
                 batch_size=batch_size,
                 num_steps=16,
                 )
-        cfg_vf = ConfigGuidanceVF(
+        cfg_gvf = ConfigGuidanceVF(
                     type_latent     = "pixel",
                     decay_rate      = 1.0,
                     v_0             = 20,
@@ -135,8 +137,8 @@ def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=
                 )
 
         # Initialize vector field
-        templates = load_templates(cfg_vf.template_path, device, dtype)
-        vf_guide = create_vf(cfg_vf, templates, verbose=False)
+        templates = load_templates(cfg_gvf.template_path, device, dtype)
+        vf_guide = create_vf(cfg_gvf, templates, verbose=False)
         
         sampler_kwargs = cfg_sampler.to_dict()
 
@@ -171,8 +173,10 @@ def generate_images(
     encoder_batch_size  = 4,                    # Maximum batch size for the encoder. None = default.
     verbose             = True,                 # Enable status prints?
     device              = torch.device('cuda'), # Which compute device to use.
-    sampler_fn          = edm_sampler,          # Which sampler function to use.
-    **sampler_kwargs,                           # Additional arguments for the sampler function.
+    dtype               = torch.float32,         # Which dtype to use 
+    cfg_gvf             = None,
+    templatedir         = None,                 # Where templates are stored
+    sampler_kwargs      = None,                 # Additional arguments for the sampler function.
 ):
     
     # Rank 0 goes first.
@@ -185,14 +189,13 @@ def generate_images(
             dist.print0(f'Loading main network from {net} ...')
         with dnnlib.util.open_url(net, verbose=(verbose and dist.get_rank() == 0)) as f:
             data = pickle.load(f)
-        net = data['ema'].to(device)
+        net = data['ema']
+        net = update_EDM(net).to(device) # Update EDM code
         if encoder is None:
             encoder = data.get('encoder', None)
             if encoder is None:
                 encoder = dnnlib.util.construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
     assert net is not None
-
-    # TODO : Load guidance network.
 
     # Other ranks follow.
     if dist.get_rank() == 0:
@@ -203,6 +206,7 @@ def generate_images(
     rank_batches = np.array_split(np.arange(len(seeds)), num_batches)[dist.get_rank() :: dist.get_world_size()]
     if verbose:
         dist.print0(f'Generating {len(seeds)} images...')
+
 
     # Return an iterable over the batches.
     class ImageIterable:
@@ -226,22 +230,32 @@ def generate_images(
                             r.labels[:, :] = 0
                             r.labels[:, class_idx] = 1
 
-                    # TODO : Initialize guidance vectorfield 
-                    templates_batch = 
-                    vf_guide = create_vf(cfg_vf, templates_batch, verbose=False)
+                    # TODO consider an update feature
+                    def get_path_random_template(templates, labels, seeds):
+                        return [None for i in seeds]
 
-                    # TODO :Generate images
-                    xs, _ = edm_sampler(net, vf_guide, None, device, **sampler_kwargs)
-                    r.images = xs[-1]
+                    template_paths = get_path_random_template(templatedir, r.labels, r.seeds)
+                    templates = load_templates_batch(template_paths, device=device, dtype=dtype)
+                    gvf = create_vf(cfg_gvf, templates, verbose=False, device=device, dtype=dtype, net=net)
+
+                    # Generate images
+                    xs, _ = edm_sampler(net, gvf, seed=None, 
+                                        class_idx=r.labels, latents=r.noise, 
+                                        batch_size=len(r.seeds), dtype=dtype, device=device, 
+                                        correct_rgb=False,
+                                        disable_tqdm=False,
+                                        **sampler_kwargs)
+                    r.images = encoder.decode(xs[-1])
 
                     # Save images.
-                    images_np = (images * 127.5 + 128).clip(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
                     if outdir is not None:
-                        for seed, image in zip(r.seeds, images_np):
+                        for seed, image in zip(r.seeds, r.images.permute(0, 2, 3, 1).cpu().numpy()):
+                        # from einops import rearrange
+                        # for seed, image in zip(r.seeds, rearrange(xs[-1], "B C H W -> B H W C").cpu().numpy()):
+                        # for seed, image in zip(r.seeds, torch.ones_like(r.images.permute(0, 2, 3, 1)).cpu().numpy()):
                             image_dir = os.path.join(outdir, f'{seed//1000*1000:06d}') if subdirs else outdir
                             os.makedirs(image_dir, exist_ok=True)
-                            image_path = os.path.join(image_dir, f'{seed:06d}.png')
-                            PIL.Image.fromarray(image, 'RGB').save(image_path)
+                            PIL.Image.fromarray(image, 'RGB').save(os.path.join(image_dir, f'{seed:06d}.png'))
 
                 # Yield results.
                 torch.distributed.barrier() # keep the ranks in sync

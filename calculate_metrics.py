@@ -19,7 +19,7 @@ import dnnlib
 from torch_utils import distributed as dist
 from torch_utils import misc
 from training import dataset
-import generate_images
+import generate
 from typing import Optional
 
 
@@ -295,7 +295,7 @@ def cmdline():
 
     \b
     # Generate 50000 images using 8 GPUs and save them as out/*/*.png
-    torchrun --standalone --nproc_per_node=8 generate_images.py \\
+    torchrun --standalone --nproc_per_node=8 generate.py \\
         --preset=edm2-img512-xxl-guid-fid --outdir=out --subdirs --seeds=0-49999
 
     \b
@@ -357,7 +357,7 @@ def gen(net, ref_path, metrics, num_images, seed, **opts):
     dist.init()
     if dist.get_rank() == 0:
         ref = load_stats(path=ref_path) # do this first, just in case it fails
-    image_iter = generate_images.generate_images(net=net, seeds=range(seed, seed + num_images), **opts)
+    image_iter = generate.generate_images(net=net, seeds=range(seed, seed + num_images), **opts)
     stats_iter = calculate_stats_for_iterable(image_iter, metrics=metrics)
     for r in tqdm.tqdm(stats_iter, unit='batch', disable=(dist.get_rank() != 0)):
         pass
@@ -411,13 +411,17 @@ def calculate_metrics_from_directory(
 
 
 def calculate_metrics_from_generator(
-    network_pkl: str,
-    ref_path: str,
-    metrics: list[str] = ['fid', 'fd_dinov2'],
-    num_images: int = 50000,
-    seed: int = 0,
+    network_pkl:    str,
+    ref_path:       str,
+    metrics:        list[str] = ['fid', 'fd_dinov2'],
+    num_images:     int = 50000,
+    seed:           int = 0,
     max_batch_size: int = 32,
-    verbose: bool = True,
+    verbose:        bool = True,
+    sampler_kwargs: dict = None,
+    cfg_gvf         = None,                 # Config for Guidance Vector Field
+    outdir          = None,                 # Where to save the output images. None = do not save.
+    subdirs         = False,                # Create subdirectory for every 1000 seeds?
 ) -> dict[str, float]:
     """Calculate metrics for a generative model."""
     dist.init()
@@ -428,10 +432,14 @@ def calculate_metrics_from_generator(
     
     # Generate images
     seeds = range(seed, seed + num_images)
-    image_iter = generate_images.generate_images(
+    image_iter = generate.generate_images(
         net=network_pkl,
         seeds=seeds,
-        max_batch_size=max_batch_size
+        max_batch_size=max_batch_size,
+        outdir=outdir,
+        subdirs=subdirs,
+        cfg_gvf=cfg_gvf,
+        sampler_kwargs=sampler_kwargs,
     )
     
     # Calculate statistics
