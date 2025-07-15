@@ -140,6 +140,72 @@ class ForwardVariables:
 class HookManager:
     """Manages multiple hooks through the forward pass"""
     def __init__(self):
+        self._registered_names = []
+        self.saved = {}
+        self._is_loading = False    # Whether to dump last saved entry or append a new one 
+        self._is_parallel = False   # Will switch is_loading after save or load is called
+
+        # Forward pass tracking
+        self.save_fwd = False
+        self.fwd_vars: Optional[ForwardVariables] = None
+        # Skip connection tracking 
+        self.save_skips = False
+
+
+    def register(self, name: str):
+        self._registered_names.append(name)
+        self.saved["name"] = []
+
+    def is_registered(self, name: str):
+        return name in self._registered_names
+
+    def should_load(self, name:str):
+        return self.is_registered(name) and self._is_loading
+
+    def should_save(self, name:str):
+        return self.is_registered(name) and not self._is_loading
+
+    def load(self, name:str):
+        if self.should_load(name):
+            if self._is_parallel: self._is_loading = False # Save weights for next network pass
+            return self.saved["name"].pop(0)
+        else:
+            raise RuntimeError(f"Cannot load '{name}', because it is not registered or _is_loading is False.")
+
+    def save(self, name, item):
+        if self.should_save(name):
+            if self._is_parallel: self._is_loading = True # Load in weights for next network pass
+            self.saved["name"].append(item.detach().clone())
+        else:
+            raise RuntimeError(f"Cannot save '{name}' becaue it is not registered or _is_loading is True")
+    
+    def reset(self):
+        for registered_name in self._registered_names:
+            self.saved[registered_name] = [] 
+
+    def capture_fwd(self, x, sigma, class_labels, force_fp32, model_kwargs, step_index=None):
+        if self.save_fwd:
+            self.fwd_vars = ForwardVariables(
+                x=x.detach().clone(),
+                sigma=sigma.detach().clone(),
+                class_labels=class_labels.detach().clone() if class_labels is not None else None,
+                force_fp32=force_fp32,
+                model_kwargs=model_kwargs.copy(),
+            )
+        else:
+            raise RuntimeError(f"Cannot save forward pass when self.save_fwd is False")
+
+    def reset_fwd(self):
+        self.fwd_vars = None
+
+    def dump_fwd(self):
+        if not self.save_fwd:
+            raise RuntimeError(f"Cannot dump forward pass variable when self.save_fwd is False")
+        return asdict(self.fwd_vars).values()
+
+class _HookManager:
+    """Manages multiple hooks through the forward pass"""
+    def __init__(self):
         self.registered_names = [] 
         self.save_blocks = False
         self.load_blocks = False
@@ -478,7 +544,6 @@ class DhariwalUNet(torch.nn.Module):
         dropout             = 0.10,         # List of resolutions with self-attention.
         label_dropout       = 0,            # Dropout probability of class labels for classifier-free guidance.
         
-        save_skips          = False,        # Whether to save and return the skip connections
     ):
         super().__init__()
         self.label_dropout = label_dropout
@@ -487,8 +552,6 @@ class DhariwalUNet(torch.nn.Module):
         init_zero = dict(init_mode='kaiming_uniform', init_weight=0, init_bias=0)
         block_kwargs = dict(emb_channels=emb_channels, channels_per_head=64, dropout=dropout, init=init, init_zero=init_zero)
         
-        self.save_skips = save_skips
-
         # Mapping.
         self.map_noise = PositionalEmbedding(num_channels=model_channels)
         self.map_augment = Linear(in_features=augment_dim, out_features=model_channels, bias=False, **init_zero) if augment_dim else None
@@ -551,9 +614,9 @@ class DhariwalUNet(torch.nn.Module):
             x = block(x, emb, hook_manager=hook_manager) if isinstance(block, UNetBlock) else block(x)
             skips.append(x)
 
-        if self.save_skips:
-            self.saved_skips = list(skips) # Copy skip connections
-            self.saved_emb = emb
+        if getattr(hook_manager, "save_skips", False):
+            hook_manager.saved_skips = list(skips)
+            hook_manager.saved_emb = emb
 
         # Decoder.
         for block in self.dec.values():
@@ -759,21 +822,17 @@ class EDMPrecond(torch.nn.Module):
     def forward(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
         # Capture forward variables if requested
         if self.hook_manager and self.hook_manager.save_fwd:
-            self.hook_manager.capture_fwd( x, sigma, class_labels, force_fp32, model_kwargs)
+            self.hook_manager.capture_fwd(x, sigma, class_labels, force_fp32, model_kwargs)
 
         x = x.to(torch.float32)
         sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
         class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
         dtype = torch.float16 if (self.use_fp16 and not force_fp32 and x.device.type == 'cuda') else torch.float32
 
-        self.saved_sigma = sigma
-        self.saved_x = x
-
         c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
         c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt()
         c_in = 1 / (self.sigma_data ** 2 + sigma ** 2).sqrt()
         c_noise = sigma.log() / 4
-
 
         F_x = self.model(
                 (c_in * x).to(dtype), 
