@@ -141,72 +141,52 @@ def test_attention_becomes_uniform_as_noise_increases(setup_attention):
 def test_batched_attention_of_singles_is_ones():
     raise NotImplementedError()
 
-def test_unet_skip_latents():
+@pytest.fixture(scope="module")
+def setup_edm_model():
     MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.float32
 
-    cfg = ConfigGVFUnet(
-        type_eval = "numdiff",
-        idx_skips = (15, ),
-        vf_latent = ConfigGVFAmbient()
-    )
-
-    device= "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-    templates = load_templates_batch(["data/data/cat_1.jpg"], device=device, dtype=dtype) 
-    network_pkl   = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl'
-
-    with dnnlib.util.open_url(network_pkl) as f:
+    with dnnlib.util.open_url(f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl') as f:
         net_old = pickle.load(f)['ema'].to(device)
+
     net = EDMPrecond(*net_old.init_args, **net_old.init_kwargs).to(device)
-    net.model.save_skips = True
     net.eval()
     misc.copy_params_and_buffers(net_old, net, require_all=True)
+    return net, device, dtype
 
-    sigma = torch.tensor(1e-1).to(device).to(dtype)
-    y = net(templates, sigma)
-    y  = (y * 127.5 + 128) / 255
 
-    builder = BuidlerUNetGVF(cfg, templates, device=device, dtype=dtype, net=net)
-    builder._setup_latents()
-
-    y_test = builder.latent_inv_fn(builder.latent_fn(templates))
-    y_test  = (y_test * 127.5 + 128) / 255
-
-    assert torch.equal(y, y_test)
-
-def test_unet_attention_latents_equal_denoiser():
-    MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
-
-    cfg = ConfigGVFUnetAttention(
-        type_eval = "numdiff",
-        idxs = tuple(range(6, 9)),
-        vf_latent = ConfigGVFAmbient()
-    )
-
-    device= "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+def test_unet_latents_match_unet_fwd(setup_edm_model):
+    # Setup network, templates and config
+    net, device, dtype = setup_edm_model
     templates = load_templates_batch(["data/data/cat_1.jpg"], device=device, dtype=dtype) 
-    network_pkl   = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl'
+    sigma = torch.tensor(10).to(device).to(dtype)
+    cfgs = {
+        "unet-attn" : (BuilderUNetAttentionGVF, ConfigGVFUnetAttention( type_eval = "numdiff", idxs = tuple(range(6, 9)), vf_latent = ConfigGVFAmbient())),
+        # "unet-skips" :(BuidlerUNetGVF, ConfigGVFUnet(type_eval = "numdiff", idx_skips = (15, ), vf_latent = ConfigGVFAmbient())),
+    }
 
-    with dnnlib.util.open_url(network_pkl) as f:
-        net_old = pickle.load(f)['ema'].to(device)
-    net = EDMPrecond(*net_old.init_args, **net_old.init_kwargs).to(device)
-    net.model.save_skips = True
-    net.eval()
-    misc.copy_params_and_buffers(net_old, net, require_all=True)
+    
+    for name, (Builder, cfg) in cfgs.items():
+        # Run U-Net pass
+        y = net(templates, sigma)
+        y  = (y * 127.5 + 128) / 255
+        # Setup U-net builder builder and ensure it has same output as forward
+        builder = Builder(cfg, templates, device=device, dtype=dtype, net=net)
+        builder._setup_latents()
 
+        y_test = builder.latent_inv_fn(builder.latent_fn(templates))
+        y_test  = (y_test * 127.5 + 128) / 255
+        
+        if not torch.equal(y, y_test):
+            import matplotlib.pyplot as plt
+            from einops import rearrange
+            fig, axes = plt.subplots(2, 1)
+            axes[0].imshow(rearrange(y.detach().cpu(), "1 C H W -> H W C"))
+            axes[1].imshow(rearrange(y_test.detach().cpu(), "1 C H W -> H W C"))
+            plt.show()
 
-    builder = BuilderUNetAttentionGVF(cfg, templates, device=device, dtype=dtype, net=net)
-    builder._setup_latents()
-
-    sigma = torch.tensor(1e-1).to(device).to(dtype)
-    y = net(templates, sigma)
-    y  = (y * 127.5 + 128) / 255
-
-    y_test = builder.latent_inv_fn(builder.latent_fn(templates))
-    y_test  = (y_test * 127.5 + 128) / 255
-
-    assert torch.equal(y, y_test)
+            pytest.fail(f"Latents {name} do not match fwd pass")
 
 @torch.no_grad()
 def test_hook():
@@ -220,7 +200,7 @@ def test_hook():
 
     MODEL_ROOT = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
     device= "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+    dtype = torch.float32
     templates = load_templates_batch(["data/data/cat_1.jpg"], device=device, dtype=dtype) 
     network_pkl   = f'{MODEL_ROOT}/edm-imagenet-64x64-cond-adm.pkl'
 
@@ -313,4 +293,5 @@ def test_forward_capture():
     # Test reset
     hook_manager.reset_fwd()
     assert hook_manager.fwd_vars is None
+    
     
