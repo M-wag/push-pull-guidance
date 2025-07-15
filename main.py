@@ -4,57 +4,43 @@ import matplotlib.pyplot as plt
 
 
 if __name__ == "__main__":
-    # Import all data 
-    dir_data = "data/parameter_evaluation/"
-    np_files =  [os.path.join(dir_data, f) for f in os.listdir(dir_data) if f.endswith(".npy")] 
-    time = np.load(os.path.join(dir_data, "time.npy"))
-    x_axis = range(0, len(time)-1)
-    fig, axes = plt.subplots(2, 2)
-    for i, f in enumerate(np_files): 
-        if "time" in f:
-            continue
-        if "baseline" in f:
-            continue
-        if "hf" in f:
-            continue 
+    # Import all .npy 
+    dir_data  = "data/parameter_evaluation"
+    np_files = [f for f in os.listdir(dir_data) if f.endswith(".npy")]
+    # Split by category
+    cattoax = {
+            "baseline"  :0,
+            "amb"       :1,
+            "hf"        :2,
+            "unet-skip" :3,
+            "unet-attn" :4,
+            "unet-skip-step" :5,
+            "unet-attn-step" :6,
+    }
 
-        scale, v_0 = os.path.splitext(os.path.basename(f))[0].split("_")
-        scale, v_0 = round(float(scale), 1), round(float(v_0), 1)
-        if scale == 0:
-            continue
-        arr = np.load(f)
-        axes[0, 0].scatter(x_axis, arr[0], label=f"{scale}")
-        axes[1, 0].scatter(x_axis, arr[1], label=f"{scale}")
+    fig, axes = plt.subplots(2, 7)
+    for f in np_files:
+        scale, v_0, cat = os.path.splitext(f)[0].split("_")
+        stats = np.load(os.path.join(dir_data, f), allow_pickle=True).item()
+        t, y = stats.t_steps[:-1], stats.max_mag
+        # x = list(reversed(range(0, len(t))))
+        x = t
+        axes[0, cattoax[cat]].scatter(x, y[0], label=f"{scale}", 
+                                      c="black" if cat == "baseline" else None)
+        axes[0, cattoax[cat]].set_title(f"Model ({cat}) ")
+        axes[1, cattoax[cat]].scatter(x, y[1], label=f"{scale}", 
+                                      c="black" if cat == "baseline" else None)
+        axes[1, cattoax[cat]].set_title(f"Template ({cat}) ")
+        
 
-    # Plot HF
-    hf_files = [os.path.join(dir_data, f) for f in os.listdir(dir_data) if f.startswith("hf")] 
-    for i, f in enumerate(hf_files): 
-        print(f)
-        scale, v_0 = os.path.splitext(os.path.basename(f))[0].split("_")[1::]
-        scale, v_0 = round(float(scale), 1), round(float(v_0), 1)
-        arr = np.load(f)
-        axes[0, 1].scatter(x_axis, arr[0], label=f"{scale}")
-        axes[1, 1].scatter(x_axis, arr[1], label=f"{scale}")
-                   
-    # Plot no guidance
-    arr = np.load(os.path.join(dir_data, "baseline.npy"))
-    axes[0, 1].scatter(x_axis, arr[0], c='black', label="no guidance")
-    axes[1, 1].scatter(x_axis, arr[1], c='black', label="no guidance")
-
+    # For each category plot stats
     for ax in axes.flat:
+        ax.set_xlabel("time")
+        ax.set_ylabel("Maximum Magnitude")
         ax.legend()
-        ax.set_ylim(-3, 50)
-        ax.set_xlabel("time step")
-        ax.set_ylabel("max magnitude")
+        # ax.set_yscale("log")
+        ax.grid()
 
-    
-    
-    axes[0, 0].set_title("Model (U-Net Attention Guidance)")
-    axes[1, 0].set_title("Template (U-Net Attention Guidance)")
-    axes[0, 1].set_title("Model (Various)")
-    axes[1, 1].set_title("Template (Various)")
+    # Iterate through each ax and plot the
     plt.show()
-
-
-
 
