@@ -1,5 +1,6 @@
 from functools import partial
 import torch
+from torch.autograd.functional import jvp
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Literal, Any, Optional, Union, List, Type 
@@ -49,8 +50,9 @@ class ConfigGVFLinear(ConfigGVFAmbient):
 @Register.register('base_nonlinear')
 @dataclass(frozen=True)
 class ConfigGVFNonLinear(ConfigGVFBase):
-    type_eval: Optional[Literal["jvp", "numdiff"]] = None
-    vf_latent: Any = None
+    type_eval:  Optional[Literal["jvp", "numdiff"]] = None
+    vf_latent:  Any = None
+    step_size:  Optional[float] = None
 
 @Register.register('hf')
 @dataclass(frozen=True)
@@ -291,18 +293,19 @@ class NonLinearGuidanceVFBase():
         with torch.no_grad():
             x_latent = self.latent(x)
             score_latent = self.vf_latent.score(x_latent, t)
-            score = self._pullback(x_latent, score_latent)
+            score = self._pullback(x_latent, score_latent, t)
+            # print(score_latent.sum(), score.sum())
             dx = -self.noise_dot(t) * self.noise(t) * score
         return dx
 
     def should_apply_score(self, t):
         return self.vf_latent.should_apply_score(t)
     
-    def _pullback(self, x_latent, dx_latent):
+    def _pullback(self, x_latent, dx_latent, t):
         raise NotImplementedError("Subclasses must implement this method")
 
 class JVPGuidanceVF(NonLinearGuidanceVFBase):
-    def _pullback(self, x_latent, dx_latent):
+    def _pullback(self, x_latent, dx_latent, t):
         with torch.no_grad():
             _, dx = jvp(self.latent_inv, x_latent, dx_latent, strict=False)
         return dx
@@ -312,12 +315,13 @@ class NumericalGuidanceVF(NonLinearGuidanceVFBase):
         super().__init__(*args, **kwargs)
         self.step_size = step_size  
 
-    def _pullback(self, x_latent, dx_latent):
+    def _pullback(self, x_latent, dx_latent, t):
         with torch.no_grad():
-            perturbed_latent = x_latent + self.step_size * dx_latent
+            step_size = self.step_size if self.step_size > 0.0 else t
+            perturbed_latent = x_latent + step_size * dx_latent
             f_perturbed = self.latent_inv(perturbed_latent)
             f_original = self.latent_inv(x_latent)
-            dx = (f_perturbed - f_original) / self.step_size  
+            dx = (f_perturbed - f_original) / step_size  
         return dx 
 
 # --- Builders --- 
@@ -332,13 +336,13 @@ class ContextBuilder:
 class BuilderBase(ABC):
     def __init__(self, config: ConfigGVFBase, templates: torch.Tensor, **context):
         self.config = config
-        self.templates = templates
         self.ctx = ContextBuilder(**context)
         self.latent_fn = None
         self.latent_inv_fn = None
         self.features_template = None
         self.device = context.get('device', "cpu")
-        self.dtype = self.templates.dtype
+        self.dtype = context.get("dtype", torch.float32)
+        self.templates = templates
         self.batch_size = self.templates.shape[0]
         
     @abstractmethod
@@ -368,7 +372,7 @@ class BuilderNonLinearBase(BuilderBase):
         self.features_template = self._create_features_template()
         
         match self.config.type_eval:
-            case "numdiff" : vf_class = NumericalGuidanceVF
+            case "numdiff" : vf_class = NumericalGuidanceVF 
             case "jvp" : vf_class = JVPGuidanceVF
             case _: raise ValueError(f"Unknown eval type: {self.config.type_eval}")
         vf_latent = create_vf(self.config.vf_latent, self.features_template)
@@ -378,6 +382,10 @@ class BuilderNonLinearBase(BuilderBase):
             latent=self.latent_fn,
             latent_inv=self.latent_inv_fn
         )
+
+        if self.config.step_size is not None:
+            vf.step_size = self.config.step_size
+
         return vf 
 
 class BuilderHFGVF(BuilderNonLinearBase):
@@ -388,21 +396,31 @@ class BuilderHFGVF(BuilderNonLinearBase):
             self.config.hf_url, 
             subfolder="vae",
             use_safetensors=True
-        ).to(device=self.ctx.device, dtype=self.ctx.dtype)
+        ).eval().requires_grad_(False).to(device=self.ctx.device, dtype=self.ctx.dtype)
         
         self.latent_fn = lambda x: vae.encode(x).latent_dist.sample()
         self.latent_inv_fn = lambda x: vae.decode(x).sample
 
 class BuidlerUNetGVF(BuilderNonLinearBase):
-    def _setup_latents(self):
+    def _setup_latents(self, *, _test_sigma=None):
+        # Init Hook Manager and attach to network
+        hook_manager = HookManager()
+        hook_manager.save_fwd = True
+        hook_manager.save_skips = True
+        self.ctx.net.hook_manager = hook_manager
+        # Run network once to generate skips
+        if _test_sigma is None:
+            _test_sigma = torch.tensor(10).to(device=self.device, dtype=self.dtype)
+        self.ctx.net(self.templates, _test_sigma)
+        #
         idx_mod = list(self.config.idx_skips)
-        total_skips = len(self.ctx.net.model.saved_skips)
+        total_skips = len(hook_manager.saved_skips)
         idx_preserved = [i for i in range(0, total_skips) if i not in idx_mod] 
-        shapes_skips = [self.ctx.net.model.saved_skips[i].shape[1:] for i in idx_mod]
+        shapes_skips = [hook_manager.saved_skips[i].shape[1:] for i in idx_mod]
 
         def latent_fn(x, *, net):
             # Only capture modified skips
-            skips = [net.model.saved_skips[i] for i in idx_mod]
+            skips = [net.hook_manager.saved_skips[i] for i in idx_mod]
             skips_flat = torch.cat([x.flatten(start_dim=1) for x in skips], dim=1)
             return skips_flat
 
@@ -421,10 +439,10 @@ class BuidlerUNetGVF(BuilderNonLinearBase):
                 if i in idx_mod:
                     full_skips.append(skips_modded[idx_mod.index(i)])
                 else: 
-                    full_skips.append(self.ctx.net.model.saved_skips[i])
+                    full_skips.append(net.hook_manager.saved_skips[i])
             
             # Middle information
-            emb = self.ctx.net.model.saved_emb
+            emb = net.hook_manager.saved_emb
             z = full_skips[-1]
 
             # Decoder.
@@ -434,9 +452,12 @@ class BuidlerUNetGVF(BuilderNonLinearBase):
                 z = block(z, emb)
             F_x = net.model.out_conv(torch.nn.functional.silu(net.model.out_norm(z)))
 
-            c_skip = net.sigma_data ** 2 / (net.saved_sigma ** 2 + net.sigma_data ** 2)
-            c_out = net.saved_sigma * net.sigma_data / (net.saved_sigma ** 2 + net.sigma_data ** 2).sqrt()
-            D_x = c_skip * net.saved_x + c_out * F_x
+            x, sigma = net.hook_manager.fwd_vars.x, net.hook_manager.fwd_vars.sigma
+
+            c_skip = net.sigma_data ** 2 / (sigma ** 2 + net.sigma_data ** 2)
+            c_out = sigma * net.sigma_data / (sigma ** 2 + net.sigma_data ** 2).sqrt()
+
+            D_x = c_skip * x + c_out * F_x
             return D_x
 
         self.latent_fn = partial(latent_fn, net=self.ctx.net)
@@ -468,7 +489,7 @@ class BuilderUNetAttentionGVF(BuilderNonLinearBase):
     def _setup_latents(self):
         # Initialize Hook Manager
         hook_manager = HookManager()
-
+        hook_manager._is_parallel = True
         # Register which blocks get modified
         name_blocks_with_attention = []
         for name, block in self.ctx.net.model.enc.items():
@@ -480,29 +501,26 @@ class BuilderUNetAttentionGVF(BuilderNonLinearBase):
 
         for i in self.config.idxs:
             hook_manager.register(name_blocks_with_attention[i])
-        assert len(hook_manager.registered_names) == len(self.config.idxs)
+        assert len(hook_manager._registered_names) == len(self.config.idxs)
 
         self.ctx.net.hook_manager = hook_manager
         hook_manager.save_blocks = True
         hook_manager.save_fwd = True
+
         def latent_fn(x, *, net):
-            z = hook_manager.load_all()
+            z = [hook_manager.load(name) for name in hook_manager._registered_names]
             z = torch.stack(list(z), dim=1) # TODO: NO CLUE IF THE DIMENSIONALITY OF THIS MAKES SENSE FOR OUR CODE
             return z
 
         def latent_inv_fn(z, *, net):
-            # Disable saving, Enable loading
+            """Make sure to check whether you're running sequential or parallel"""
             # Load in guided attention
             for name, attn in zip(hook_manager.registered_names, torch.unbind(z, dim=1)):
                 hook_manager.save(name, attn)
             # Run model with hybrid attention
-            hook_manager.save_blocks = False
-            hook_manager.load_blocks  = True
             x, sigma, class_labels, force_fp32, model_kwargs = hook_manager.dump_fwd()
             y = net(x, sigma, class_labels, force_fp32, **model_kwargs)
             # Re-enable saving, Disable loading
-            hook_manager.save_blocks = True
-            hook_manager.load_blocks  = False 
             return y
 
         self.latent_fn = partial(latent_fn, net=self.ctx.net)

@@ -71,3 +71,12 @@ class Config:
             return dims
 
         return tuple(collect_dims(self))
+
+from training.networks import EDMPrecond
+from torch_utils import misc
+
+def update_EDM(net_old):
+    net = EDMPrecond(*net_old.init_args, **net_old.init_kwargs)
+    net.eval()
+    misc.copy_params_and_buffers(net_old, net, require_all=True)
+    return net 

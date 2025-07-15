@@ -72,12 +72,18 @@ def edm_sampler(
     S_min               : float, 
     S_max               : float,
     S_noise             : float, 
-    scale_model_score   : float, 
+    scale_model_score   : float = 1.0, 
     save_all_timesteps  : bool = True,
     latents             : Any = None,
+    network_hook        : Any = None,
+    correct_rgb         : bool = True,
+    disable_tqdm        : bool = False,
 ):
     if seed is not None:
         torch.manual_seed(seed)
+
+    if network_hook is not None:
+        net.hook = network_hook
 
     # Pick latents and labels.
     if latents is None:
@@ -135,7 +141,7 @@ def edm_sampler(
 
     # Main sampling loop.
     x_next = latents.to(dtype) * t_steps[0]
-    for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1, disable=DISABLE_TQDM): # 0, ..., N-1
+    for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1, disable=disable_tqdm): # 0, ..., N-1
         x_cur = x_next
 
         # Increase noise temporarily.
@@ -148,10 +154,14 @@ def edm_sampler(
         if save_all_timesteps:
             xs[i] = x_next
 
-    xs = (xs * 127.5 + 128) / 255
+    y = xs if save_all_timesteps else x_next
+    if correct_rgb:
+        y = (y * 127.5 + 128) / 255
+
+
     stats.x_0 = xs[-1].detach().cpu().numpy()
     stats.x_T = xs[-0].detach().cpu().numpy()
-    return xs, (t_steps.cpu().numpy(), stats)
+    return y, (t_steps.cpu().numpy(), stats)
 
 def load_templates(path, device=None, dtype=None, for_torch=True):
     # Load templates data
