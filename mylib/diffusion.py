@@ -8,7 +8,7 @@ import itertools
 import dnnlib
 from PIL import Image
 from einops import rearrange, repeat
-from torchvision.io import read_image, read_file
+from torchvision.io import read_image, ImageReadMode
 from torch.autograd.functional import jvp
 from dataclasses import dataclass
 from typing import List, Any, Literal, Callable, Optional
@@ -168,7 +168,7 @@ def load_templates(path, device=None, dtype=None, for_torch=True):
     if isinstance(path, type(None)):
         return torch.tensor([0])
     elif os.path.isfile(path):
-        templates = torch.unsqueeze(read_image(path), 0)
+        templates = torch.unsqueeze(read_image(path, mode=ImageReadMode.RGB), 0)
 
     elif os.path.isdir(path):
         imgs = []
