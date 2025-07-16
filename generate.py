@@ -231,10 +231,17 @@ def generate_images(
                             r.labels[:, class_idx] = 1
 
                     # TODO consider an update feature
-                    def get_path_random_template(templates, labels, seeds):
-                        return [None for i in seeds]
+                    def get_template_paths(template_dir, class_idxs, seeds):
+                        template_paths = []
+                        for class_idx, seed in zip(class_idxs, seeds):
+                            class_dir = os.path.join(template_dir, str(int(class_idx)))
+                            n_files = len(os.listdir(class_dir))
+                            g = torch.Generator().manual_seed(seed)
+                            fname = f"{torch.randint(0 , n_files, (), generator=g).item()}.JPEG"
+                            template_paths.append(os.path.join(class_dir, fname))
+                        return template_paths
 
-                    template_paths = get_path_random_template(templatedir, r.labels, r.seeds)
+                    template_paths = get_template_paths(templatedir, torch.argmax(r.labels, axis=1), r.seeds)
                     templates = load_templates_batch(template_paths, device=device, dtype=dtype)
                     gvf = create_vf(cfg_gvf, templates, verbose=False, device=device, dtype=dtype, net=net)
 
@@ -243,16 +250,13 @@ def generate_images(
                                         class_idx=r.labels, latents=r.noise, 
                                         batch_size=len(r.seeds), dtype=dtype, device=device, 
                                         correct_rgb=False,
-                                        disable_tqdm=False,
+                                        disable_tqdm=True,
                                         **sampler_kwargs)
                     r.images = encoder.decode(xs[-1])
 
                     # Save images.
                     if outdir is not None:
                         for seed, image in zip(r.seeds, r.images.permute(0, 2, 3, 1).cpu().numpy()):
-                        # from einops import rearrange
-                        # for seed, image in zip(r.seeds, rearrange(xs[-1], "B C H W -> B H W C").cpu().numpy()):
-                        # for seed, image in zip(r.seeds, torch.ones_like(r.images.permute(0, 2, 3, 1)).cpu().numpy()):
                             image_dir = os.path.join(outdir, f'{seed//1000*1000:06d}') if subdirs else outdir
                             os.makedirs(image_dir, exist_ok=True)
                             PIL.Image.fromarray(image, 'RGB').save(os.path.join(image_dir, f'{seed:06d}.png'))

@@ -20,6 +20,7 @@ if __name__ == "__main__":
         num_images=1000,
         sampler_kwargs=sampler_kwargs,
         # outdir="out",
+        templatedir = "data/templates_per_class_idx"
     )
 
     print(metrics)

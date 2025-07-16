@@ -422,6 +422,7 @@ def calculate_metrics_from_generator(
     cfg_gvf         = None,                 # Config for Guidance Vector Field
     outdir          = None,                 # Where to save the output images. None = do not save.
     subdirs         = False,                # Create subdirectory for every 1000 seeds?
+    templatedir     = None                  # Where templates are stored
 ) -> dict[str, float]:
     """Calculate metrics for a generative model."""
     dist.init()
@@ -440,6 +441,7 @@ def calculate_metrics_from_generator(
         subdirs=subdirs,
         cfg_gvf=cfg_gvf,
         sampler_kwargs=sampler_kwargs,
+        templatedir=templatedir,
     )
     
     # Calculate statistics
