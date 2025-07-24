@@ -8,6 +8,9 @@
 """Calculate evaluation metrics (FID and FD_DINOv2)."""
 
 import os
+import csv
+import shutil
+import re
 import click
 import tqdm
 import pickle
@@ -148,6 +151,7 @@ def calculate_stats_for_iterable(
     metrics     = ['fid', 'fd_dinov2'], # Metrics to compute the statistics for.
     verbose     = True,                 # Enable status prints?
     dest_path   = None,                 # Where to save the statistics. None = do not save.
+    feature_dir = None,                 # Where to save the feature. None = do not save.
     device      = torch.device('cuda'), # Which compute device to use.
 ):
     # Initialize.
@@ -177,17 +181,35 @@ def calculate_stats_for_iterable(
             # Loop over batches.
             for batch_idx, images in enumerate(image_iter):
                 if isinstance(images, dict) and 'images' in images: # dict(images)
-                    images = images['images']
+                    classes = torch.argmax(images.labels, axis=1)
+                    examples = images.examples
+                    images = images.images
                 elif isinstance(images, (tuple, list)) and len(images) == 2: # (images, labels)
                     images = images[0]
                 images = torch.as_tensor(images).to(device)
 
                 # Accumulate statistics.
+                features_per_metric = {}
                 if images is not None:
                     for s in state:
                         features = s.detector(images).to(torch.float64)
                         s.cum_mu += features.sum(0)
                         s.cum_sigma += features.T @ features
+                        features_per_metric[s.metric]= features
+                    if feature_dir:
+                        rank = dist.get_rank()
+                        # Save features
+                        for metric, features in features_per_metric.items():
+                            metric_dir = os.path.join(feature_dir, metric)
+                            os.makedirs(metric_dir, exist_ok=True) 
+                            file_path = f"features.rank{rank:01d}.part{batch_idx:04d}.pt"
+                            torch.save(features.cpu().detach(), os.path.join(metric_dir, file_path))
+                        # Save class and image index
+                        with open(os.path.join(feature_dir, f"features.rank{rank:01d}.part{batch_idx:04d}.csv"), "w") as f:
+                            writer = csv.writer(f)
+                            writer.writerows(zip(classes.tolist(), examples))
+
+
                     cum_images += images.shape[0]
 
                 # Output results.
@@ -283,6 +305,66 @@ def parse_metric_list(s):
         if metric not in metric_specs:
             raise click.ClickException(f'Invalid metric "{metric}"')
     return metrics
+
+#---------------------------------------------------------------------------
+# Merge the seperate feature files
+
+def merge_metric_feature_directories(base_dir, delete_dirs=True):
+    """
+    Merge feature part files organized by metric directories into single .pt files
+    
+    Args:
+        base_dir: Directory containing metric subdirectories (e.g., 'features/')
+        delete_dirs: Whether to delete original subdirectories after merging
+    """
+    # Ensure base directory exists
+    if not os.path.exists(base_dir):
+        raise FileNotFoundError(f"Base directory {base_dir} does not exist")
+    
+    # Process each metric subdirectory
+    for metric_name in os.listdir(base_dir):
+        metric_dir = os.path.join(base_dir, metric_name)
+        
+        if not os.path.isdir(metric_dir):
+            continue  # Skip files
+
+        # Find all part files in the metric directory
+        part_files = []
+        for fname in os.listdir(metric_dir):
+            if fname.startswith("features.part") and fname.endswith(".pt"):
+                # Extract part number for sorting
+                match = re.search(r"part(\d+)", fname)
+                if match:
+                    part_num = int(match.group(1))
+                    part_files.append((part_num, fname))
+        
+        if not part_files:
+            print(f"No feature parts found in {metric_dir}")
+            continue
+        
+        # Sort files by part number
+        part_files.sort(key=lambda x: x[0])
+        sorted_files = [fname for _, fname in part_files]
+        
+        # Load and concatenate features
+        all_features = []
+        for fname in sorted_files:
+            file_path = os.path.join(metric_dir, fname)
+            features = torch.load(file_path)
+            all_features.append(features)
+        
+        # Concatenate along batch dimension
+        combined = torch.cat(all_features, dim=0)
+        
+        # Save merged file
+        output_path = os.path.join(base_dir, f"{metric_name}.pt")
+        torch.save(combined, output_path)
+        print(f"Saved merged {metric_name} features to {output_path}")
+        
+        # Cleanup
+        if delete_dirs:
+            print(f"Deleting {metric_dir}")
+            shutil.rmtree(metric_dir)
 
 #----------------------------------------------------------------------------
 # Main command line.
@@ -421,8 +503,9 @@ def calculate_metrics_from_generator(
     sampler_kwargs: dict = None,
     cfg_gvf         = None,                 # Config for Guidance Vector Field
     outdir          = None,                 # Where to save the output images. None = do not save.
+    feature_dir     = None,                 # Where to save the features of images. None = do not save.
     subdirs         = False,                # Create subdirectory for every 1000 seeds?
-    templatedir     = None                  # Where templates are stored
+    template_dir    = None                  # Where templates are stored
 ) -> dict[str, float]:
     """Calculate metrics for a generative model."""
     dist.init()
@@ -441,19 +524,24 @@ def calculate_metrics_from_generator(
         subdirs=subdirs,
         cfg_gvf=cfg_gvf,
         sampler_kwargs=sampler_kwargs,
-        templatedir=templatedir,
+        template_dir=template_dir,
     )
     
     # Calculate statistics
     stats_iter = calculate_stats_for_iterable(
         image_iter=image_iter,
         metrics=metrics,
+        feature_dir=feature_dir,
         verbose=verbose
     )
     
     for r in tqdm.tqdm(stats_iter, unit='batch', disable=(dist.get_rank() != 0)):
         pass
     
+    # Merge files in case features were saved
+    if feature_dir and dist.get_rank() == 0:
+        merge_metric_feature_directories(feature_dir, delete_dirs=True)
+
     # Compute and return metrics
     results = {}
     if dist.get_rank() == 0:
@@ -469,6 +557,7 @@ def generate_reference_stats(
     max_batch_size: int = 64,
     num_workers: int = 2,
     verbose: bool = True,
+    feature_dir = None,
 ) -> Optional[dict]:
     """Generate reference statistics for a dataset."""
     torch.multiprocessing.set_start_method('spawn', force=True)
@@ -481,7 +570,8 @@ def generate_reference_stats(
         max_batch_size=max_batch_size,
         num_workers=num_workers,
         verbose=verbose,
-        dest_path=dest_path
+        dest_path=dest_path,
+        feauture_dir=feature_dir,
     )
     
     # Process batches
