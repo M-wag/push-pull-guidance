@@ -135,7 +135,6 @@ def edm_sampler(
 
     xs = None 
     # Intialize empty array to save intermediate timestaps
-    print("Running network")
     if save_all_timesteps:
         xs = torch.empty((num_steps, batch_size, net.img_channels, net.img_resolution, net.img_resolution))
 
