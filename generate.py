@@ -175,7 +175,7 @@ def generate_images(
     device              = torch.device('cuda'), # Which compute device to use.
     dtype               = torch.float32,         # Which dtype to use 
     cfg_gvf             = None,
-    templatedir         = None,                 # Where templates are stored
+    template_dir        = None,                 # Where templates are stored
     sampler_kwargs      = None,                 # Additional arguments for the sampler function.
 ):
     
@@ -212,15 +212,22 @@ def generate_images(
     class ImageIterable:
         def __len__(self):
             return len(rank_batches)
-
+        
+        def _random_example_id(self, template_dir, seed, class_):
+            class_dir = os.path.join(template_dir, str(int(class_)))
+            n_files = len(os.listdir(class_dir))
+            g = torch.Generator().manual_seed(seed)
+            return torch.randint(0 , n_files, (), generator=g).item()
+        
         def __iter__(self):
             # Loop over batches.
             for batch_idx, indices in enumerate(rank_batches):
-                r = dnnlib.EasyDict(images=None, labels=None, noise=None, batch_idx=batch_idx, num_batches=len(rank_batches), indices=indices)
+                r = dnnlib.EasyDict(images=None, labels=None, noise=None, examples=None, batch_idx=batch_idx, num_batches=len(rank_batches), indices=indices)
                 r.seeds = [seeds[idx] for idx in indices]
+                # Randomly pick class index
                 if len(r.seeds) > 0:
 
-                    # Pick noise and labels.
+                    # Pick noise, labels and examples.
                     rnd = StackedRandomGenerator(device, r.seeds)
                     r.noise = rnd.randn([len(r.seeds), net.img_channels, net.img_resolution, net.img_resolution], device=device)
                     r.labels = None
@@ -229,19 +236,11 @@ def generate_images(
                         if class_idx is not None:
                             r.labels[:, :] = 0
                             r.labels[:, class_idx] = 1
+                        r.examples = [self._random_example_id(template_dir, seed, label) 
+                                      for seed, label in zip(r.seeds, torch.argmax(r.labels, axis=1))] 
 
-                    # TODO consider an update feature
-                    def get_template_paths(template_dir, class_idxs, seeds):
-                        template_paths = []
-                        for class_idx, seed in zip(class_idxs, seeds):
-                            class_dir = os.path.join(template_dir, str(int(class_idx)))
-                            n_files = len(os.listdir(class_dir))
-                            g = torch.Generator().manual_seed(seed)
-                            fname = f"{torch.randint(0 , n_files, (), generator=g).item()}.JPEG"
-                            template_paths.append(os.path.join(class_dir, fname))
-                        return template_paths
-
-                    template_paths = get_template_paths(templatedir, torch.argmax(r.labels, axis=1), r.seeds)
+                    template_paths = [os.path.join(template_dir, str(int(label)), f"{example}.JPEG")
+                                      for label, example in zip(torch.argmax(r.labels, dim=1), r.examples)]
                     templates = load_templates_batch(template_paths, device=device, dtype=dtype)
                     gvf = create_vf(cfg_gvf, templates, verbose=False, device=device, dtype=dtype, net=net)
 
