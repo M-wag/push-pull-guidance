@@ -314,57 +314,90 @@ def merge_metric_feature_directories(base_dir, delete_dirs=True):
     Merge feature part files organized by metric directories into single .pt files
     
     Args:
-        base_dir: Directory containing metric subdirectories (e.g., 'features/')
+        base_dir: Directory containing metric subdirectories
         delete_dirs: Whether to delete original subdirectories after merging
     """
-    # Ensure base directory exists
     if not os.path.exists(base_dir):
         raise FileNotFoundError(f"Base directory {base_dir} does not exist")
     
     # Process each metric subdirectory
-    for metric_name in os.listdir(base_dir):
+    metrics = [d for d in os.listdir(base_dir) 
+               if os.path.isdir(os.path.join(base_dir, d))]
+    
+    for metric_name in metrics:
         metric_dir = os.path.join(base_dir, metric_name)
+        output_file = os.path.join(base_dir, f"{metric_name}.pt")
         
-        if not os.path.isdir(metric_dir):
-            continue  # Skip files
-
-        # Find all part files in the metric directory
-        part_files = []
+        # Collect and sort feature files
+        feature_files = []
         for fname in os.listdir(metric_dir):
-            if fname.startswith("features.part") and fname.endswith(".pt"):
-                # Extract part number for sorting
-                match = re.search(r"part(\d+)", fname)
-                if match:
-                    part_num = int(match.group(1))
-                    part_files.append((part_num, fname))
+            if fname.endswith(".pt") and "features" in fname:
+                # Extract ordering information
+                parts = re.findall(r"rank(\d+).part(\d+)", fname)
+                if parts:
+                    rank, part = map(int, parts[0])
+                    feature_files.append((rank, part, fname))
         
-        if not part_files:
-            print(f"No feature parts found in {metric_dir}")
+        if not feature_files:
+            print(f"No feature files found in {metric_dir}")
             continue
         
-        # Sort files by part number
-        part_files.sort(key=lambda x: x[0])
-        sorted_files = [fname for _, fname in part_files]
+        # Sort by rank then part number
+        feature_files.sort(key=lambda x: (x[0], x[1]))
         
         # Load and concatenate features
         all_features = []
-        for fname in sorted_files:
+        for _, _, fname in feature_files:
             file_path = os.path.join(metric_dir, fname)
             features = torch.load(file_path)
             all_features.append(features)
         
-        # Concatenate along batch dimension
-        combined = torch.cat(all_features, dim=0)
+        # Handle variable sizes
+        try:
+            combined = torch.cat(all_features, dim=0)
+        except RuntimeError:
+            # Save as list if sizes don't match
+            combined = all_features
         
-        # Save merged file
-        output_path = os.path.join(base_dir, f"{metric_name}.pt")
-        torch.save(combined, output_path)
-        print(f"Saved merged {metric_name} features to {output_path}")
-        
+        torch.save(combined, output_file)
+        print(f"Merged {metric_name} features to {output_file} "
+              f"({len(all_features)} files merged)")
+
         # Cleanup
         if delete_dirs:
-            print(f"Deleting {metric_dir}")
             shutil.rmtree(metric_dir)
+
+def merge_feature_csvs(csv_dir, output_path="features.csv", delete_parts=True):
+    """Merge CSV files from feature extraction"""
+    csv_files = []
+    for fname in os.listdir(csv_dir):
+        if fname.endswith(".csv") and "features" in fname:
+            parts = re.findall(r"rank(\d+).part(\d+)", fname)
+            if parts:
+                rank, part = map(int, parts[0])
+                csv_files.append((rank, part, fname))
+    
+    if not csv_files:
+        print(f"No csv files found in {csv_dir}")
+        return
+    
+    csv_files.sort(key=lambda x: (x[0], x[1]))
+    
+    with open(os.path.join(output_path, output_path), "w") as outfile:
+        # Append content
+        for _, _, fname in csv_files:
+            file_path = os.path.join(csv_dir, fname)
+            with open(file_path) as infile:
+                # infile.readline()  # Skip header
+                outfile.write(infile.read())
+
+    # Cleanup part files
+    if delete_parts:
+        for _, _, fpath in csv_files:
+            os.remove(os.path.join(csv_dir, fpath))
+
+    print(f"Merged csvs to {output_path} "
+          f"({len(csv_files)} files merged)")
 
 #----------------------------------------------------------------------------
 # Main command line.
@@ -540,7 +573,9 @@ def calculate_metrics_from_generator(
     
     # Merge files in case features were saved
     if feature_dir and dist.get_rank() == 0:
-        merge_metric_feature_directories(feature_dir, delete_dirs=True)
+        merge_metric_feature_directories(feature_dir)
+        merge_feature_csvs(feature_dir)
+
 
     # Compute and return metrics
     results = {}
