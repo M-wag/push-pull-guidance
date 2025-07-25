@@ -239,7 +239,7 @@ def generate_images(
                         r.examples = [self._random_example_id(template_dir, seed, label) 
                                       for seed, label in zip(r.seeds, torch.argmax(r.labels, axis=1))] 
 
-                    template_paths = [os.path.join(template_dir, str(int(label)), f"{example}.JPEG")
+                    template_paths = [os.path.join(template_dir, str(int(label)), f"{example}.png")
                                       for label, example in zip(torch.argmax(r.labels, dim=1), r.examples)]
                     templates = load_templates_batch(template_paths, device=device, dtype=dtype)
                     gvf = create_vf(cfg_gvf, templates, verbose=False, device=device, dtype=dtype, net=net)
