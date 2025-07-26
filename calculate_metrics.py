@@ -171,6 +171,40 @@ def calculate_stats_for_iterable(
         def __len__(self):
             return num_batches
 
+        def save_features(self, features_per_metric, feature_dir, batch_idx, images):
+            rank = dist.get_rank()
+            # Save features in parts for each metric
+            for metric, features in features_per_metric.items():
+                metric_dir = os.path.join(feature_dir, metric)
+                os.makedirs(metric_dir, exist_ok=True) 
+                file_path = f"features.rank{rank:01d}.part{batch_idx:04d}.pt"
+                torch.save(features.cpu().detach(), os.path.join(metric_dir, file_path))
+
+            # If classes and examples are passed also save CSV
+            def is_one_hot(vec):
+                vec = vec.to(torch.int)
+                return vec.dim() == 1 and torch.all((vec == 0) | (vec == 1)) and vec.sum() == 1
+
+            if isinstance(images, dict) and 'images' in images: # dict(images)
+                classes = torch.argmax(images.labels, axis=1)
+                examples = images.examples
+            elif isinstance(images, (tuple, list)) and len(images) == 2: # (images, labels)
+                labels = images[1]
+                if labels is None:
+                    classes = None
+                    examples = None
+                else:
+                    if is_one_hot(labels):
+                        classes = torch.argmax(labels, axis=1)
+                    else:
+                        classes = labels
+                    examples = [None] * classes.shape[0]
+
+            if classes is not None: 
+                with open(os.path.join(feature_dir, f"features.rank{rank:01d}.part{batch_idx:04d}.csv"), "w") as f:
+                    writer = csv.writer(f)
+                    writer.writerows(zip(classes.tolist(), examples))
+
         def __iter__(self):
             state = [dnnlib.EasyDict(metric=metric, detector=detector) for metric, detector in zip(metrics, detectors)]
             for s in state:
@@ -181,36 +215,24 @@ def calculate_stats_for_iterable(
             # Loop over batches.
             for batch_idx, images in enumerate(image_iter):
                 if isinstance(images, dict) and 'images' in images: # dict(images)
-                    classes = torch.argmax(images.labels, axis=1)
-                    examples = images.examples
-                    images = images.images
+                    imgs = images.images
                 elif isinstance(images, (tuple, list)) and len(images) == 2: # (images, labels)
-                    images = images[0]
-                images = torch.as_tensor(images).to(device)
+                    imgs = images[0]
+                imgs = torch.as_tensor(imgs).to(device)
 
                 # Accumulate statistics.
                 features_per_metric = {}
-                if images is not None:
+                if imgs is not None:
                     for s in state:
-                        features = s.detector(images).to(torch.float64)
+                        features = s.detector(imgs).to(torch.float64)
                         s.cum_mu += features.sum(0)
                         s.cum_sigma += features.T @ features
                         features_per_metric[s.metric]= features
+                    cum_images += imgs.shape[0]
+
+                    # Save features of each image 
                     if feature_dir:
-                        rank = dist.get_rank()
-                        # Save features
-                        for metric, features in features_per_metric.items():
-                            metric_dir = os.path.join(feature_dir, metric)
-                            os.makedirs(metric_dir, exist_ok=True) 
-                            file_path = f"features.rank{rank:01d}.part{batch_idx:04d}.pt"
-                            torch.save(features.cpu().detach(), os.path.join(metric_dir, file_path))
-                        # Save class and image index
-                        with open(os.path.join(feature_dir, f"features.rank{rank:01d}.part{batch_idx:04d}.csv"), "w") as f:
-                            writer = csv.writer(f)
-                            writer.writerows(zip(classes.tolist(), examples))
-
-
-                    cum_images += images.shape[0]
+                        self.save_features(features_per_metric, feature_dir, batch_idx, images)
 
                 # Output results.
                 r = dnnlib.EasyDict(stats=None, images=images, batch_idx=batch_idx, num_batches=num_batches)
@@ -241,6 +263,7 @@ def calculate_stats_for_files(
     num_workers     = 2,    # How many subprocesses to use for data loading.
     prefetch_factor = 2,    # Number of images loaded in advance by each worker.
     verbose         = True, # Enable status prints?
+    use_labels      = False,# Load to iterable with labels
     **stats_kwargs,         # Arguments for calculate_stats_for_iterable().
 ):
     # Rank 0 goes first.
@@ -250,7 +273,7 @@ def calculate_stats_for_files(
     # List images.
     if verbose:
         dist.print0(f'Loading images from {image_path} ...')
-    dataset_obj = dataset.ImageFolderDataset(path=image_path, max_size=num_images, random_seed=seed)
+    dataset_obj = dataset.ImageFolderDataset(path=image_path, max_size=num_images, random_seed=seed, use_labels=use_labels)
     if num_images is not None and len(dataset_obj) < num_images:
         raise click.ClickException(f'Found {len(dataset_obj)} images, but expected at least {num_images}')
     if len(dataset_obj) < 2:
@@ -383,7 +406,7 @@ def merge_feature_csvs(csv_dir, output_path="features.csv", delete_parts=True):
     
     csv_files.sort(key=lambda x: (x[0], x[1]))
     
-    with open(os.path.join(output_path, output_path), "w") as outfile:
+    with open(os.path.join(csv_dir, output_path), "w") as outfile:
         # Append content
         for _, _, fname in csv_files:
             file_path = os.path.join(csv_dir, fname)
@@ -593,6 +616,7 @@ def generate_reference_stats(
     num_workers: int = 2,
     verbose: bool = True,
     feature_dir = None,
+    use_labels = False, 
 ) -> Optional[dict]:
     """Generate reference statistics for a dataset."""
     torch.multiprocessing.set_start_method('spawn', force=True)
@@ -606,7 +630,8 @@ def generate_reference_stats(
         num_workers=num_workers,
         verbose=verbose,
         dest_path=dest_path,
-        feauture_dir=feature_dir,
+        feature_dir=feature_dir,
+        use_labels=use_labels,
     )
     
     # Process batches
