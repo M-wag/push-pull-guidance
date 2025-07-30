@@ -565,3 +565,52 @@ def create_vf(cfg: ConfigGVFBase, templates: torch.Tensor, verbose: bool = True,
 
     return builder.build()
 
+def args_is_gvf(args):
+    return args.keys().issubset(["latent", "vectorfield", "latent_inv", "evaluator"])
+
+def match_args_to_latent(args):
+    match args:
+        case "ambient":
+            return "ambient"
+        case {"dim_in": _, "dim_out": _, "n_features" :_}:
+            return "linear"
+
+def match_args_to_evaluator(args):
+    match args:
+        case "jvp":
+            return "ambient"
+        case {"dim_in": _, "dim_out": _, "n_features" :_}:
+            return "linear"
+
+def match_args_to_vectorfield(args):
+
+def args_is_nonlinear(args):
+    nonlinear_types = ["unet", "hf"]
+    latent_type = match_args_to_latent(args)
+    return latent_type in nonlinear_types
+
+def create_gvf_from_dict(latent: dict, vectorfield: dict, 
+                         latent_inv: Optional[dict]=None , evaluator: Optional[dict]=None):
+
+    # Create vectorfield 
+    if args_is_gvf(latent):
+        vf_latent = create_gvf_from_dict(vectorfields)
+    else:
+        vf_latent = GuidanceVF(vectorfields)
+
+    # Get type of latent
+    type_latent = match_args_to_latent(latent)
+
+    # Determine if evaluation operator is necessary
+    if is_nonlinear(type_latent):
+        evaluator = 
+        gvf = GuidanceVF(...)
+    elif args_evaluator is not None:
+        raise ValueError(f"Evaluator args can only be passed when type_latent is nonlinear, \n" 
+                         f"got type latent : {type_latent} and args_evaluator : args_evaluator} ")
+    else:
+        gvf = GuidanceVF(...)
+
+    return gvf
+
+
