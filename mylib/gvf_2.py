@@ -1,16 +1,35 @@
 #----------------------------------------------------------------------------
+# Sigmoidal time gating function which can be either quadratic or logistic
+
+class NoiseGate:
+    def __init__(self, type_gate: str, nu: float, decay_rate: float = None):
+        self.nu = nu
+        self.decay_rate = decay_rate
+
+        if type_gate == "logistic":
+            if decay_rate is None: raise ValueError("decay_rate must be provided for logistic gating")
+            self._fn = lambda t: torch.sigmoid(self.decay_rate * (noise - self.nu)) 
+        elif type_gate == "quadratic":
+            self._fn = lambda noise: noise**2 / (noise**2 + self.nu**2)
+        else:
+            raise ValueError(f"Unknown gating type: {type_gate!r}")
+
+    def __call__(self, noise):
+        return self._fn(noise)
+
+#----------------------------------------------------------------------------
 # Vectorfield of a Mixture Of Gaussians defined in lowest level of feature space
 
 class VectorField:
     def __init__(self, 
         features_template,              # Templates in feauture space
         scale,                          # Scaling of score in feature space
-        tau,                            # Time-dependent sigmoidal decay function in feature space \tau(t) -> [0 ,1]
+        noise_gate,                     # Noise-dependent sigmoidal decay function in feature space \gamma(t) -> [0 ,1]
         noise,                          # Time-depedent noise function in feature space
         noise_dot                       # Time-depdendent derivation of noise function in feature space
         *, 
         flatten_input       = False,    # Whether to flatten input [..., C, H, W] -> [..., (C H W)]
-        threshold_weight    = None,     # Cut off point based on tau * scale 
+        threshold_weight    = None,     # Cut off point based on noise_gate * scale 
         threshold_time_min  = None,     # Start off point after a certain time
         threshold_time_max  = None,     # Cut off point after a cetain time
     ):
@@ -18,7 +37,7 @@ class VectorField:
         # Core parameters
         self.features_template = self.flat(features_template) if flatten_input else features_template
         self.scale = scale
-        self.tau = tau
+        self.noise_gate = noise_gate
         self.noise = lambda x: x 
         self.noise_dot = lambda x : 1 
 
@@ -148,8 +167,8 @@ def match_args_to_latent(args):
     match args:
         case "ambient":
             return "ambient"
-        case {"dim_in": _, "dim_out": _, "n_features" :_}:
-            return "linear"
+        case {"step_size" : _}:
+            return "numdiff"
         case {"hf_url" : _}:
             return "hf"
         case {"net" : _, "hook_manager" : _}:
@@ -157,12 +176,16 @@ def match_args_to_latent(args):
     raise ValueError(f"Unrecognized latent/latent_inv args: {args!r}")
 
 def match_args_to_vectorfield(args):
-    required_args_gvf = set(["latent", "vectorfield", "noise", "noise_dot"])
-    required_args_vf = set(["features_template", "scale", "tau", "noise", "noise_dot"])
+    if not isinstance(args, dict):
+        raise ValueError("args vectorfield should be dict, got type {type(args)!r}")
 
-    if required_args_gvf.issubset(set(args)):
+    required_args_gvf = set(["latent", "vectorfield", "noise", "noise_dot"])
+    required_args_vf = set(["features_template", "scale", "noise_gate", "noise", "noise_dot"])
+
+    keys = set(args)
+    if required_args_gvf.issubset(keys):
         return "gvf"
-    elif required_args_vf.issubset(set(args)):
+    elif required_args_vf.issubset(keys):
         return "vf"
     raise ValueError(f"Unrecognized vectorfield args: {args!r}")
         
@@ -177,6 +200,14 @@ def match_args_to_pullback(args):
             return "numdiff"
     raise ValueError(f"Unrecognized pullback args: {args!r}")
 
+def match_args_to_noise(args):
+    if args is not "edm":
+        raise ValueError
+    noise = lambda t : t
+    noise_dot = lambda t : t
+
+    return noise, noise_dot
+
 #----------------------------------------------------------------------------
 # Determnine if a type of latent is linear
 
@@ -189,8 +220,7 @@ def is_linear(type_latent):
 def create_gvf(
     args_latent,            # Arguments for latent function ("latent")
     args_vectorfield,       # Arguments for vectorfield in feature space ("vectorfield")
-    noise,                  # Time-dependent noise function used during reverse step ("noise")
-    noise_dot               # Derivative of noise used during reverse step ("noise_dot")
+    args_noise,             # Arguments for time-dependent noise function used during reverse step ("noise")
     args_pullback   = None  # Arguments for the pullback operation ("pullback")
     args_latent_inv = None  # Arguments for latent (pseudo)-inverse function ("latent_inv")
 ):
@@ -211,9 +241,13 @@ def create_gvf(
     # Create vectorfield 
     type_vf = match_args_to_vf(args_vectorfield)
     if type_vf is "gvf":
+        args_vectorfield["noise_gating"] = NoiseGate(args_vectorfield["noise_gating"]) # initialize NoiseGate 
         vectorfield = create_gvf(args_vectorfield)
     else:
         vectorfield = VectorField(args_vectorfield)
+    
+    # Get noise function
+    noise, noise_dot = match_args_to_latent(args_noise)
 
     gvf = GuidanceVF(vectorfield, latent, latent_inv, noise, noise_dot)
     return gvf
