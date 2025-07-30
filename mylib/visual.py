@@ -19,7 +19,8 @@ def create_figure(batch_size, n_conditions, img_shape, base_tile_size=1):
     fig_height = max(batch_size, 1) * tile_height  # Height determined by middle plot
     
     # Create figure with 3 subplots using GridSpec
-    fig = plt.figure(figsize=(fig_width, fig_height), constrained_layout=True)
+    # fig = plt.figure(figsize=(fig_width, fig_height), constrained_layout=True)
+    fig = plt.figure()
     gs = GridSpec(1, 3, figure=fig, width_ratios=[1, n_conditions, 1],
                   wspace=0.05, hspace=0)
     
@@ -142,7 +143,7 @@ def visualize_from_path(path_exp, title=None, labels=None):
     data_og = rearrange(data_og, "p1 p2 b h w c -> (b p1) p2 1 h w c")
 
     # Load template images
-    template = load_templates(cnfg_sim, for_torch=False)
+    template = rearrange(load_templates(cnfg_sim, for_torch=False), "n c h w -> 1 c h (n w)")
 
     # Prepare dictionary for plotting
     data_dict = {

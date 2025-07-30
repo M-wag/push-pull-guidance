@@ -1,4 +1,4 @@
-# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # This work is licensed under a Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -7,10 +7,19 @@
 
 import re
 import contextlib
+import functools
 import numpy as np
 import torch
 import warnings
 import dnnlib
+
+#----------------------------------------------------------------------------
+# Re-seed torch & numpy random generators based on the given arguments.
+
+def set_random_seed(*args):
+    seed = hash(args) % (1 << 31)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
 #----------------------------------------------------------------------------
 # Cached construction of constant tensors. Avoids CPU=>GPU copy when the
@@ -40,19 +49,22 @@ def constant(value, shape=None, dtype=None, device=None, memory_format=None):
     return tensor
 
 #----------------------------------------------------------------------------
-# Replace NaN/Inf with specified numerical values.
+# Variant of constant() that inherits dtype and device from the given
+# reference tensor by default.
 
-try:
-    nan_to_num = torch.nan_to_num # 1.8.0a0
-except AttributeError:
-    def nan_to_num(input, nan=0.0, posinf=None, neginf=None, *, out=None): # pylint: disable=redefined-builtin
-        assert isinstance(input, torch.Tensor)
-        if posinf is None:
-            posinf = torch.finfo(input.dtype).max
-        if neginf is None:
-            neginf = torch.finfo(input.dtype).min
-        assert nan == 0
-        return torch.clamp(input.unsqueeze(0).nansum(0), min=neginf, max=posinf, out=out)
+def const_like(ref, value, shape=None, dtype=None, device=None, memory_format=None):
+    if dtype is None:
+        dtype = ref.dtype
+    if device is None:
+        device = ref.device
+    return constant(value, shape=shape, dtype=dtype, device=device, memory_format=memory_format)
+
+#----------------------------------------------------------------------------
+# Cached construction of temporary tensors in pinned CPU memory.
+
+@functools.lru_cache(None)
+def pinned_buf(shape, dtype):
+    return torch.empty(shape, dtype=dtype).pin_memory()
 
 #----------------------------------------------------------------------------
 # Symbolic assert.
@@ -108,37 +120,29 @@ def profiled_function(fn):
 # indefinitely, shuffling items as it goes.
 
 class InfiniteSampler(torch.utils.data.Sampler):
-    def __init__(self, dataset, rank=0, num_replicas=1, shuffle=True, seed=0, window_size=0.5):
+    def __init__(self, dataset, rank=0, num_replicas=1, shuffle=True, seed=0, start_idx=0):
         assert len(dataset) > 0
         assert num_replicas > 0
         assert 0 <= rank < num_replicas
-        assert 0 <= window_size <= 1
+        warnings.filterwarnings('ignore', '`data_source` argument is not used and will be removed')
         super().__init__(dataset)
-        self.dataset = dataset
-        self.rank = rank
-        self.num_replicas = num_replicas
+        self.dataset_size = len(dataset)
+        self.start_idx = start_idx + rank
+        self.stride = num_replicas
         self.shuffle = shuffle
         self.seed = seed
-        self.window_size = window_size
 
     def __iter__(self):
-        order = np.arange(len(self.dataset))
-        rnd = None
-        window = 0
-        if self.shuffle:
-            rnd = np.random.RandomState(self.seed)
-            rnd.shuffle(order)
-            window = int(np.rint(order.size * self.window_size))
-
-        idx = 0
+        idx = self.start_idx
+        epoch = None
         while True:
-            i = idx % order.size
-            if idx % self.num_replicas == self.rank:
-                yield order[i]
-            if window >= 2:
-                j = (i - rnd.randint(window)) % order.size
-                order[i], order[j] = order[j], order[i]
-            idx += 1
+            if epoch != idx // self.dataset_size:
+                epoch = idx // self.dataset_size
+                order = np.arange(self.dataset_size)
+                if self.shuffle:
+                    np.random.RandomState(hash((self.seed, epoch)) % (1 << 31)).shuffle(order)
+            yield int(order[idx % self.dataset_size])
+            idx += self.stride
 
 #----------------------------------------------------------------------------
 # Utilities for operating with torch.nn.Module parameters and buffers.
@@ -185,7 +189,7 @@ def check_ddp_consistency(module, ignore_regex=None):
             continue
         tensor = tensor.detach()
         if tensor.is_floating_point():
-            tensor = nan_to_num(tensor)
+            tensor = torch.nan_to_num(tensor)
         other = tensor.clone()
         torch.distributed.broadcast(tensor=other, src=0)
         assert (tensor == other).all(), fullname
@@ -193,6 +197,7 @@ def check_ddp_consistency(module, ignore_regex=None):
 #----------------------------------------------------------------------------
 # Print summary table of module hierarchy.
 
+@torch.no_grad()
 def print_module_summary(module, inputs, max_nesting=3, skip_redundant=True):
     assert isinstance(module, torch.nn.Module)
     assert not isinstance(module, torch.jit.ScriptModule)
@@ -261,6 +266,12 @@ def print_module_summary(module, inputs, max_nesting=3, skip_redundant=True):
     for row in rows:
         print('  '.join(cell + ' ' * (width - len(cell)) for cell, width in zip(row, widths)))
     print()
-    return outputs
+
+#----------------------------------------------------------------------------
+# Tile a batch of images into a 2D grid.
+
+def tile_images(x, w, h):
+    assert x.ndim == 4 # NCHW => CHW
+    return x.reshape(h, w, *x.shape[1:]).permute(2, 0, 3, 1, 4).reshape(x.shape[1], h * x.shape[2], w * x.shape[3])
 
 #----------------------------------------------------------------------------
