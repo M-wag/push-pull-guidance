@@ -36,11 +36,50 @@ class PullbackNumericalDifferentiation():
         return dx
 
 #----------------------------------------------------------------------------
-# Vectorfield of a Mixture Of Gaussians defined in lowest level of feature space
+# Attention weights for the score of mixture of Gaussians
+# Essentialy performs softmax(-1/2 Mahalanobis(x)^2 + ln(weight) + ln(Z))
+# Includes optional modificaitons like Temperature parameter and scaling before softmax
+# See equation ..
+
+class AttentionWeightsMixture:
+    def __init__(self, means, stds, weights_mixture=None):
+        self.means = means #(N, D)
+        self.stds  = stds #(N,)
+        N, D = means.shape
+        self.D = D
+
+        if weights_mixture is None:
+            weights_mixture = torch.full((N,), 1/N, dtype=means.dtype, device=means.device)
+        self.weights_mixture = weights_mixture #(N, )
+
+        if not torch.isclose(self.weights_mixture.sum(), torch.tensor(1.0, dtype=self.weights_mixture.dtype, device=self.weights_mixture.device), atol=1e-6):
+            raise ValueError(f"weights_mixture must sum to 1.0, got {self.weights_mixture.sum().item():.6f}")
+
+    def __call__(self, x, T=1.0, passing_diff=False, normalize=True):
+        if passing_diff:
+            diff_x_to_means = x # (B, N, D)
+        else:
+            diff_x_to_means = self.means.unsqueeze(0) - x.unsqueeze(1)  # (B, N, D)
+            
+        # Difference between x and means has variance = 1 
+        if normalize:
+            std_diff = diff_x_to_means.std(dim=1, unbiased=False, keepdim=True)  # shape (B, 1, D)
+            diff_x_to_means = diff_x_to_means / std_diff
+
+        mahalanobis_squared = (diff_x_to_means.pow(2).sum(-1)) / (self.stds.unsqueeze(0).pow(2)) # (B, N)
+        log_weights = torch.log(self.weights_mixture + 1e-8).unsqueeze(0) # (1, N)                     
+        log_partition = -self.D * torch.log(self.stds + 1e-8).unsqueeze(0) # (1, N)                    
+        logits = -1/2 * mahalanobis_squared + log_weights + log_partition # (B, N)
+
+        attention_weights = torch.nn.F.softmax(T * logits, dim=-1)
+        return weights_attn
+
+#----------------------------------------------------------------------------
+# Vectorfield of a Diffused Mixture Of Gaussians defined in lowest level of feature space
 
 class VectorField:
     def __init__(self, 
-        features_template,              # Templates in feauture space
+        features_template,              # Templates in feauture space (N, D1, D2, ....)
         scale,                          # Scaling of score in feature space
         noise_gate,                     # Noise-dependent sigmoidal decay function in feature space \gamma(t) -> [0 ,1]
         noise,                          # Time-depedent noise function in feature space
@@ -52,34 +91,30 @@ class VectorField:
         threshold_time_max  = None,     # Cut off point after a cetain time
     ):
 
-        # Core parameters
+        self.flatten_input = flatten_input
         self.features_template = self.flat(features_template) if flatten_input else features_template
         self.scale = scale
         self.noise_gate = noise_gate
         self.noise = noise
         self.noise_dot = noise_dot
-
-        self.time_weight = lambda t: torch.sigmoid(self.decay_rate * (self.noise(t) - self.v_0)) 
-        # Optional features
-        self.flatten_input = flatten_input
         self.threshold_weight = threshold_weight
         self.threshold_time_min = threshold_time_min
         self.threshold_time_max = threshold_time_max
 
-         # TODO : Not sure how this is gonna be implemented, now done by Builder
-        self.attention = attention
-        # Determine to use attention or not 
-        if self.attention:
+        self.nu = self.noise_gate.nu
+        self._shp_og = features_template.shape[1:]
+        self.device = self.features_template.device
+        self.dtype = self.features_template.dtype
+
+        # Check if single template was passed
+        if self.features_template.shape[0] > 1:
             self._score = self._score_attention
+            self.attention = lambda x : AttentionWeightsMixture(features_template, self.nu,)(self.flatten(x))
         else:
             self._score = self._score_single_feature
 
-        # Pre-process templates 
-        # TODO : ASSERT THIS IS (BATCH, N_FEATURES, D_LATENT)
-        self.features_template = latent(self.flat(self.templates)) if flatten_input else latent(self.templates)
-        # Device and type tracking
-        self.device = self.features_template.device
-        self.dtype = self.features_template.dtype
+        if len(self._shp_og) < 2:
+            raise ValueError(f"Features template should be at least rank 2 / shape (N, D), got :{self._shp_og}")
         
 
     def __call__(self, x, t):
@@ -119,10 +154,10 @@ class VectorField:
         return self._score(x, t)
 
     def flat(self, x):
-        return rearrange(x, "... c h w -> ... (c h w)")
+        return torch.flatten(x, start_dim=1)
     
     def unflat(self, x):
-        return rearrange(x, "... (c h w) -> ... c h w", c=self.templates.shape[-3], h=self.templates.shape[-2], w=self.templates.shape[-1])
+        return torch.unflatten(x, start_dim=1, sizes=self._shp_og)
 
     def _score_single_feature(self, x_latent, t):
         score = self.scale * self.time_weight(t) * (self.features_template - x_latent) / self.noise(t)**2
@@ -368,7 +403,6 @@ def create_gvf(
         vectorfield = create_gvf(**args_vectorfield)
     else:
         noise_latent, noise_dot_latent = match_args_to_noise(args_vectorfield.args_noise) # initialize latent noise
-        print(args_vectorfield.noise_gate)
         args_vectorfield.noise_gate = NoiseGate(**args_vectorfield.noise_gate) # initialize NoiseGate 
         del args_vectorfield["args_noise"]
         args_vectorfield.noise = noise_latent
@@ -376,9 +410,9 @@ def create_gvf(
         vectorfield = VectorField(**args_vectorfield)
     
     # Get noise function
-    noise, noise_dot = match_args_to_latent(args_noise)
+    noise, noise_dot = match_args_to_noise(args_noise)
 
-    gvf = GuidanceVF(vectorfield, latent, latent_inv, noise, noise_dot)
+    gvf = GuidanceVF(vectorfield, latent_fn, latent_inv_fn, pullback, noise, noise_dot)
     return gvf
 
 
