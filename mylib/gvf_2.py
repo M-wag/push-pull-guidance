@@ -14,11 +14,18 @@ class NoiseGate:
         else:
             self.args = {"type_gate" : type_gate, "nu" : nu}
 
+        def _logistic_gate(self, noise):
+              return torch.sigmoid(self.decay_rate * (noise - self.nu))
+
+        def _quadratic_gate(self, noise):
+            return noise**2 / (noise**2 + self.nu**2)
+
         if type_gate == "logistic":
-            if decay_rate is None: raise ValueError("decay_rate must be provided for logistic gating")
-            self._fn = lambda t: torch.sigmoid(self.decay_rate * (noise - self.nu)) 
+            if decay_rate is None: 
+                raise ValueError("decay_rate must be provided for logistic gating")
+            self._fn = self._logistic_gate
         elif type_gate == "quadratic":
-            self._fn = lambda noise: noise**2 / (noise**2 + self.nu**2)
+            self._fn = self._quadratic_gate
         else:
             raise ValueError(f"Unknown gating type: {type_gate!r}")
 
@@ -29,11 +36,15 @@ class NoiseGate:
 # Pullback Operation evaluated by Numerical Differentiation
 
 class PullbackNumericalDifferentiation():
-    def __init__(self, step_size: callable):
-        self.step_size = step_size  
+    def __init__(self, step_size_slope, step_size_intercept):
+        self.a = step_size_slope
+        self.b = step_size_intercept
+    
+    def step_size(self, t):
+        return t * self.a + self.b
 
     @torch.no_grad
-    def __call__(latent_inv, x_latent, dx_latent, t):
+    def __call__(self, latent_inv, x_latent, dx_latent, t):
         perturbed_latent = x_latent + self.step_size(t) * dx_latent
         f_perturbed = latent_inv(perturbed_latent)
         f_original = latent_inv(x_latent)
@@ -77,7 +88,7 @@ class AttentionWeightsMixture:
         logits = -1/2 * mahalanobis_squared + log_weights + log_partition # (B, N)
 
         attention_weights = torch.nn.F.softmax(T * logits, dim=-1)
-        return weights_attn
+        return attention_weights
 
 #----------------------------------------------------------------------------
 # Vectorfield of a Diffused Mixture Of Gaussians defined in lowest level of feature space
@@ -169,13 +180,10 @@ class VectorField:
         return score
 
     def _score_attention(self, x_latent, t):
-        diffs = self.features_template - x.unsqueeze(1) #(B, N, D)
-        # TODO : normalizer not init
-        # TODO : can you normlaize for mixture attention
-        diffs_normalized = self.attention_normalizer(diffs) #(B, N, D)
-        attention = self.attention(diffs_normalized) #(B, N)
-        weights = attention * self.time_weight.unsqueeze(0) * self.scale # (N, )
-        score =  torch.einsum("BN, BN... -> B...", weights, recons) / self.noise(t) ** 2 # (B, D)
+        diffs = self.features_template - x_latent.unsqueeze(1) #(B, N, D)
+        attention = self.attention(diffs) #(B, N)
+        weights = attention * self.time_weight(t).unsqueeze(0) * self.scale # (N, )
+        score =  torch.einsum("BN, BN... -> B...", weights, diffs) / self.noise(t) ** 2 # (B, D)
         return score
 
     @property
@@ -222,6 +230,7 @@ class GuidanceVF():
     
     def reverse_step(self, x, t):
         dx = -self.noise_dot(t) * self.noise(t) * self.score(x, t)
+        return dx
 
     def _should_apply_score(self, t):
         return self.vf_latent.should_apply_score(t)
@@ -318,15 +327,15 @@ def build_pullback_linear(*args):
     return pullback
 
 @registry_pullback.register("numdiff")
-def build_pullback_numdiff(step_size):
-    pullback = PullbackNumericalDifferentiation(step_size)
-    pullback.args = None
+def build_pullback_numdiff(kwargs):
+    pullback = PullbackNumericalDifferentiation(**kwargs)
+    pullback.args = kwargs
     return pullback
 
 @registry_pullback.register("jvp")
-def build_pullback_jvo(*args):
+def build_pullback_jvp(*args):
     @torch.no_grad
-    def pullback(latent_inv, __x_latent, dx_latent, __t):
+    def pullback(latent_inv, x_latent, dx_latent, __t):
         _, dx = torch.autograd.functional.jvp(latent_inv, x_latent, dx_latent, strict=False)
         return dx
     pullback.args = "jvp" 
@@ -337,8 +346,8 @@ def build_pullback_jvo(*args):
 
 @registry_noise.register("edm")
 def buld_noise_edm(*args):
-    noise = lambda t : t
-    noise_dot = lambda t : 1
+    def noise(t) : return t
+    def noise_dot(t) : return 1
     noise.args = "edm"
 
     return noise, noise_dot
@@ -385,7 +394,7 @@ def match_args_to_vectorfield(args):
 # Specification for pullback
 # <PullbacLinear>   := None
 # <PullbackJVP>     := "jvp"
-# <PullbackNumdiff> := {latent: _, vectorfield:_, noise: _, noise_dot}
+# <PullbackNumdiff> := {"step_size_slope" : _, "step_size_slope" : _}
 
 def match_args_to_pullback(args):
     match args:
@@ -393,7 +402,7 @@ def match_args_to_pullback(args):
             return "linear"
         case "jvp":
             return "jvp"
-        case {"step_size" : _}:
+        case {"step_size_slope" : _, "step_size_intercept": _}:
             return "numdiff"
     raise ValueError(f"Unrecognized pullback args: {args!r}")
 
