@@ -1,10 +1,11 @@
 import pytest
 import random
 import itertools
+import torch
 
 from mylib.helpers import load_from_json, save_to_json
 from mylib.diffusion import load_templates_batch
-from mylib.gvf_2 import args_is_linear, create_gvf
+from mylib.gvf_2 import args_is_linear, match_args_to_pullback, create_gvf
 
 #----------------------------------------------------------------------------
 # Helper function to compare two nested dictionaries
@@ -65,7 +66,7 @@ VECTORFIELD_ARGS = [
     {
         "noise_gate": gate, "args_noise": noise, 
         "scale": random.random(), 
-        "features_template" : load_templates_batch(["data/data/cat_1.jpg", "data/data/cat_2.jpg"])
+        "features_template" : "__REF__features_template"
      }
     for gate, noise in itertools.product(
         NOISE_GATE_ARGS, ARGS_NOISE_ARGS
@@ -101,32 +102,31 @@ def test_json_save_and_load_equals_identity(config):
 def test_config_gvf_in_equals_config_gvf_out(args_latent, args_vectorfield, args_pullback, args_noise): 
 
     args_references = {}
-    if match_args_to_pullback(args) == "unet":
-        args_references["__REF__network"] = None
-        args_references["__REF__hook_manager"] = None
+    args_references["features_template"] = torch.zeros((1, 3, 2, 2))
+    args_references["network"] = None
+    args_references["hook_manager"] = None
+
+    args_in = {
+        "latent"       : args_latent,
+        "vectorfield"  : args_vectorfield,
+        "pullback"     : args_pullback,
+        "noise"        : args_noise,
+    }
 
     # When a linear latent and a pulback are specified throw a error
     # Linear latents always use the "linear" pullback
     should_raise = args_is_linear(args_latent) and args_pullback is not None
     if should_raise:
-        # Creation logic should throw an error
-        with pytest.raises(ValueError) as exc_info:
-            create_gvf(**args_in)
+        with pytest.raises(ValueError):
+            create_gvf(**args_in, args_references=args_references)
+        return
 
-    gvf = create_gvf(**args_in)
+    gvf = create_gvf(**args_in, args_references=args_references)
 
     # Check whether two configs are identitcal
-    args_in = {
-        "args_latent"       : args_latent,
-        "args_vectorfield"  : args_vectorfield,
-        "args_pullback"     : args_pullback
-        "args_noise"        : args_noise,
-    }
-    args_out = gvf.config 
-    
-    mismatches = compare_dictionaries(args_in, args_out)
-    if mismatches:
-        pytest.fail("Dictionaries do not match: \n" + "\n".join(mismatches))
+    args_out = gvf.args 
+
+    assert args_in == args_out, f"Expected : \n {args_in} \n\n Outcome: {args_out}\n"
 
 #----------------------------------------------------------------------------
 # Test for nested GuidanceVectorfield
