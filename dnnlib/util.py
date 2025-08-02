@@ -49,6 +49,33 @@ class EasyDict(dict):
     def __delattr__(self, name: str) -> None:
         del self[name]
 
+class EasyDictNested(dict):
+    """Convenience class that behaves like a dict but allows access with the attribute syntax."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Convert nested dict in initial dict dict
+        for key, value in list(self.items()):
+            if isinstance(value, dict) and not isinstance(value, EasyDictNested):
+                super().__setitem__(key, EasyDictNested(value))
+            
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self[name] = value
+
+    def __delattr__(self, name: str) -> None:
+        del self[name]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        # Convert passed dict to EasyDict
+        if isinstance(value, dict) and not isinstance(value, EasyDictNested):
+            value = EasyDictNested(value)
+        super().__setitem__(key, value)
 
 class Logger(object):
     """Redirect stderr to stdout, optionally print stdout to a file, and optionally force flushing on both stdout and the file."""
@@ -108,6 +135,30 @@ class Logger(object):
             self.file.close()
             self.file = None
 
+# ------------------------------------------------------------------------------------------
+# Recursively traverses a nested dictionary and replaces placeholders with actual values.
+
+def replace_placeholders(data, fill_ins, placeholder_prefix='__fill_in_later_'):
+    # Process dictionary - recursively handle each value
+    if isinstance(data, dict):
+        return {key: replace_placeholders(value, fill_ins, placeholder_prefix) 
+                for key, value in data.items()}
+    # Process list - recursively handle each element
+    elif isinstance(data, list):
+        return [replace_placeholders(item, fill_ins, placeholder_prefix) 
+                for item in data]
+    # Found a placeholder - try to replace it
+    elif isinstance(data, str) and data.startswith(placeholder_prefix):
+        placeholder_key = data[len(placeholder_prefix):]  # Extract the key part
+        if placeholder_key in fill_ins:
+            return fill_ins[placeholder_key]
+        # If no replacement found, leave the placeholder as-is
+        else:
+            return data
+    # Not a placeholder - return as-is
+    else:
+        return data
+
 
 # Cache directories
 # ------------------------------------------------------------------------------------------
@@ -129,9 +180,15 @@ def make_cache_dir_path(*paths: str) -> str:
         return os.path.join(os.environ['USERPROFILE'], '.cache', 'dnnlib', *paths)
     return os.path.join(tempfile.gettempdir(), '.cache', 'dnnlib', *paths)
 
+
 # Small util functions
 # ------------------------------------------------------------------------------------------
 
+def to_easydict(obj):
+    """If obj is a dict but not already an EasyDict, wrap it"""
+    if isinstance(obj, dict) and not isinstance(obj, EasyDictNested):
+        return EasyDictNested(obj)
+    return obj
 
 def format_time(seconds: Union[int, float]) -> str:
     """Convert the seconds to human readable string with days, hours, minutes and seconds."""
