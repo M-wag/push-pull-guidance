@@ -1,13 +1,18 @@
 import torch
 import dnnlib
 
-#----------------------------------------------------------------------------
 # Sigmoidal time gating function which can be either quadratic or logistic
 
 class NoiseGate:
     def __init__(self, type_gate: str, nu: float, decay_rate: float = None):
         self.nu = nu
         self.decay_rate = decay_rate
+        
+        # TODO: This is ugly, please refactor
+        if type_gate == "logistic":
+            self.args = {"type_gate" : type_gate, "nu" : nu, "decay_rate" : decay_rate}
+        else:
+            self.args = {"type_gate" : type_gate, "nu" : nu}
 
         if type_gate == "logistic":
             if decay_rate is None: raise ValueError("decay_rate must be provided for logistic gating")
@@ -173,6 +178,14 @@ class VectorField:
         score =  torch.einsum("BN, BN... -> B...", weights, recons) / self.noise(t) ** 2 # (B, D)
         return score
 
+    @property
+    def args(self):
+        return {
+            "noise_gate": self.noise_gate.args, 
+            "args_noise": self.noise.args,
+            "scale": self.scale,
+            "features_template" : "__REF__features_template"
+        }
 #----------------------------------------------------------------------------
 # Encode-Pullback Vector Field
 
@@ -212,6 +225,20 @@ class GuidanceVF():
 
     def _should_apply_score(self, t):
         return self.vf_latent.should_apply_score(t)
+    
+    @property
+    def args(self):
+        args_latent = self.latent.args
+        args_vectorfield = self.vf_latent.args
+        args_pullback = self._pullback.args
+        args_noise = self.noise.args
+
+        return {
+            "latent"       : args_latent,
+            "vectorfield"  : args_vectorfield,
+            "pullback"     : args_pullback,
+            "noise"        : args_noise,
+        }
 
 #----------------------------------------------------------------------------
 # A Register object is defined which maps key words to specific creation
@@ -232,6 +259,7 @@ class Registry:
 
 registry_latent = Registry()
 registry_pullback = Registry()
+registry_noise = Registry()
 
 #----------------------------------------------------------------------------
 # Builder functions for the latents and latent inverses. 
@@ -240,10 +268,13 @@ registry_pullback = Registry()
 
 @registry_latent.register("ambient")
 def build_latent_ambient(*args):
-    return lambda x : x, lambda x : x
+    def latent_fn(x, t): return x
+    def latent_inv_fn(x):return x
+    latent_fn.args = args[0]
+    return latent_fn, latent_inv_fn
 
 def build_latent_from_matrix(mat_in, mat_out, shp_templates, device, dtype):
-    def latent_fn(x, t): 
+    def latent_fn(x): 
         return torch.einsum("NOI, BI -> BNO", mat_in, x) # (batch, num_templates * num_features, dim_out)
 
     n_templates = shp_templates[0]
@@ -260,7 +291,17 @@ def build_latent_random_linear(args, _, shp_templates, device, dtype):
     shp_mat_latent = (args.n_features, args.dim_out, args.dim_in)
     mat_latent = torch.randn(shp_mat_latent, generator=g, device=device, dtype=dtype)
     mat_latent_inv = torch.linalg.pinv(mat_latent)
-    return build_latent_from_matrix(mat_latent, mat_latent_inv, shp_templates, device, dtype)
+    latent_fn, latent_inv_fn = build_latent_from_matrix(mat_latent, mat_latent_inv, shp_templates, device, dtype)
+    latent_fn.args = args
+    return latent_fn, latent_inv_fn
+
+@registry_latent.register("unet")
+def build_latent_unet(args, _args_out, _shp, device, dtype):
+    def latent_fn(x, t): return x
+    def latent_inv_fn(x):return x
+    latent_fn.args = {"net" : "__REF__network", "hook_manager": "__REF__hook_manager"}
+    return latent_fn, latent_inv_fn
+
 
 #----------------------------------------------------------------------------
 # Builder functions for the pullback operation
@@ -269,29 +310,42 @@ def build_latent_random_linear(args, _, shp_templates, device, dtype):
 # an underscore, e.g.__x_latent, __t
 
 @registry_pullback.register("linear")
-def build_jvp(*args):
+def build_pullback_linear(*args):
     def pullback(latent_inv, __x_latent, dx_latent, __t):
         dx = latent_inv(dx_latent)
         return dx
+    pullback.args = args[0]
     return pullback
 
 @registry_pullback.register("numdiff")
-def build_jvp(step_size):
+def build_pullback_numdiff(step_size):
     pullback = PullbackNumericalDifferentiation(step_size)
+    pullback.args = None
     return pullback
 
 @registry_pullback.register("jvp")
-def build_jvp(*args):
+def build_pullback_jvo(*args):
     @torch.no_grad
     def pullback(latent_inv, __x_latent, dx_latent, __t):
         _, dx = torch.autograd.functional.jvp(latent_inv, x_latent, dx_latent, strict=False)
         return dx
+    pullback.args = "jvp" 
     return pullback
 
 #----------------------------------------------------------------------------
-# Functions which match a specific set of arguments to a type of object
+# Builder functions for noise and noise_dot 
 
+@registry_noise.register("edm")
+def buld_noise_edm(*args):
+    noise = lambda t : t
+    noise_dot = lambda t : 1
+    noise.args = "edm"
+
+    return noise, noise_dot
+
+# Functions which match a specific set of arguments to a type of object
 #----------------------------------------------------------------------------
+
 # Specification for latents
 # <LatentAmbient>   := "ambient"
 # <LatentLinear>    := {seed : _, dim_in: _, dim_out: _, n_features: _}
@@ -310,16 +364,15 @@ def match_args_to_latent(args):
             return "unet"
     raise ValueError(f"Unrecognized latent/latent_inv args: {set(args) if isinstance(args, dict) else args!r}")
 
-#----------------------------------------------------------------------------
 # Specification for vectorfield
 # <VectorField>         := {features_template: _, scale: _, noise_gate: _, args_noise: _}
-# <GuidanceVectorField> := {latent: _, vectorfield:_, noise: _, noise_dot}
+# <GuidanceVectorField> := {latent: _, vectorfield:_, noise: _}
 
 def match_args_to_vectorfield(args):
     if not isinstance(args, dict):
         raise ValueError("args vectorfield should be dict, got type {type(args)!r}")
 
-    required_args_gvf = set(["latent", "vectorfield", "noise", "noise_dot"])
+    required_args_gvf = set(["latent", "vectorfield", "noise"])
     required_args_vf = set(["features_template", "scale", "noise_gate", "args_noise"])
 
     keys = set(args)
@@ -329,8 +382,7 @@ def match_args_to_vectorfield(args):
         return "vf"
     raise ValueError(f"Unrecognized vectorfield args: {set(args)!r}")
         
-#----------------------------------------------------------------------------
-# Specification for vectorfield
+# Specification for pullback
 # <PullbacLinear>   := None
 # <PullbackJVP>     := "jvp"
 # <PullbackNumdiff> := {latent: _, vectorfield:_, noise: _, noise_dot}
@@ -345,15 +397,12 @@ def match_args_to_pullback(args):
             return "numdiff"
     raise ValueError(f"Unrecognized pullback args: {args!r}")
 
-#----------------------------------------------------------------------------
 # Only accept EDM noise schedule
 def match_args_to_noise(args):
     if args != "edm":
         raise ValueError
-    noise = lambda t : t
-    noise_dot = lambda t : 1
 
-    return noise, noise_dot
+    return "edm"
 
 #----------------------------------------------------------------------------
 # Determnine if a type or args of latent is linear
@@ -365,17 +414,41 @@ def type_is_linear(type_):
     return type_ in ["ambient", "linear"]
     
 #----------------------------------------------------------------------------
-# Creates an object of GuidanceVF based on a nested dictionary of args
+# Allow create_gvf to take different kwargs by name
+# and ensure that they are valid GuidanceVectorfield arguments
 
 def create_gvf(
-    args_latent,            # Arguments for latent function ("latent")
-    args_vectorfield,       # Arguments for vectorfield in feature space ("vectorfield")
-    args_noise,             # Arguments for time-dependent noise function used during reverse step ("noise")
-    args_pullback   = None, # Arguments for the pullback operation ("pullback")
-    args_latent_inv = None, # Arguments for latent (pseudo)-inverse function ("latent_inv")
-    device          = "cuda" if torch.cuda.is_available() else "cpu",
-    dtype           = torch.float64,
-):
+        latent,            # Arguments for latent function ("latent")
+        vectorfield,       # Arguments for vectorfield in feature space ("vectorfield")
+        noise,             # Arguments for time-dependent noise function used during reverse step ("noise")
+        pullback   = None, # Arguments for the pullback operation ("pullback")
+        latent_inv = None, # Arguments for latent (pseudo)-inverse function ("latent_inv")
+        **kwargs,
+    ):
+
+    if match_args_to_vectorfield( {"latent" : latent, "vectorfield": vectorfield, "noise" : noise}) != "gvf":
+         raise ValueError("Arguments do not match those for a GuidaneVectorField")
+
+    return _create_gvf(latent, vectorfield, noise, pullback, latent_inv, **kwargs)
+
+#----------------------------------------------------------------------------
+# Creates an object of GuidanceVF based on a nested dictionary of args
+def _create_gvf(
+        args_latent,            # Arguments for latent function ("latent")
+        args_vectorfield,       # Arguments for vectorfield in feature space ("vectorfield")
+        args_noise,             # Arguments for time-dependent noise function used during reverse step ("noise")
+        args_pullback   = None, # Arguments for the pullback operation ("pullback")
+        args_latent_inv = None, # Arguments for latent (pseudo)-inverse function ("latent_inv")
+        args_references = None, # Arguments which are not serializable and are passed by reference
+        device          = "cuda" if torch.cuda.is_available() else "cpu",
+        dtype           = torch.float64,
+    ):
+
+    # Insert non-serializable referenced variables
+    args_latent, args_vectorfield, args_noise, args_pullback, args_latent_inv = [
+        dnnlib.util.replace_placeholders(x, args_references, placeholder_prefix="__REF__") 
+        for x in (args_latent, args_vectorfield, args_noise, args_pullback, args_latent_inv)
+    ]
 
     # Wrap args into EasyDict if they're plain dicts
     args_latent, args_vectorfield, args_noise, args_pullback, args_latent_inv = [
@@ -391,7 +464,7 @@ def create_gvf(
 
     # Infer type of pullback and build from registry
     type_pullback = match_args_to_pullback(args_pullback)
-    if type_is_linear(type_latent)  and (args_pullback) is not None:
+    if type_is_linear(type_latent) and (args_pullback) is not None:
         raise ValueError(f"Evaluator args can only be passed when type_latent_inv is nonlinear, \n" 
                          f"got type latent : {type_latent_inv} and args_pullback : {args_pullback} ")
 
@@ -400,17 +473,17 @@ def create_gvf(
     # Create vectorfield 
     type_vf = match_args_to_vectorfield(args_vectorfield)
     if type_vf == "gvf":
-        vectorfield = create_gvf(**args_vectorfield)
+        vectorfield = create_gvf(**args_vectorfield, args_references=args_references)
     else:
-        noise_latent, noise_dot_latent = match_args_to_noise(args_vectorfield.args_noise) # initialize latent noise
-        args_vectorfield.noise_gate = NoiseGate(**args_vectorfield.noise_gate) # initialize NoiseGate 
+        noise_latent, noise_dot_latent = registry_noise[match_args_to_noise(args_vectorfield.args_noise)](args_vectorfield.args_noise)  # latent noise
+        args_vectorfield.noise_gate = NoiseGate(**args_vectorfield.noise_gate) # latent noise gate
         del args_vectorfield["args_noise"]
         args_vectorfield.noise = noise_latent
         args_vectorfield.noise_dot = noise_dot_latent
         vectorfield = VectorField(**args_vectorfield)
     
     # Get noise function
-    noise, noise_dot = match_args_to_noise(args_noise)
+    noise, noise_dot = registry_noise[match_args_to_noise(args_noise)](args_noise) 
 
     gvf = GuidanceVF(vectorfield, latent_fn, latent_inv_fn, pullback, noise, noise_dot)
     return gvf
