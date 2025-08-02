@@ -165,7 +165,6 @@ def test_unet_latents_match_unet_fwd(setup_edm_model):
         "unet-attn" : (BuilderUNetAttentionGVF, ConfigGVFUnetAttention( type_eval = "numdiff", idxs = tuple(range(6, 9)), vf_latent = ConfigGVFAmbient())),
         # "unet-skips" :(BuidlerUNetGVF, ConfigGVFUnet(type_eval = "numdiff", idx_skips = (15, ), vf_latent = ConfigGVFAmbient())),
     }
-
     
     for name, (Builder, cfg) in cfgs.items():
         # Run U-Net pass
