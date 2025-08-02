@@ -21,7 +21,7 @@ from torch_utils import distributed as dist
 
 from mylib.helpers import update_EDM
 from mylib.diffusion import edm_sampler, load_templates_batch
-from mylib.gvf import create_vf
+from mylib.gvf_2 import create_gvf
 
 #----------------------------------------------------------------------------
 # Wrapper for torch.Generator that allows specifying a different random seed
@@ -60,106 +60,9 @@ def parse_int_list(s):
     return ranges
 
 #----------------------------------------------------------------------------
-
-@click.command()
-@click.option('--network', 'network_pkl',  help='Network pickle filename', metavar='PATH|URL',                      type=str, required=True)
-@click.option('--outdir',                  help='Where to save the output images', metavar='DIR',                   type=str, required=True)
-@click.option('--seeds',                   help='Random seeds (e.g. 1,2,5-10)', metavar='LIST',                     type=parse_int_list, default='0-63', show_default=True)
-@click.option('--subdirs',                 help='Create subdirectory for every 1000 seeds',                         is_flag=True)
-@click.option('--class', 'class_idx',      help='Class label  [default: random]', metavar='INT',                    type=click.IntRange(min=0), default=None)
-@click.option('--batch', 'max_batch_size', help='Maximum batch size', metavar='INT',                                type=click.IntRange(min=1), default=64, show_default=True)
-
-def main(network_pkl, outdir, subdirs, seeds, class_idx, max_batch_size, device=torch.device('cuda'), dtype=torch.float64):
-    """Generate random images using the techniques described in the paper
-    "Elucidating the Design Space of Diffusion-Based Generative Models".
-
-    Examples:
-
-    \b
-    # Generate 64 images and save them as out/*.png
-    python generate.py --outdir=out --seeds=0-63 --batch=64 \\
-        --network=https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-cifar10-32x32-cond-vp.pkl
-
-    \b
-    # Generate 1024 images using 2 GPUs
-    torchrun --standalone --nproc_per_node=2 generate.py --outdir=out --seeds=0-999 --batch=64 \\
-        --network=https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-cifar10-32x32-cond-vp.pkl
-    """
-    dist.init()
-    num_batches = ((len(seeds) - 1) // (max_batch_size * dist.get_world_size()) + 1) * dist.get_world_size()
-    all_batches = torch.as_tensor(seeds).tensor_split(num_batches)
-    rank_batches = all_batches[dist.get_rank() :: dist.get_world_size()]
-
-    # Rank 0 goes first.
-    if dist.get_rank() != 0:
-        torch.distributed.barrier()
-
-    # Load network.
-    dist.print0(f'Loading network from "{network_pkl}"...')
-    with dnnlib.util.open_url(network_pkl, verbose=(dist.get_rank() == 0)) as f:
-        net = pickle.load(f)['ema'].to(device)
-
-    # Other ranks follow.
-    if dist.get_rank() == 0:
-        torch.distributed.barrier()
-
-    # Loop over batches.
-    dist.print0(f'Generating {len(seeds)} images to "{outdir}"...')
-    for batch_seeds in tqdm.tqdm(rank_batches, unit='batch', disable=(dist.get_rank() != 0)):
-        torch.distributed.barrier()
-        batch_size = len(batch_seeds)
-        if batch_size == 0:
-            continue
-
-        # Pick latents and labels.
-        rnd = StackedRandomGenerator(device, batch_seeds)
-        latents = rnd.randn([batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device)
-        class_labels = None
-        if net.label_dim:
-            class_labels = torch.eye(net.label_dim, device=device)[rnd.randint(net.label_dim, size=[batch_size], device=device)]
-        if class_idx is not None:
-            class_labels[:, :] = 0
-            class_labels[:, class_idx] = 1
-
-        # Set configs
-        cfg_sampler = ConfigSampler(
-                class_idx=class_labels, 
-                latents=latents,
-                batch_size=batch_size,
-                num_steps=16,
-                )
-        cfg_gvf = ConfigGuidanceVF(
-                    type_latent     = "pixel",
-                    decay_rate      = 1.0,
-                    v_0             = 20,
-                    scale           = 0.1,
-                    template_path   = "data/input/cat_1.jpg",
-                )
-
-        # Initialize vector field
-        templates = load_templates(cfg_gvf.template_path, device, dtype)
-        vf_guide = create_vf(cfg_gvf, templates, verbose=False)
-        
-        sampler_kwargs = cfg_sampler.to_dict()
-
-        # Generate images
-        xs, _ = edm_sampler(net, vf_guide, None, device, **sampler_kwargs)
-        images = xs[-1]
-
-        # Save images.
-        images_np = (images * 127.5 + 128).clip(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
-        for seed, image_np in zip(batch_seeds, images_np):
-            image_dir = os.path.join(outdir, f'{seed-seed%1000:06d}') if subdirs else outdir
-            os.makedirs(image_dir, exist_ok=True)
-            image_path = os.path.join(image_dir, f'{seed:06d}.png')
-            if image_np.shape[2] == 1:
-                PIL.Image.fromarray(image_np[:, :, 0], 'L').save(image_path)
-            else:
-                PIL.Image.fromarray(image_np, 'RGB').save(image_path)
-
-    # Done.
-    torch.distributed.barrier()
-    dist.print0('Done.')
+# Generate images for the given seeds in a distributed fashion.
+# Returns an iterable that yields
+# dnnlib.EasyDict(images, labels, noise, batch_idx, num_batches, indices, seeds)
 
 def generate_images(
     net,                                        # Main network. Path, URL, or torch.nn.Module.
@@ -207,7 +110,6 @@ def generate_images(
     if verbose:
         dist.print0(f'Generating {len(seeds)} images...')
 
-
     # Return an iterable over the batches.
     class ImageIterable:
         def __len__(self):
@@ -242,7 +144,7 @@ def generate_images(
                     template_paths = [os.path.join(template_dir, str(int(label)), f"{example}.png")
                                       for label, example in zip(torch.argmax(r.labels, dim=1), r.examples)]
                     templates = load_templates_batch(template_paths, device=device, dtype=dtype)
-                    gvf = create_vf(cfg_gvf, templates, verbose=False, device=device, dtype=dtype, net=net)
+                    gvf = create_gvf(cfg_gvf, templates, verbose=False, device=device, dtype=dtype, net=net)
 
                     # Generate images
                     xs, _ = edm_sampler(net, gvf, seed=None, 
