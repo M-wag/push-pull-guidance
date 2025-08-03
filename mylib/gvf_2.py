@@ -14,12 +14,6 @@ class NoiseGate:
         else:
             self.args = {"type_gate" : type_gate, "nu" : nu}
 
-        def _logistic_gate(self, noise):
-              return torch.sigmoid(self.decay_rate * (noise - self.nu))
-
-        def _quadratic_gate(self, noise):
-            return noise**2 / (noise**2 + self.nu**2)
-
         if type_gate == "logistic":
             if decay_rate is None: 
                 raise ValueError("decay_rate must be provided for logistic gating")
@@ -32,6 +26,11 @@ class NoiseGate:
     def __call__(self, noise):
         return self._fn(noise)
 
+    def _logistic_gate(self, noise):
+          return torch.sigmoid(self.decay_rate * (noise - self.nu))
+
+    def _quadratic_gate(self, noise):
+        return noise**2 / (noise**2 + self.nu**2)
 #----------------------------------------------------------------------------
 # Pullback Operation evaluated by Numerical Differentiation
 
@@ -108,7 +107,6 @@ class VectorField:
     ):
 
         self.flatten_input = flatten_input
-        self.features_template = self.flat(features_template) if flatten_input else features_template
         self.scale = scale
         self.noise_gate = noise_gate
         self.noise = noise
@@ -116,28 +114,14 @@ class VectorField:
         self.threshold_weight = threshold_weight
         self.threshold_time_min = threshold_time_min
         self.threshold_time_max = threshold_time_max
-
-        self.nu = self.noise_gate.nu
-        self._shp_og = features_template.shape[1:]
-        self.device = self.features_template.device
-        self.dtype = self.features_template.dtype
-
-        # Check if single template was passed
-        if self.features_template.shape[0] > 1:
-            self._score = self._score_attention
-            self.attention = lambda x : AttentionWeightsMixture(features_template, self.nu,)(self.flatten(x))
-        else:
-            self._score = self._score_single_feature
-
-        if len(self._shp_og) < 2:
-            raise ValueError(f"Features template should be at least rank 2 / shape (N, D), got :{self._shp_og}")
-        
+        self.features_template = features_template
+        self.setup_score()
 
     def __call__(self, x, t):
         if self.flatten_input:
             x = self.flat(x) 
         
-        if self.should_apply_score(t):
+        if self._should_apply_score(t):
             dx_guidance = self.reverse_step(x, t)
         else:
             dx_guidance = torch.zeros_like(x)
@@ -147,21 +131,18 @@ class VectorField:
 
         return dx_guidance
 
-    def should_apply_score(self, t) -> bool:
-        weight = torch.max(torch.sigmoid(self.decay_rate * (self.noise(t) - self.v_0)) * self.scale)
-        apply_score = True
-        # Check weight threshold
-        if self.threshold_weight is not None and weight < self.threshold_weight:
-            apply_score = False
-        # Check time thresholds
-        if self.threshold_time_min is not None and t < self.threshold_time_min:
-            apply_score = False
-        if self.threshold_time_max is not None and t > self.threshold_time_max:
-            apply_score = False
-        self.history_weight.append(weight)
-        self.history_apply_score.append(apply_score)
+    @property
+    def features_template(self):
+        return self._features_template 
 
-        return apply_score 
+    @features_template.setter
+    def features_template(self, x):
+        self._features_template = self.flat(x) if self.flatten_input else x
+        # If templates is a Tensor save shape
+        if isinstance(self._features_template, torch.Tensor):
+            self._shp_og = self._features_template.shape[1:]
+        else: 
+            self.shp_og = None
 
     def reverse_step(self, x, t):
         return -self.noise_dot(t) * self.noise(t)  * self.score(x, t)
@@ -176,28 +157,54 @@ class VectorField:
         return torch.unflatten(x, start_dim=1, sizes=self._shp_og)
 
     def _score_single_feature(self, x_latent, t):
-        score = self.scale * self.time_weight(t) * (self.features_template - x_latent) / self.noise(t)**2
+        score = self.scale * self.noise_gate(self.noise(t)) * (self._features_template - x_latent) / self.noise(t)**2
         return score
 
     def _score_attention(self, x_latent, t):
-        diffs = self.features_template - x_latent.unsqueeze(1) #(B, N, D)
+        diffs = self._features_template - x_latent.unsqueeze(1) #(B, N, D)
         attention = self.attention(diffs) #(B, N)
-        weights = attention * self.time_weight(t).unsqueeze(0) * self.scale # (N, )
+        weights = attention * self.noise_gate(noise(t)).unsqueeze(0) * self.scale # (N, )
         score =  torch.einsum("BN, BN... -> B...", weights, diffs) / self.noise(t) ** 2 # (B, D)
         return score
 
+    def _should_apply_score(self, t) -> bool:
+        weight = torch.max(self.noise_gate(self.noise(t)) * self.scale)
+        apply_score = True
+        # Check weight threshold
+        if self.threshold_weight is not None and weight < self.threshold_weight:
+            apply_score = False
+        # Check time thresholds
+        if self.threshold_time_min is not None and t < self.threshold_time_min:
+            apply_score = False
+        if self.threshold_time_max is not None and t > self.threshold_time_max:
+            apply_score = False
+
+        return apply_score 
+
+    def setup_score(self) -> None:
+        if len(self._shp_og) < 2:
+            raise ValueError(f"Features template should be at least rank 2 / shape (N, D), got :{self._shp_og}")
+        # Check if single or multiple templates ere passed
+        if self.features_template.shape[0] > 1:
+            self._score = self._score_attention
+            self.attention = lambda x : AttentionWeightsMixture(features_template, self.noise_gate.nu,)(self.flatten(x))
+        else:
+            self.attention = None
+            self._score = self._score_single_feature
+
     @property
-    def args(self):
+    def args(self) -> dict:
         return {
             "noise_gate": self.noise_gate.args, 
             "args_noise": self.noise.args,
             "scale": self.scale,
             "features_template" : "__REF__features_template"
         }
+
 #----------------------------------------------------------------------------
 # Encode-Pullback Vector Field
 
-class GuidanceVF():
+class GuidanceVF:
     def __init__(self,
         vectorfield,        # Vectorfield of V(z,t) = v_z
         latent,             # Mapping from ambient space to feature space f(x, t) = z
@@ -223,7 +230,7 @@ class GuidanceVF():
 
     @torch.no_grad
     def score(self, x, t):
-        x_latent = self.latent(x)
+        x_latent = self.latent(x, t)
         score_latent = self.vf_latent.score(x_latent, t)
         score = self._pullback(x_latent, score_latent, t)
         return score
@@ -233,7 +240,10 @@ class GuidanceVF():
         return dx
 
     def _should_apply_score(self, t):
-        return self.vf_latent.should_apply_score(t)
+        return self.vf_latent._should_apply_score(t)
+    
+    def setup_score(self):
+        self.vf_latent.setup_score
     
     @property
     def args(self):
@@ -448,7 +458,7 @@ def _create_gvf(
         args_noise,             # Arguments for time-dependent noise function used during reverse step ("noise")
         args_pullback   = None, # Arguments for the pullback operation ("pullback")
         args_latent_inv = None, # Arguments for latent (pseudo)-inverse function ("latent_inv")
-        args_references = None, # Arguments which are not serializable and are passed by reference
+        args_references = {},   # Arguments which are not serializable and are passed by reference
         device          = "cuda" if torch.cuda.is_available() else "cpu",
         dtype           = torch.float64,
     ):
