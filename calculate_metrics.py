@@ -423,107 +423,8 @@ def merge_feature_csvs(csv_dir, output_path="features.csv", delete_parts=True):
           f"({len(csv_files)} files merged)")
 
 #----------------------------------------------------------------------------
-# Main command line.
+# Calculate metrics based on the given feature statistics.
 
-@click.group()
-def cmdline():
-    """Calculate evaluation metrics (FID and FD_DINOv2).
-
-    Examples:
-
-    \b
-    # Generate 50000 images using 8 GPUs and save them as out/*/*.png
-    torchrun --standalone --nproc_per_node=8 generate.py \\
-        --preset=edm2-img512-xxl-guid-fid --outdir=out --subdirs --seeds=0-49999
-
-    \b
-    # Calculate metrics for a random subset of 50000 images in out/
-    python calculate_metrics.py calc --images=out \\
-        --ref=https://nvlabs-fi-cdn.nvidia.com/edm2/dataset-refs/img512.pkl
-
-    \b
-    # Calculate metrics directly for a given model without saving any images
-    torchrun --standalone --nproc_per_node=8 calculate_metrics.py gen \\
-        --net=https://nvlabs-fi-cdn.nvidia.com/edm2/posthoc-reconstructions/edm2-img512-s-2147483-0.130.pkl \\
-        --ref=https://nvlabs-fi-cdn.nvidia.com/edm2/dataset-refs/img512.pkl \\
-        --seed=123456789
-
-    \b
-    # Compute dataset reference statistics
-    python calculate_metrics.py ref --data=datasets/my-dataset.zip \\
-        --dest=fid-refs/my-dataset.pkl
-    """
-
-#----------------------------------------------------------------------------
-# 'calc' subcommand.
-
-@cmdline.command()
-@click.option('--images', 'image_path',     help='Path to the images', metavar='PATH|ZIP',                  type=str, required=True)
-@click.option('--ref', 'ref_path',          help='Dataset reference statistics ', metavar='PKL|NPZ|URL',    type=str, required=True)
-@click.option('--metrics',                  help='List of metrics to compute', metavar='LIST',              type=parse_metric_list, default='fid,fd_dinov2', show_default=True)
-@click.option('--num', 'num_images',        help='Number of images to use', metavar='INT',                  type=click.IntRange(min=2), default=50000, show_default=True)
-@click.option('--seed',                     help='Random seed for selecting the images', metavar='INT',     type=int, default=0, show_default=True)
-@click.option('--batch', 'max_batch_size',  help='Maximum batch size', metavar='INT',                       type=click.IntRange(min=1), default=64, show_default=True)
-@click.option('--workers', 'num_workers',   help='Subprocesses to use for data loading', metavar='INT',     type=click.IntRange(min=0), default=2, show_default=True)
-
-def calc(ref_path, metrics, **opts):
-    """Calculate metrics for a given set of images."""
-    torch.multiprocessing.set_start_method('spawn')
-    dist.init()
-    if dist.get_rank() == 0:
-        ref = load_stats(path=ref_path) # do this first, just in case it fails
-    stats_iter = calculate_stats_for_files(metrics=metrics, **opts)
-    for r in tqdm.tqdm(stats_iter, unit='batch', disable=(dist.get_rank() != 0)):
-        pass
-    if dist.get_rank() == 0:
-        calculate_metrics_from_stats(stats=r.stats, ref=ref, metrics=metrics)
-    torch.distributed.barrier()
-
-#----------------------------------------------------------------------------
-# 'gen' subcommand.
-
-@cmdline.command()
-@click.option('--net',                      help='Network pickle filename', metavar='PATH|URL',             type=str, required=True)
-@click.option('--ref', 'ref_path',          help='Dataset reference statistics ', metavar='PKL|NPZ|URL',    type=str, required=True)
-@click.option('--metrics',                  help='List of metrics to compute', metavar='LIST',              type=parse_metric_list, default='fid,fd_dinov2', show_default=True)
-@click.option('--num', 'num_images',        help='Number of images to generate', metavar='INT',             type=click.IntRange(min=2), default=50000, show_default=True)
-@click.option('--seed',                     help='Random seed for the first image', metavar='INT',          type=int, default=0, show_default=True)
-@click.option('--batch', 'max_batch_size',  help='Maximum batch size', metavar='INT',                       type=click.IntRange(min=1), default=32, show_default=True)
-
-def gen(net, ref_path, metrics, num_images, seed, **opts):
-    """Calculate metrics for a given model using default sampler settings."""
-    dist.init()
-    if dist.get_rank() == 0:
-        ref = load_stats(path=ref_path) # do this first, just in case it fails
-    image_iter = generate.generate_images(net=net, seeds=range(seed, seed + num_images), **opts)
-    stats_iter = calculate_stats_for_iterable(image_iter, metrics=metrics)
-    for r in tqdm.tqdm(stats_iter, unit='batch', disable=(dist.get_rank() != 0)):
-        pass
-    if dist.get_rank() == 0:
-        calculate_metrics_from_stats(stats=r.stats, ref=ref, metrics=metrics)
-    torch.distributed.barrier()
-
-#----------------------------------------------------------------------------
-# 'ref' subcommand.
-
-@cmdline.command()
-@click.option('--data', 'image_path',       help='Path to the dataset', metavar='PATH|ZIP',             type=str, required=True)
-@click.option('--dest', 'dest_path',        help='Destination file', metavar='PKL',                     type=str, required=True)
-@click.option('--metrics',                  help='List of metrics to compute', metavar='LIST',          type=parse_metric_list, default='fid,fd_dinov2', show_default=True)
-@click.option('--batch', 'max_batch_size',  help='Maximum batch size', metavar='INT',                   type=click.IntRange(min=1), default=64, show_default=True)
-@click.option('--workers', 'num_workers',   help='Subprocesses to use for data loading', metavar='INT', type=click.IntRange(min=0), default=2, show_default=True)
-
-def ref(**opts):
-    """Calculate dataset reference statistics for 'calc' and 'gen'."""
-    torch.multiprocessing.set_start_method('spawn')
-    dist.init()
-    stats_iter = calculate_stats_for_files(**opts)
-    for _r in tqdm.tqdm(stats_iter, unit='batch', disable=(dist.get_rank() != 0)):
-        pass
-
-#----------------------------------------------------------------------------
-
-# Programatic variants
 def calculate_metrics_from_directory(
     image_path: str,
     ref_path: str,
@@ -547,6 +448,8 @@ def calculate_metrics_from_directory(
         calculate_metrics_from_stats(stats=r.stats, ref=ref, metrics=metrics)
     torch.distributed.barrier()
 
+#----------------------------------------------------------------------------
+# Calculate metrics for a generative model
 
 def calculate_metrics_from_generator(
     network_pkl:    str,
@@ -574,11 +477,11 @@ def calculate_metrics_from_generator(
     seeds = range(seed, seed + num_images)
     image_iter = generate.generate_images(
         net=network_pkl,
+        gvf_args=cfg_gvf,
         seeds=seeds,
         max_batch_size=max_batch_size,
         outdir=outdir,
         subdirs=subdirs,
-        cfg_gvf=cfg_gvf,
         sampler_kwargs=sampler_kwargs,
         template_dir=template_dir,
     )
@@ -607,6 +510,9 @@ def calculate_metrics_from_generator(
     
     torch.distributed.barrier()
     return results
+
+#----------------------------------------------------------------------------
+# Calculate reference statistics for a dataset
 
 def generate_reference_stats(
     image_path: str,
@@ -643,9 +549,3 @@ def generate_reference_stats(
         return r.stats
     return None
 
-#----------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    cmdline()
-
-#----------------------------------------------------------------------------
