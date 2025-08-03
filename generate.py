@@ -66,7 +66,7 @@ def parse_int_list(s):
 
 def generate_images(
     net,                                        # Main network. Path, URL, or torch.nn.Module.
-    gnet                = None,                 # Guiding network. None = same as main network.
+    gvf_args            = None,                 # Arguments to initialize GuidanceVectorfield. None = lambda x : 0
     encoder             = None,                 # Instance of training.encoders.Encoder. None = load from network pickle.
     outdir              = None,                 # Where to save the output images. None = do not save.
     subdirs             = False,                # Create subdirectory for every 1000 seeds?
@@ -77,7 +77,6 @@ def generate_images(
     verbose             = True,                 # Enable status prints?
     device              = torch.device('cuda'), # Which compute device to use.
     dtype               = torch.float32,         # Which dtype to use 
-    cfg_gvf             = None,
     template_dir        = None,                 # Where templates are stored
     sampler_kwargs      = None,                 # Additional arguments for the sampler function.
 ):
@@ -100,6 +99,7 @@ def generate_images(
                 encoder = dnnlib.util.construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
     assert net is not None
 
+
     # Other ranks follow.
     if dist.get_rank() == 0:
         torch.distributed.barrier()
@@ -107,25 +107,38 @@ def generate_images(
     # Divide seeds into batches.
     num_batches = max((len(seeds) - 1) // (max_batch_size * dist.get_world_size()) + 1, 1) * dist.get_world_size()
     rank_batches = np.array_split(np.arange(len(seeds)), num_batches)[dist.get_rank() :: dist.get_world_size()]
+    batch_size = len(rank_batches[0])
     if verbose:
         dist.print0(f'Generating {len(seeds)} images...')
+
+    # Create guidance vectorfield
+    if verbose:
+        dist.print0(f'Creating Guidance Vectorfield from args ...')
+    gvf_args["args_references"]["features_template"] = torch.zeros((batch_size, 3, 64, 64)) 
+    gvf = create_gvf(**gvf_args)
 
     # Return an iterable over the batches.
     class ImageIterable:
         def __len__(self):
             return len(rank_batches)
         
-        def _random_example_id(self, template_dir, seed, class_):
+        def _sample_example_idx(self, template_dir, seed, class_):
             class_dir = os.path.join(template_dir, str(int(class_)))
             n_files = len(os.listdir(class_dir))
             g = torch.Generator().manual_seed(seed)
             return torch.randint(0 , n_files, (), generator=g).item()
+        
+        def _update_examples_gvf(self, gvf, paths):
+            examples = load_templates_batch(paths)
+            gvf.features_template = examples
+            gvf.setup_score()
         
         def __iter__(self):
             # Loop over batches.
             for batch_idx, indices in enumerate(rank_batches):
                 r = dnnlib.EasyDict(images=None, labels=None, noise=None, examples=None, batch_idx=batch_idx, num_batches=len(rank_batches), indices=indices)
                 r.seeds = [seeds[idx] for idx in indices]
+                r.example_paths = []
                 # Randomly pick class index
                 if len(r.seeds) > 0:
 
@@ -138,21 +151,18 @@ def generate_images(
                         if class_idx is not None:
                             r.labels[:, :] = 0
                             r.labels[:, class_idx] = 1
-                        r.examples = [self._random_example_id(template_dir, seed, label) 
-                                      for seed, label in zip(r.seeds, torch.argmax(r.labels, axis=1))] 
+                        # For each label, pick a random example and save its path.
+                        for seed, label in zip(r.seeds, torch.argmax(r.labels, axis=1)): 
+                            example_idx = self._sample_example_idx(template_dir, seed, label)
+                            example_path = os.path.join(template_dir, str(int(label)), f"{example_idx}.png")
+                            r.example_paths.append(example_path)
 
-                    template_paths = [os.path.join(template_dir, str(int(label)), f"{example}.png")
-                                      for label, example in zip(torch.argmax(r.labels, dim=1), r.examples)]
-                    templates = load_templates_batch(template_paths, device=device, dtype=dtype)
-                    gvf = create_gvf(cfg_gvf, templates, verbose=False, device=device, dtype=dtype, net=net)
+                    # Update gvf to match examples of current batch
+                    self._update_examples_gvf(gvf, r.example_paths)
 
                     # Generate images
-                    xs, _ = edm_sampler(net, gvf, seed=None, 
-                                        class_idx=r.labels, latents=r.noise, 
-                                        batch_size=len(r.seeds), dtype=dtype, device=device, 
-                                        correct_rgb=False,
-                                        disable_tqdm=True,
-                                        **sampler_kwargs)
+                    xs, _ = edm_sampler(net, gvf, seed=None, class_idx=r.labels, latents=r.noise, batch_size=batch_size, dtype=dtype, 
+                                        device=device, correct_rgb=False, disable_tqdm=True, **sampler_kwargs)
                     r.images = encoder.decode(xs[-1])
 
                     # Save images.
@@ -167,9 +177,3 @@ def generate_images(
                 yield r
 
     return ImageIterable()
-#----------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    main()
-
-#----------------------------------------------------------------------------
