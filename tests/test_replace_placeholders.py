@@ -1,4 +1,3 @@
-import pytest
 from dnnlib.util import replace_placeholders
 
 #----------------------------------------------------------------------------
@@ -84,9 +83,3 @@ def test_custom_prefix():
     fill_ins = {"test": "success"}
     expected = {"key": "success"}
     assert replace_placeholders(data, fill_ins, placeholder_prefix="!!replace_me!!") == expected
-
-
-
-
-
-
