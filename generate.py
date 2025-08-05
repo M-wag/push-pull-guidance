@@ -76,7 +76,6 @@ def generate_images(
     encoder_batch_size  = 4,                    # Maximum batch size for the encoder. None = default.
     verbose             = True,                 # Enable status prints?
     device              = torch.device('cuda'), # Which compute device to use.
-    dtype               = torch.float32,         # Which dtype to use 
     template_dir        = None,                 # Where templates are stored
     sampler_kwargs      = None,                 # Additional arguments for the sampler function.
 ):
@@ -115,7 +114,7 @@ def generate_images(
     if verbose:
         dist.print0(f'Creating Guidance Vectorfield from args ...')
     gvf_args["args_references"]["features_template"] = torch.zeros((batch_size, 3, 64, 64)) 
-    gvf = create_gvf(**gvf_args)
+    gvf = create_gvf(**gvf_args).to(device)
 
     # Return an iterable over the batches.
     class ImageIterable:
@@ -161,7 +160,7 @@ def generate_images(
                     self._update_examples_gvf(gvf, r.example_paths)
 
                     # Generate images
-                    xs, _ = edm_sampler(net, gvf, seed=None, class_idx=r.labels, latents=r.noise, batch_size=batch_size, dtype=dtype, 
+                    xs, _ = edm_sampler(net, gvf, seed=None, class_idx=r.labels, latents=r.noise, batch_size=batch_size,
                                         device=device, correct_rgb=False, disable_tqdm=True, **sampler_kwargs)
                     r.images = encoder.decode(xs[-1])
 

@@ -94,8 +94,43 @@ if __name__ == "__main__":
             "S_min"       : 0.0, 
             "S_max"       : float('inf'), 
             "S_noise"     : 1, 
+            "dtype"       : torch.float32,
     }
-    gvf_prms = {}
+
+    gvf_args = {
+            "latent"        : {
+                "net"           : "__REF__network",
+                "attn_blocks"   : [6, 7, 8],
+            },
+            "vectorfield"   : {
+                "features_template" : "__REF__features_template",
+                "scale"         : 1.0, 
+                "noise_gate"    : {
+                    "type_gate" : "quadratic", 
+                    "nu" : 30.0
+                },
+            },
+            "noise"         : "edm",
+            "pullback"      : {
+                "slope_step_size" : 1.0,
+                "intercept_step_size" : 0.0,
+            }, 
+    }
+
+    gvf_args = {
+            "latent" : "ambient",
+            "vectorfield": {
+                "features_template" : "__REF__features_template",
+                "scale"         : 0.0, 
+                "noise_gate"    : {
+                    "type_gate" : "quadratic", 
+                    "nu" : 30.0
+                },
+                "args_noise" : "edm",
+            },
+            "noise" : "edm",
+            "args_references" : {},
+    }
 
     # Execute run and save features
     start_time = datetime.now(timezone.utc)
@@ -107,6 +142,7 @@ if __name__ == "__main__":
         num_images=num_images,
         sampler_kwargs=sampler_prms,
         # outdir="out",
+        cfg_gvf = gvf_args,
         feature_dir = feature_dir,
         template_dir = template_dir,
         verbose=False,

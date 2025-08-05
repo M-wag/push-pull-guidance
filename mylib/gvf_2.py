@@ -1,12 +1,23 @@
 import torch
 import dnnlib
 
+#----------------------------------------------------------------------------
+# Helper function to assign buffers for arguments that 'may' be torch.Tensor
+
+def _maybe_register_buffer(module, name, value):
+    if value is not None:
+        module.register_buffer(name, torch.tensor(value))
+    else:
+        setattr(module, name, None)
+
+#----------------------------------------------------------------------------
 # Sigmoidal time gating function which can be either quadratic or logistic
 
-class NoiseGate:
+class NoiseGate(torch.nn.Module):
     def __init__(self, type_gate: str, nu: float, decay_rate: float = None):
-        self.nu = nu
-        self.decay_rate = decay_rate
+        super().__init__()
+        self.register_buffer("nu", torch.tensor(nu))
+        _maybe_register_buffer(self, "decay_rate", decay_rate)
         
         # TODO: This is ugly, please refactor
         if type_gate == "logistic":
@@ -23,7 +34,7 @@ class NoiseGate:
         else:
             raise ValueError(f"Unknown gating type: {type_gate!r}")
 
-    def __call__(self, noise):
+    def forward(self, noise):
         return self._fn(noise)
 
     def _logistic_gate(self, noise):
@@ -31,19 +42,21 @@ class NoiseGate:
 
     def _quadratic_gate(self, noise):
         return noise**2 / (noise**2 + self.nu**2)
+
 #----------------------------------------------------------------------------
 # Pullback Operation evaluated by Numerical Differentiation
 
-class PullbackNumericalDifferentiation():
+class PullbackNumericalDifferentiation(torch.nn.Module):
     def __init__(self, step_size_slope, step_size_intercept):
-        self.a = step_size_slope
-        self.b = step_size_intercept
+        super().__init__()
+        self.register_buffer("a", step_size_slope)
+        self.register_buffer("b", step_size_intercept)
     
     def step_size(self, t):
         return t * self.a + self.b
 
     @torch.no_grad
-    def __call__(self, latent_inv, x_latent, dx_latent, t):
+    def forward(self, latent_inv, x_latent, dx_latent, t):
         perturbed_latent = x_latent + self.step_size(t) * dx_latent
         f_perturbed = latent_inv(perturbed_latent)
         f_original = latent_inv(x_latent)
@@ -56,21 +69,22 @@ class PullbackNumericalDifferentiation():
 # Includes optional modificaitons like Temperature parameter and scaling before softmax
 # See equation ..
 
-class AttentionWeightsMixture:
+class AttentionWeightsMixture(torch.nn.Module):
     def __init__(self, means, stds, weights_mixture=None):
-        self.means = means #(N, D)
-        self.stds  = stds #(N,)
-        N, D = means.shape
+        super().__init__()
+        self.register_buffer("means", means)    # (N, D)
+        self.register_buffer("stds", stds)      # (N, )
+        N ,D = means.shape
         self.D = D
 
         if weights_mixture is None:
             weights_mixture = torch.full((N,), 1/N, dtype=means.dtype, device=means.device)
-        self.weights_mixture = weights_mixture #(N, )
+        self.register_buffer("weights_mixture", weights_mixture)     # (N, )
 
         if not torch.isclose(self.weights_mixture.sum(), torch.tensor(1.0, dtype=self.weights_mixture.dtype, device=self.weights_mixture.device), atol=1e-6):
             raise ValueError(f"weights_mixture must sum to 1.0, got {self.weights_mixture.sum().item():.6f}")
 
-    def __call__(self, x, T=1.0, passing_diff=False, normalize=True):
+    def forward(self, x, T=1.0, passing_diff=False, normalize=True):
         if passing_diff:
             diff_x_to_means = x # (B, N, D)
         else:
@@ -86,13 +100,13 @@ class AttentionWeightsMixture:
         log_partition = -self.D * torch.log(self.stds + 1e-8).unsqueeze(0) # (1, N)                    
         logits = -1/2 * mahalanobis_squared + log_weights + log_partition # (B, N)
 
-        attention_weights = torch.nn.F.softmax(T * logits, dim=-1)
+        attention_weights = torch.nn.functional.softmax(T * logits, dim=-1)
         return attention_weights
 
 #----------------------------------------------------------------------------
 # Vectorfield of a Diffused Mixture Of Gaussians defined in lowest level of feature space
 
-class VectorField:
+class VectorField(torch.nn.Module):
     def __init__(self, 
         features_template,              # Templates in feauture space (N, D1, D2, ....)
         scale,                          # Scaling of score in feature space
@@ -105,19 +119,21 @@ class VectorField:
         threshold_time_min  = None,     # Start off point after a certain time
         threshold_time_max  = None,     # Cut off point after a cetain time
     ):
-
-        self.flatten_input = flatten_input
-        self.scale = scale
+        super().__init__()
+        self.register_buffer("_features_template", None)
+        self.register_buffer("scale", torch.tensor(scale))
         self.noise_gate = noise_gate
         self.noise = noise
         self.noise_dot = noise_dot
-        self.threshold_weight = threshold_weight
-        self.threshold_time_min = threshold_time_min
-        self.threshold_time_max = threshold_time_max
+        self.flatten_input = flatten_input
+        _maybe_register_buffer(self, "threshold_weight", threshold_weight)
+        _maybe_register_buffer(self, "threshold_time_min", threshold_time_min)
+        _maybe_register_buffer(self, "threshold_time_max", threshold_time_max)
         self.features_template = features_template
+
         self.setup_score()
 
-    def __call__(self, x, t):
+    def forward(self, x, t):
         if self.flatten_input:
             x = self.flat(x) 
         
@@ -138,11 +154,12 @@ class VectorField:
     @features_template.setter
     def features_template(self, x):
         self._features_template = self.flat(x) if self.flatten_input else x
-        # If templates is a Tensor save shape
+        # If templates is a Tensor save original shape
         if isinstance(self._features_template, torch.Tensor):
-            self._shp_og = self._features_template.shape[1:]
+            self._shp_og = x.shape[1:]
         else: 
             self.shp_og = None
+        # Save optionally flattend template
 
     def reverse_step(self, x, t):
         return -self.noise_dot(t) * self.noise(t)  * self.score(x, t)
@@ -154,7 +171,7 @@ class VectorField:
         return torch.flatten(x, start_dim=1)
     
     def unflat(self, x):
-        return torch.unflatten(x, start_dim=1, sizes=self._shp_og)
+        return torch.unflatten(x, dim=1, sizes=self._shp_og)
 
     def _score_single_feature(self, x_latent, t):
         score = self.scale * self.noise_gate(self.noise(t)) * (self._features_template - x_latent) / self.noise(t)**2
@@ -162,8 +179,8 @@ class VectorField:
 
     def _score_attention(self, x_latent, t):
         diffs = self._features_template - x_latent.unsqueeze(1) #(B, N, D)
-        attention = self.attention(diffs) #(B, N)
-        weights = attention * self.noise_gate(noise(t)).unsqueeze(0) * self.scale # (N, )
+        attention = self.attention(diffs, passing_diff=True) #(B, N)
+        weights = attention * self.noise_gate(self.noise(t)).unsqueeze(0) * self.scale # (N, )
         score =  torch.einsum("BN, BN... -> B...", weights, diffs) / self.noise(t) ** 2 # (B, D)
         return score
 
@@ -181,13 +198,16 @@ class VectorField:
 
         return apply_score 
 
+    def attention(self, x, **kwargs):
+        return self._attention_mixture(self.flat(x), **kwargs)
+
     def setup_score(self) -> None:
         if len(self._shp_og) < 2:
             raise ValueError(f"Features template should be at least rank 2 / shape (N, D), got :{self._shp_og}")
         # Check if single or multiple templates ere passed
         if self.features_template.shape[0] > 1:
             self._score = self._score_attention
-            self.attention = lambda x : AttentionWeightsMixture(features_template, self.noise_gate.nu,)(self.flatten(x))
+            self._attention_mixture =  AttentionWeightsMixture(self.flat(self.features_template), self.noise_gate.nu)
         else:
             self.attention = None
             self._score = self._score_single_feature
@@ -204,7 +224,7 @@ class VectorField:
 #----------------------------------------------------------------------------
 # Encode-Pullback Vector Field
 
-class GuidanceVF:
+class GuidanceVF(torch.nn.Module):
     def __init__(self,
         vectorfield,        # Vectorfield of V(z,t) = v_z
         latent,             # Mapping from ambient space to feature space f(x, t) = z
@@ -213,7 +233,7 @@ class GuidanceVF:
         noise,              # Noise function in ambient space
         noise_dot,          # Derivative of noise function in ambient space
     ):
-
+        super().__init__()
         self.vf_latent = vectorfield
         self.latent = latent
         self.latent_inv = latent_inv
@@ -221,7 +241,7 @@ class GuidanceVF:
         self.noise = noise
         self.noise_dot = noise_dot
 
-    def __call__(self, x, t):
+    def forward(self, x, t):
         if self._should_apply_score(t):
             dx_guidance = self.reverse_step(x, t)
         else:
@@ -232,7 +252,7 @@ class GuidanceVF:
     def score(self, x, t):
         x_latent = self.latent(x, t)
         score_latent = self.vf_latent.score(x_latent, t)
-        score = self._pullback(x_latent, score_latent, t)
+        score = self._pullback(self.latent_inv, x_latent, score_latent, t)
         return score
     
     def reverse_step(self, x, t):
