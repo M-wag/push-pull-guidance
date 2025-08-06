@@ -1,9 +1,10 @@
-import torch
 import os 
 import csv
 import json
-from datetime import datetime, timezone
+import torch
 import calculate_metrics
+
+from datetime import datetime, timezone
 from torch_utils import distributed as dist
 
 
@@ -67,7 +68,8 @@ def load_features(metric, run_dir: str, template_dir: str):
     # Select corresponding template features
     features_templates_matched = features_template_all[template_indices]
 
-    assert features_templates_matched.shape == features_run.shape
+    if features_templates_matched.numel() > 0:
+        assert features_templates_matched.shape == features_run.shape
 
     return features_run, features_templates_matched 
 
@@ -78,23 +80,26 @@ def cosine_similarity(x: torch.Tensor, y: torch.Tensor):
     return (x_norm * y_norm).sum(dim=1)
               
 
-if __name__ == "__main__":
+def main():
     logs_path = "data/runs.json"
     feature_dir = "data/features"
     template_dir = "data/templates_per_classid"
 
-    num_images = 392
+    num_images = 100
+    max_batch_size = 96
     network_pkl = "https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-imagenet-64x64-cond-adm.pkl"
+
     sampler_prms = {
-            "num_steps"   : 16, 
-            "sigma_min"   : 0.002  , 
-            "sigma_max"   : 80, 
-            "rho"         : 7, 
-            "S_churn"     : 0.0,  
-            "S_min"       : 0.0, 
-            "S_max"       : float('inf'), 
-            "S_noise"     : 1, 
-            "dtype"       : torch.float32,
+            "num_steps"     : 64, 
+            "sigma_min"     : 0.002  , 
+            "sigma_max"     : 80, 
+            "rho"           : 7, 
+            "S_churn"       : 0.0,  
+            "S_min"         : 0.0, 
+            "S_max"         : float('inf'), 
+            "S_noise"       : 1, 
+            "dtype"         : torch.float32,
+            "correct_rgb"   : False,
     }
 
     gvf_args = {
@@ -132,16 +137,17 @@ if __name__ == "__main__":
             "args_references" : {},
     }
 
+    gvf_args = None
     # Execute run and save features
     start_time = datetime.now(timezone.utc)
     metrics = calculate_metrics.calculate_metrics_from_generator(
         network_pkl=network_pkl,
         # ref_path="data/refs/edm-1-imagenet-64x64.npz",
         ref_path="data/refs/edm-2-imagenet-64x64.pkl",
-        max_batch_size=128,
+        max_batch_size=max_batch_size,
         num_images=num_images,
         sampler_kwargs=sampler_prms,
-        # outdir="out",
+        outdir="out",
         cfg_gvf = gvf_args,
         feature_dir = feature_dir,
         template_dir = template_dir,
@@ -155,7 +161,7 @@ if __name__ == "__main__":
     # Measure cosine similarity
     for metric in list(metrics.keys()):
         features_run, features_templates = load_features(metric, run_dir=feature_dir, template_dir="data/features_per_classid")
-        metrics[f"{metric}_csmean"] = cosine_similarity(features_run, features_templates).mean().item()
+        # metrics[f"{metric}_csmean"] = cosine_similarity(features_run, features_templates).mean().item()
 
 
     if dist.get_rank() == 0:
@@ -169,15 +175,27 @@ if __name__ == "__main__":
                 "duration"  : duration,
                 "num_images": num_images,
                 "sampler "  : sampler_prms,
-                "gvf"       : gvf_prms,
+                "gvf"       : gvf_args,
                 "metrics"   : metrics,
         }
 
         # Save results
-        log_run_record(logs_path, run_record)
+        # log_run_record(logs_path, run_record)
         
         # Print summary
         print(f"Run {run_id} completed in {run_record['duration']:.2f} mins")
         for metric, value in metrics.items():
             print(f"{metric} : {value:.02f}")
 
+if __name__ == "__main__":
+    import sys, pdb, traceback
+
+    def info(type, value, tb):
+        if dist.get_rank() == 0:
+            # Print the usual traceback...
+            traceback.print_exception(type, value, tb)
+            # …then drop into post‐mortem pdb at the point of the exception
+            pdb.post_mortem(tb)
+
+    # sys.excepthook = info
+    main()
