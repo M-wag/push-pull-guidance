@@ -56,12 +56,12 @@ class StatsSampler:
 
 @torch.no_grad()
 def edm_sampler(
-    net, 
-    vf_template,         # Vector field induced by tempaplate and features      
+    net                 , 
+    noise               ,
+    labels              ,
+    gvf                 ,       
     device              ,
-    dtype               ,
     *,
-    labels           : int , 
     num_steps           : int, 
     sigma_min           : float,
     sigma_max           : float, 
@@ -71,10 +71,10 @@ def edm_sampler(
     S_max               : float,
     S_noise             : float, 
 
+    dtype               = torch.float32,
     apply_2nd_order     : bool = True,
     scale_model_score   : float = 1.0, 
     save_all_timesteps  : bool = True,
-    latents             : Any = None,
     network_hook        : Any = None,
     correct_rgb         : bool = True,
     disable_tqdm        : bool = False,
@@ -83,10 +83,10 @@ def edm_sampler(
     def gradient(x, t):
         denoised = net(x, t, labels).to(dtype)
         grad = scale_model_score * (x - denoised) / t
-        if vf_template:
-            grad_template = vf_template(x, t)
+        if gvf:
+            grad_template = gvf(x, t)
             grad += grad_template
-        return grad
+        return grad.to(dtype)
 
     if network_hook is not None:
         net.hook = network_hook
@@ -96,17 +96,17 @@ def edm_sampler(
     sigma_max = min(sigma_max, net.sigma_max)
 
     # Time step discretization.
-    step_indices = torch.arange(num_steps, dtype=dtype, device=device)
+    step_indices = torch.arange(num_steps, dtype=dtype, device=noise.device)
     t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
 
     xs = None 
     # Intialize empty array to save intermediate timestaps
     if save_all_timesteps:
-        xs = torch.empty((num_steps, batch_size, net.img_channels, net.img_resolution, net.img_resolution))
+        xs = torch.empty((num_steps, noise.shape[0], net.img_channels, net.img_resolution, net.img_resolution))
 
     # Main sampling loop.
-    x_next = latents.to(dtype) * t_steps[0]
+    x_next = noise.to(dtype) * t_steps[0]
     for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1, disable=disable_tqdm): # 0, ..., N-1
         x_cur = x_next
 
