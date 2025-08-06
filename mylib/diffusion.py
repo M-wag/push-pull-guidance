@@ -58,12 +58,10 @@ class StatsSampler:
 def edm_sampler(
     net, 
     vf_template,         # Vector field induced by tempaplate and features      
-    seed                : int , 
     device              ,
     dtype               ,
     *,
-    class_idx           : int , 
-    batch_size          : int,
+    labels           : int , 
     num_steps           : int, 
     sigma_min           : float,
     sigma_max           : float, 
@@ -72,6 +70,8 @@ def edm_sampler(
     S_min               : float, 
     S_max               : float,
     S_noise             : float, 
+
+    apply_2nd_order     : bool = True,
     scale_model_score   : float = 1.0, 
     save_all_timesteps  : bool = True,
     latents             : Any = None,
@@ -79,34 +79,17 @@ def edm_sampler(
     correct_rgb         : bool = True,
     disable_tqdm        : bool = False,
 ):
-    if seed is not None:
-        torch.manual_seed(seed)
+    # Gradient of denoiser
+    def gradient(x, t):
+        denoised = net(x, t, labels).to(dtype)
+        grad = scale_model_score * (x - denoised) / t
+        if vf_template:
+            grad_template = vf_template(x, t)
+            grad += grad_template
+        return grad
 
     if network_hook is not None:
         net.hook = network_hook
-
-    # Pick latents and labels.
-    if latents is None:
-        g = torch.Generator(device=device).manual_seed(seed)
-        latents = torch.randn([batch_size, net.img_channels, net.img_resolution, net.img_resolution], device=device, generator=g)
-
-    # Handle class labels
-    if net.label_dim:
-        if class_idx is None:
-            # Use zeros (no class)
-            class_labels = torch.zeros([batch_size, net.label_dim], device=device)
-        elif isinstance(class_idx, int):
-            # Use one-hot encoded specified class
-            class_labels = torch.eye(net.label_dim, device=device)[batch_size * [class_idx]]
-        elif torch.is_tensor(class_idx):
-            # Use provided class labels directly
-            assert class_idx.shape == (batch_size, net.label_dim), \
-                f"class_labels must have shape [{batch_size}, {net.label_dim}]"
-            class_labels = class_idx.to(device)
-        else:
-            raise ValueError("class_idx must be None, int, or tensor")
-    else:
-        class_labels = None
 
     # Adjust noise levels based on what's supported by the network.
     sigma_min = max(sigma_min, net.sigma_min)
@@ -116,22 +99,6 @@ def edm_sampler(
     step_indices = torch.arange(num_steps, dtype=dtype, device=device)
     t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
-
-    stats = StatsSampler()
-    stats.grads = np.empty((2, num_steps, batch_size, 3, 64, 64))
-    stats.max_mag = np.empty((2, num_steps))
-    stats.t_steps = t_steps.detach().cpu()
-    # TODO: Collect stats by hook or wrapper
-    def gradient(x, t):
-        denoised = net(x, t, class_labels).to(dtype)
-        grad_template = vf_template(x, t)
-        grad_model = scale_model_score * (x - denoised) / t
-
-        stats.max_mag[0, t_steps.tolist().index(t)] = grad_model.detach().cpu().max()
-        stats.max_mag[1, t_steps.tolist().index(t)] = grad_template.detach().cpu().max()
-        stats.grads[0, t_steps.tolist().index(t)] = grad_model.detach().cpu()
-        stats.grads[1, t_steps.tolist().index(t)] = grad_template.detach().cpu()
-        return grad_template + grad_model
 
     xs = None 
     # Intialize empty array to save intermediate timestaps
@@ -148,8 +115,15 @@ def edm_sampler(
         t_hat = net.round_sigma(t_cur + gamma * t_cur)
         x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
 
-        dx = gradient(x_hat, t_hat) * (t_next - t_hat)
-        x_next = x_hat + dx
+        # Euler step
+        d_cur = gradient(x_hat, t_hat) * (t_next - t_hat)
+        x_next = x_hat + d_cur 
+
+        # Apply 2nd order correction
+        if apply_2nd_order and i < num_steps - 1:
+            d_prime = x_next - gradient(x_next, t_next)
+            x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
+        
         if save_all_timesteps:
             xs[i] = x_next
 
@@ -157,10 +131,7 @@ def edm_sampler(
     if correct_rgb:
         y = (y * 127.5 + 128) / 255
 
-
-    stats.x_0 = xs[-1].detach().cpu().numpy()
-    stats.x_T = xs[-0].detach().cpu().numpy()
-    return y, (t_steps.cpu().numpy(), stats)
+    return y, (t_steps.cpu().numpy(), )
 
 def load_templates(path, device=None, dtype=None, for_torch=True):
     # Load templates data

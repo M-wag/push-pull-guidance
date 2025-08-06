@@ -200,7 +200,7 @@ def calculate_stats_for_iterable(
                         classes = labels
                     examples = [None] * classes.shape[0]
 
-            if classes is not None: 
+            if classes is not None and examples is not None: 
                 with open(os.path.join(feature_dir, f"features.rank{rank:01d}.part{batch_idx:04d}.csv"), "w") as f:
                     writer = csv.writer(f)
                     writer.writerows(zip(classes.tolist(), examples))
