@@ -428,31 +428,6 @@ def parse_metric_list(s):
             raise click.ClickException(f'Invalid metric "{metric}"')
     return metrics
 
-#----------------------------------------------------------------------------
-# Calculate metrics based on the given feature statistics.
-
-def calculate_metrics_from_directory(
-    image_path: str,
-    ref_path: str,
-    metrics: list[str] = ['fid', 'fd_dinov2'],
-    num_images: int = 50000,
-    seed: int = 0,
-    max_batch_size: int = 64,
-    num_workers: int = 2,
-    verbose: bool = True,
-) -> dict[str, float]:
-    """Calculate metrics for images in a directory/ZIP file."""
-
-    torch.multiprocessing.set_start_method('spawn')
-    dist.init()
-    if dist.get_rank() == 0:
-        ref = load_stats(path=ref_path) # do this first, just in case it fails
-    stats_iter = calculate_stats_for_files(metrics=metrics, **opts)
-    for r in tqdm.tqdm(stats_iter, unit='batch', disable=(dist.get_rank() != 0)):
-        pass
-    if dist.get_rank() == 0:
-        calculate_metrics_from_stats(stats=r.stats, ref=ref, metrics=metrics)
-    torch.distributed.barrier()
 
 #----------------------------------------------------------------------------
 # Calculate metrics for a generative model
