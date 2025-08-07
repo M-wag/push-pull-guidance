@@ -38,3 +38,51 @@
         "fd_dinov2_csmean": 0.3158621344125947
     }
 }
+{
+    "run_id": 13,
+    "datetime": "2025-08-06T23:58:07.574144+00:00",
+    "duration": 115.82328473333334,
+    "num_images": 50000,
+    "sampler ": {
+        "num_steps": 32,
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity,
+        "S_noise": 1,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "apply_2nd_order": true
+    },
+    "gvf": null,
+    "metrics": {
+        "fid": 3.1392594404736274,
+        "fd_dinov2": 115.30373978520714
+    }
+}
+{
+    "run_id": 13,
+    "datetime": "2025-08-07T09:38:35.015262+00:00",
+    "duration": 1.00469475,
+    "num_images": 100,
+    "sampler": {
+        "num_steps": 32,
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity,
+        "S_noise": 1,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "apply_2nd_order": true
+    },
+    "gvf": null,
+    "metrics": {
+        "fid": 185.69950214910662,
+        "fd_dinov2": 2651.5829303517044
+    }
+}
