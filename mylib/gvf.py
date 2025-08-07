@@ -341,6 +341,27 @@ def build_latent_unet(args, _args_out, _shp, device, dtype):
     latent_fn.args = {"net" : "__REF__network", "hook_manager": "__REF__hook_manager"}
     return latent_fn, latent_inv_fn
 
+@registry_latent.register("hf")
+def build_latent_hf(args, _args_out, _shp, device, dtype):
+    from diffusers import AutoencoderKL, AsymmetricAutoencoderKL, AutoencoderTiny
+    Autoencoder = {
+            "kl"        : AutoencoderKL,
+            "assymetric": AsymmetricAutoencoderKL,
+            "tiny"      : AutoencoderTiny,
+            }[args.autoencoder]
+
+    try:
+        vae = Autoencoder.from_pretrained(args.id,  use_safetensors=True)
+    except Exception:
+        vae = Autoencoder.from_pretrained(args.id, subfolder="vae", use_safetensors=True)
+
+    vae = vae.eval().requires_grad_(False).to(device=device, dtype=dtype)
+    
+    def latent_fn(x, t) : return vae.encode(x).latent_dist.sample()
+    def latent_inv_fn(x, t) : return vae.decode(x).sample
+
+    latent_fn.args = args
+    return latent_fn, latent_inv_fn
 
 #----------------------------------------------------------------------------
 # Builder functions for the pullback operation
@@ -388,8 +409,8 @@ def buld_noise_edm(*args):
 # Specification for latents
 # <LatentAmbient>   := "ambient"
 # <LatentLinear>    := {seed : _, dim_in: _, dim_out: _, n_features: _}
-# <LatentHF>        := {hf_url : _}
 # <LatentUNet>      := {net : _, hook_manager: _}
+# <LatentHF>        := {"autoencoder" : _, "id": _}
 
 def match_args_to_latent(args):
     match args:
@@ -397,10 +418,10 @@ def match_args_to_latent(args):
             return "ambient"
         case {"seed" : _, "dim_in" : _, "dim_out" : _, "n_features": _}:
             return "linear"
-        case {"hf_url" : _}:
-            return "hf"
         case {"net" : _, "hook_manager" : _}:
             return "unet"
+        case {"autoencoder" : _, "id" : _ }:
+            return "hf"
     raise ValueError(f"Unrecognized latent/latent_inv args: {set(args) if isinstance(args, dict) else args!r}")
 
 # Specification for vectorfield

@@ -13,7 +13,8 @@ LATENT_ARGS = [
          "ambient",
          {"seed" : random.randint(0,100), "dim_in" : random.randint(16,32),
           "dim_out" : random.randint(8, 16), "n_features" : random.randint(1,3)},
-         {"net": "__REF__network", "hook_manager" : "__REF__hook_manager"}
+         {"net": "__REF__network", "hook_manager" : "__REF__hook_manager"},
+         {"autoencoder" : "tiny", "id" : "madebyollin/taesd"}
     ]
 
 NOISE_GATE_ARGS = [
@@ -67,6 +68,7 @@ def test_config_gvf_in_equals_config_gvf_out(
         args_pullback,
         args_noise
     ):
+
 
     args_references = {}
     args_references["features_template"] = torch.zeros((1, 3, 2, 2))
