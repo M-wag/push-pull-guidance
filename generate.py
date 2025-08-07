@@ -151,12 +151,12 @@ def generate_images(
                         if class_idx is not None:
                             r.labels[:, :] = 0
                             r.labels[:, class_idx] = 1
-                        if gvf:
-                            # For each label, pick a random example and save its path.
-                            for seed, label in zip(r.seeds, torch.argmax(r.labels, axis=1)): 
-                                example_idx = self._sample_example_idx(template_dir, seed, label)
-                                example_path = os.path.join(template_dir, str(int(label)), f"{example_idx}.png")
-                                r.example_paths.append(example_path)
+
+                        # For each label, pick a random example and save its path.
+                        for seed, label in zip(r.seeds, torch.argmax(r.labels, axis=1)): 
+                            example_idx = self._sample_example_idx(template_dir, seed, label)
+                            example_path = os.path.join(template_dir, str(int(label)), f"{example_idx}.png")
+                            r.example_paths.append(example_path)
 
                     # Update gvf to match examples of current batch
                     if gvf:
