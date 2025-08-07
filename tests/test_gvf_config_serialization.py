@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from mylib.helpers import load_from_json, save_to_json
-from mylib.gvf_2 import args_is_linear, create_gvf
+from mylib.gvf import args_is_linear, create_gvf
 
 #----------------------------------------------------------------------------
 # Options which generate possible GuidanceVectorField configurations

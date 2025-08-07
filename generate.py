@@ -21,7 +21,7 @@ from torch_utils import distributed as dist
 
 from mylib.helpers import update_EDM
 from mylib.diffusion import edm_sampler, load_templates_batch
-from mylib.gvf_2 import create_gvf
+from mylib.gvf import create_gvf
 
 #----------------------------------------------------------------------------
 # Wrapper for torch.Generator that allows specifying a different random seed
