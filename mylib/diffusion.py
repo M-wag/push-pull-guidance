@@ -116,12 +116,12 @@ def edm_sampler(
         x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
 
         # Euler step
-        d_cur = gradient(x_hat, t_hat) * (t_next - t_hat)
-        x_next = x_hat + d_cur 
+        d_cur = gradient(x_hat, t_hat) 
+        x_next = x_hat + d_cur * (t_next - t_hat)
 
         # Apply 2nd order correction
         if apply_2nd_order and i < num_steps - 1:
-            d_prime = x_next - gradient(x_next, t_next)
+            d_prime = gradient(x_next, t_next) 
             x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
         
         if save_all_timesteps:
