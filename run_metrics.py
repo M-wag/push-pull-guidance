@@ -90,16 +90,17 @@ def main():
     network_pkl = "https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-imagenet-64x64-cond-adm.pkl"
 
     sampler_prms = {
-            "num_steps"     : 64, 
-            "sigma_min"     : 0.002  , 
-            "sigma_max"     : 80, 
-            "rho"           : 7, 
-            "S_churn"       : 0.0,  
-            "S_min"         : 0.0, 
-            "S_max"         : float('inf'), 
-            "S_noise"       : 1, 
-            "dtype"         : torch.float32,
-            "correct_rgb"   : False,
+            "num_steps"         : 32, 
+            "sigma_min"         : 0.002  , 
+            "sigma_max"         : 80, 
+            "rho"               : 7, 
+            "S_churn"           : 0.0,  
+            "S_min"             : 0.0, 
+            "S_max"             : float('inf'), 
+            "S_noise"           : 1, 
+            "dtype"             : torch.float32,
+            "correct_rgb"       : False,
+            "apply_2nd_order"   : True,
     }
 
     gvf_args = {
@@ -148,6 +149,7 @@ def main():
         num_images=num_images,
         sampler_kwargs=sampler_prms,
         outdir="out",
+        subdirs=True,
         cfg_gvf = gvf_args,
         feature_dir = feature_dir,
         template_dir = template_dir,
@@ -174,18 +176,20 @@ def main():
                 "datetime"  : start_time.isoformat(),
                 "duration"  : duration,
                 "num_images": num_images,
-                "sampler "  : sampler_prms,
+                "sampler"   : sampler_prms,
                 "gvf"       : gvf_args,
                 "metrics"   : metrics,
         }
 
-        # Save results
-        # log_run_record(logs_path, run_record)
-        
         # Print summary
         print(f"Run {run_id} completed in {run_record['duration']:.2f} mins")
         for metric, value in metrics.items():
             print(f"{metric} : {value:.02f}")
+
+        # Save results
+        run_record["sampler"]["dtype"] = str(run_record["sampler"]["dtype"])
+        log_run_record(logs_path, run_record)
+        breakpoint()
 
 if __name__ == "__main__":
     import sys, pdb, traceback
