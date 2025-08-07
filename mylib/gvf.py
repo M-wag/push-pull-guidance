@@ -49,8 +49,8 @@ class NoiseGate(torch.nn.Module):
 class PullbackNumericalDifferentiation(torch.nn.Module):
     def __init__(self, step_size_slope, step_size_intercept):
         super().__init__()
-        self.register_buffer("a", step_size_slope)
-        self.register_buffer("b", step_size_intercept)
+        self.register_buffer("a", torch.tensor(step_size_slope))
+        self.register_buffer("b", torch.tensor(step_size_intercept))
     
     def step_size(self, t):
         return t * self.a + self.b
