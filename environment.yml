@@ -1,8 +1,6 @@
-name: edm-cpu
+name: edm-cuda
 channels:
   - defaults
-  - https://repo.anaconda.com/pkgs/main
-  - https://repo.anaconda.com/pkgs/r
 dependencies:
   - _libgcc_mutex=0.1=main
   - _openmp_mutex=5.1=1_gnu
@@ -13,6 +11,7 @@ dependencies:
   - ca-certificates=2025.2.25=h06a4308_0
   - certifi=2025.4.26=py313h06a4308_0
   - charset-normalizer=3.3.2=pyhd3eb1b0_0
+  - click=8.1.8=py313h06a4308_0
   - contourpy=1.3.1=py313hdb19cb5_0
   - cycler=0.11.0=pyhd3eb1b0_0
   - cyrus-sasl=2.1.28=h52b45da_1
@@ -22,7 +21,6 @@ dependencies:
   - freetype=2.13.3=h4a9f257_0
   - icu=73.1=h6a678d5_0
   - idna=3.7=py313h06a4308_0
-  - iniconfig=1.1.1=pyhd3eb1b0_0
   - intel-openmp=2023.1.0=hdb19cb5_46306
   - jpeg=9e=h5eee18b_3
   - kiwisolver=1.4.8=py313h6a678d5_0
@@ -38,6 +36,8 @@ dependencies:
   - libev=4.33=h7f8727e_1
   - libffi=3.4.4=h6a678d5_1
   - libgcc-ng=11.2.0=h1234567_1
+  - libgfortran-ng=11.2.0=h00389a5_1
+  - libgfortran5=11.2.0=h1234567_1
   - libglib=2.78.4=hdc74915_0
   - libgomp=11.2.0=h1234567_1
   - libiconv=1.16=h5eee18b_3
@@ -72,12 +72,10 @@ dependencies:
   - pcre2=10.42=hebb0a14_1
   - pillow=11.1.0=py313hac6e08b_1
   - pip=25.0=py313h06a4308_0
-  - pluggy=1.5.0=py313h06a4308_0
   - pyparsing=3.2.0=py313h06a4308_0
   - pyqt=6.7.1=py313h6a678d5_1
   - pyqt6-sip=13.9.1=py313h5eee18b_1
   - pysocks=1.7.1=py313h06a4308_0
-  - pytest=8.3.4=py313h06a4308_0
   - python=3.13.2=hf623796_100_cp313
   - python-dateutil=2.9.0post0=py313h06a4308_2
   - python_abi=3.13=0_cp313
@@ -89,6 +87,7 @@ dependencies:
   - qtwebsockets=6.7.3=h6a678d5_0
   - readline=8.2=h5eee18b_0
   - requests=2.32.3=py313h06a4308_1
+  - scipy=1.15.3=py313h7f54423_0
   - setuptools=72.1.0=py313h06a4308_0
   - sip=6.10.0=py313h6a678d5_0
   - six=1.17.0=py313h06a4308_0
@@ -104,17 +103,4 @@ dependencies:
   - xz=5.6.4=h5eee18b_1
   - zlib=1.2.13=h5eee18b_1
   - zstd=1.5.6=hc292b87_0
-  - pip:
-      - einops==0.8.1
-      - filelock==3.13.1
-      - fsspec==2024.6.1
-      - jinja2==3.1.4
-      - markupsafe==3.0.2
-      - mpmath==1.3.0
-      - networkx==3.3
-      - sympy==1.13.3
-      - torch==2.7.0+cpu
-      - torchaudio==2.7.0+cpu
-      - torchvision==0.22.0+cpu
-      - typing-extensions==4.12.2
-prefix: /home/brandon/.config/miniconda3/envs/edm-cpu
+prefix: /home/brachi/.conda/envs/edm-cuda
