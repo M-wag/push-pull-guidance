@@ -18,41 +18,8 @@ from einops import rearrange
 from torch import Tensor
 from functools import partial
 from .helpers import Config
-from mylib.gvf import ConfigGVFBase
 
 DISABLE_TQDM = False
-### Samplers ###
-@dataclass(frozen=True)
-class ConfigSampler(Config):
-    class_idx:          int = None
-    scale_model_score:  float = 1.0
-    batch_size :        float = 9
-    num_steps:          int = 32
-    sigma_min:          float = 0.002  
-    sigma_max:          float = 80
-    rho:                float = 7
-    S_churn:            float = 0.0
-    S_min:              float = 0.0
-    S_max:              float = float('inf')
-    S_noise:            float = 1
-
-@dataclass(frozen=True)
-class ConfigSimulation(Config):
-    network_pkl:    str
-    device:         str 
-    dtype:          Any 
-    seed:           int | None 
-    input_shape:    tuple[int]
-    guidance_vf:    ConfigGVFBase
-    diffusion:      ConfigSampler 
-
-@dataclass
-class StatsSampler:
-    x_T:        Optional[np.array] = None
-    x_0:        Optional[np.array] = None
-    t_steps:    Optional[np.array] = None
-    max_mag:    Optional[np.array] = None
-    grads:      Optional[np.array] = None
 
 @torch.no_grad()
 def edm_sampler(
@@ -179,37 +146,4 @@ def load_templates_batch(batch_template_info, device=None, dtype=None, for_torch
         batch_templates = None
 
     return batch_templates
-
-def schedule_diffusion(cnfg : ConfigSimulation):
-    # Set seed
-    if cnfg.seed is not None:
-        torch.manual_seed(cnfg.seed)
-        print(f"Setting config seed {cnfg.seed}")
-
-    # Load network and update network 
-    print(f'Loading network from "{cnfg.network_pkl}"...')
-    with dnnlib.util.open_url(cnfg.network_pkl) as f:
-        net_old = pickle.load(f)['ema'].to(cnfg.device)
-    net = EDMPrecond(*net_old.init_args, **net_old.init_kwargs).to(cnfg.device)
-    net.model.save_skips = True
-    net.eval()
-    misc.copy_params_and_buffers(net_old, net, require_all=True)
-
-    # Iterate through combinations of parameters
-    raw_data = np.empty((len(cnfg.split()), cnfg.diffusion.num_steps, cnfg.diffusion.batch_size, *cnfg.input_shape)) # (N_combs, t, B, C, H, W)
-    assert len(raw_data.shape) == 6, f"raw_data should have rank 6, got shape : {raw_data.shape}"
-    start_time = time.time()
-    for idx, cnfg_split in enumerate(cnfg.split()):
-        # Create guidance vectorfield
-        templates = load_templates_batch([cnfg_split.guidance_vf.template_path] * cnfg_split.diffusion.batch_size, device=cnfg_split.device, dtype=cnfg.dtype)
-        vf = create_vf(cnfg_split.guidance_vf, templates, net=net, cnfg_split_sim=cnfg_split)
-
-        with torch.no_grad():
-            xs, _ = edm_sampler(net, vf, seed=cnfg_split.seed, device=cnfg_split.device, dtype=cnfg.dtype, **cnfg_split.diffusion.to_dict())
-        raw_data[idx] = xs
-        
-    total_time = time.time() - start_time
-    print(f"Total schedule_diffusion time: {total_time:.2f} s")
-    
-    return raw_data
 
