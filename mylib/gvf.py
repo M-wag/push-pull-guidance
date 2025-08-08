@@ -265,6 +265,14 @@ class GuidanceVF(torch.nn.Module):
     def setup_score(self):
         self.vf_latent.setup_score
     
+    @property 
+    def features_template(self):
+        return self.vf_latent.features_template
+    
+    @setter 
+    def features_template(self, x):
+        return self.vf_latent.features_template = x
+
     @property
     def args(self):
         args_latent = self.latent.args
@@ -501,7 +509,7 @@ def _create_gvf(
         args_latent_inv = None, # Arguments for latent (pseudo)-inverse function ("latent_inv")
         args_references = {},   # Arguments which are not serializable and are passed by reference
         device          = "cuda" if torch.cuda.is_available() else "cpu",
-        dtype           = torch.float64,
+        dtype           = torch.float32,
     ):
 
     # Insert non-serializable referenced variables
