@@ -1,6 +1,8 @@
 import torch
 import dnnlib
 
+from functools import partial
+
 #----------------------------------------------------------------------------
 # Helper function to assign buffers for arguments that 'may' be torch.Tensor
 
@@ -58,8 +60,8 @@ class PullbackNumericalDifferentiation(torch.nn.Module):
     @torch.no_grad
     def forward(self, latent_inv, x_latent, dx_latent, t):
         perturbed_latent = x_latent + self.step_size(t) * dx_latent
-        f_perturbed = latent_inv(perturbed_latent)
-        f_original = latent_inv(x_latent)
+        f_perturbed = latent_inv(perturbed_latent, t)
+        f_original = latent_inv(x_latent, t)
         dx = (f_perturbed - f_original) / self.step_size(t)
         return dx
 
@@ -343,7 +345,7 @@ def build_latent_hf(args, _args_out, _shp, device, dtype):
     from diffusers import AutoencoderKL, AsymmetricAutoencoderKL, AutoencoderTiny
     Autoencoder = {
             "kl"        : AutoencoderKL,
-            "assymetric": AsymmetricAutoencoderKL,
+            "asymmetric": AsymmetricAutoencoderKL,
             "tiny"      : AutoencoderTiny,
             }[args.autoencoder]
 
@@ -383,8 +385,8 @@ def build_pullback_numdiff(kwargs):
 @registry_pullback.register("jvp")
 def build_pullback_jvp(*args):
     @torch.no_grad
-    def pullback(latent_inv, x_latent, dx_latent, __t):
-        _, dx = torch.autograd.functional.jvp(latent_inv, x_latent, dx_latent, strict=False)
+    def pullback(latent_inv, x_latent, dx_latent, t):
+        _, dx = torch.autograd.functional.jvp(partial(latent_inv, t=t), x_latent, dx_latent, strict=False)
         return dx
     pullback.args = "jvp" 
     return pullback
