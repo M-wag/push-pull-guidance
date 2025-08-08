@@ -114,7 +114,6 @@ def generate_images(
     if gvf_args:
         if verbose:
             dist.print0(f'Creating Guidance Vectorfield from args ...')
-        gvf_args["args_references"]["features_template"] = None
         gvf = create_gvf(**gvf_args).to(device)
 
     # Return an iterable over the batches.
@@ -129,8 +128,8 @@ def generate_images(
             return torch.randint(0 , n_files, (), generator=g).item()
         
         def _update_examples_gvf(self, gvf, paths):
-            examples = load_templates_batch(paths).unsqueeze(1)  # [B, N, C, H, W]
-            gvf.features_template = examples
+            examples = load_templates_batch(paths).unsqueeze(1).to(device)  # [B, N, C, H, W]
+            gvf.set_features_template(examples)
             gvf.setup_score()
         
         def __iter__(self):

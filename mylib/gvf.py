@@ -114,7 +114,6 @@ class VectorField(torch.nn.Module):
         noise,                          # Time-depedent noise function in feature space
         noise_dot,                      # Time-depdendent derivation of noise function in feature space
         *, 
-        flatten_input       = False,    # Whether to flatten input [..., C, H, W] -> [..., (C H W)]
         threshold_weight    = None,     # Cut off point based on noise_gate * scale 
         threshold_time_min  = None,     # Start off point after a certain time
         threshold_time_max  = None,     # Cut off point after a cetain time
@@ -125,41 +124,28 @@ class VectorField(torch.nn.Module):
         self.noise_gate = noise_gate
         self.noise = noise
         self.noise_dot = noise_dot
-        self.flatten_input = flatten_input
         _maybe_register_buffer(self, "threshold_weight", threshold_weight)
         _maybe_register_buffer(self, "threshold_time_min", threshold_time_min)
         _maybe_register_buffer(self, "threshold_time_max", threshold_time_max)
-        self.features_template = features_template
 
+        self.set_features_template(features_template)
         self.setup_score()
 
     def forward(self, x, t):
-        if self.flatten_input:
-            x = self.flat(x) 
-        
         if self._should_apply_score(t):
             dx_guidance = self.reverse_step(x, t)
         else:
             dx_guidance = torch.zeros_like(x)
         
-        if self.flatten_input:
-            dx_guidance = self.unflat(dx_guidance) 
-
         return dx_guidance
 
     @property
     def features_template(self):
         return self._features_template 
 
-    @features_template.setter
-    def features_template(self, x):
-        self._features_template = self.flat(x) if self.flatten_input else x
-        # If templates is a Tensor save original shape
-        if isinstance(self._features_template, torch.Tensor):
-            self._shp_og = x.shape[1:]
-        else: 
-            self.shp_og = None
-        # Save optionally flattend template
+    def set_features_template(self, templates):
+        self._features_template = templates
+
 
     def reverse_step(self, x, t):
         return -self.noise_dot(t) * self.noise(t)  * self.score(x, t)
@@ -170,15 +156,13 @@ class VectorField(torch.nn.Module):
     def flat(self, x):
         return torch.flatten(x, start_dim=1)
     
-    def unflat(self, x):
-        return torch.unflatten(x, dim=1, sizes=self._shp_og)
-
     def _score_single_feature(self, x_latent, t):
-        score = self.scale * self.noise_gate(self.noise(t)) * (self._features_template - x_latent) / self.noise(t)**2
+        features_template_reshaped = self.features_template.squeeze(1) # (B, 1, L) -> (B, L)
+        score = self.scale * self.noise_gate(self.noise(t)) * (features_template_reshaped - x_latent) / self.noise(t)**2
         return score
 
     def _score_attention(self, x_latent, t):
-        diffs = self._features_template - x_latent.unsqueeze(1) #(B, N, D)
+        diffs = self._features_template - x_latent.unsqueeze(1) #(B, N, L)
         attention = self.attention(diffs, passing_diff=True) #(B, N)
         weights = attention * self.noise_gate(self.noise(t)).unsqueeze(0) * self.scale # (N, )
         score =  torch.einsum("BN, BN... -> B...", weights, diffs) / self.noise(t) ** 2 # (B, D)
@@ -202,8 +186,6 @@ class VectorField(torch.nn.Module):
         return self._attention_mixture(self.flat(x), **kwargs)
 
     def setup_score(self) -> None:
-        if len(self._shp_og) < 2:
-            raise ValueError(f"Features template should be at least rank 2 / shape (N, D), got :{self._shp_og}")
         # Check if single or multiple templates ere passed
         if self.features_template.shape[0] > 1:
             self._score = self._score_attention
@@ -252,7 +234,9 @@ class GuidanceVF(torch.nn.Module):
     def score(self, x, t):
         x_latent = self.latent(x, t)
         score_latent = self.vf_latent.score(x_latent, t)
+        assert x_latent.shape == score_latent.shape, f"x_latent and score_latent shape mismatch , got : {x_latent.shape}, {score_latent.shape}"
         score = self._pullback(self.latent_inv, x_latent, score_latent, t)
+        assert x.shape == score.shape, f"x and score shape mismatch, got : {x.shape}, {score.shape}"
         return score
     
     def reverse_step(self, x, t):
@@ -269,9 +253,14 @@ class GuidanceVF(torch.nn.Module):
     def features_template(self):
         return self.vf_latent.features_template
     
-    @setter 
-    def features_template(self, x):
-        return self.vf_latent.features_template = x
+    def set_features_template(self, templates):
+        # Determine datashape of template and merge templates
+        B, N, *shp_data = templates.shape
+        templates_merged = templates.reshape(B*N, *shp_data)
+        # Calculate features of tempaltes, unmerge and save to vf_latent
+        features_template_merged = self.latent(templates_merged, t=0)
+        features_template = features_template_merged.reshape(B, N, *features_template_merged.shape[1:])
+        self.vf_latent.set_features_template(features_template)
 
     @property
     def args(self):
@@ -316,7 +305,7 @@ registry_noise = Registry()
 @registry_latent.register("ambient")
 def build_latent_ambient(*args):
     def latent_fn(x, t): return x
-    def latent_inv_fn(x):return x
+    def latent_inv_fn(x, t): return x
     latent_fn.args = args[0]
     return latent_fn, latent_inv_fn
 
@@ -345,7 +334,7 @@ def build_latent_random_linear(args, _, shp_templates, device, dtype):
 @registry_latent.register("unet")
 def build_latent_unet(args, _args_out, _shp, device, dtype):
     def latent_fn(x, t): return x
-    def latent_inv_fn(x):return x
+    def latent_inv_fn(x, t):return x
     latent_fn.args = {"net" : "__REF__network", "hook_manager": "__REF__hook_manager"}
     return latent_fn, latent_inv_fn
 
@@ -379,8 +368,8 @@ def build_latent_hf(args, _args_out, _shp, device, dtype):
 
 @registry_pullback.register("linear")
 def build_pullback_linear(*args):
-    def pullback(latent_inv, __x_latent, dx_latent, __t):
-        dx = latent_inv(dx_latent)
+    def pullback(latent_inv, __x_latent, dx_latent, t):
+        dx = latent_inv(dx_latent, t)
         return dx
     pullback.args = args[0]
     return pullback
