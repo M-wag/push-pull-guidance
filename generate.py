@@ -138,6 +138,7 @@ def generate_images(
                 r = dnnlib.EasyDict(images=None, labels=None, noise=None, examples=None, batch_idx=batch_idx, num_batches=len(rank_batches), indices=indices)
                 r.seeds = [seeds[idx] for idx in indices]
                 r.example_paths = []
+                r.example_idx = []
                 # Randomly pick class index
                 if len(r.seeds) > 0:
 
@@ -155,6 +156,7 @@ def generate_images(
                         for seed, label in zip(r.seeds, torch.argmax(r.labels, axis=1)): 
                             example_idx = self._sample_example_idx(template_dir, seed, label)
                             example_path = os.path.join(template_dir, str(int(label)), f"{example_idx}.png")
+                            r.example_idx.append(example_idx)
                             r.example_paths.append(example_path)
 
                     # Update gvf to match examples of current batch
