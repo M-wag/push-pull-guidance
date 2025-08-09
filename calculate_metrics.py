@@ -19,6 +19,8 @@ import scipy.linalg
 import torch
 import PIL.Image
 import dnnlib
+import transformers 
+
 from torch_utils import distributed as dist
 from torch_utils import misc
 from training import dataset
@@ -83,6 +85,21 @@ class DINOv2Detector(Detector):
 
         # Run DINOv2 model.
         return self.model.to(x.device)(x)
+
+#----------------------------------------------------------------------------
+# CLIP Model 
+
+class ClipImageModel():
+    def __init__(self, device=None):
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = transformers.CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
+        self.processor = transformers.AutoProcessor.from_pretrained("openai/clip-vit-large-patch14")
+
+    def __call__(self, x):
+        inputs = self.processor(images=x, return_tensors="pt").to(self.device)
+        with torch.no_grad():
+            image_features = self.model.get_image_features(**inputs)
+        return image_features
 
 #----------------------------------------------------------------------------
 # Metric specifications.
@@ -234,30 +251,47 @@ def merge_feature_csvs(csv_dir, output_path="features.csv", delete_parts=True):
     print(f"Merged csvs to {output_path} "
           f"({len(csv_files)} files merged)")
 
+#---------------------------------------------------------------------------
+# Merge the seperate feature files
+
+def clip_encode_image(imgs):
+    return torch.flatten(imgs, start_dim=1)
+
 #----------------------------------------------------------------------------
 # Calculate feature statistics for the given image batches
 # in a distributed fashion. Returns an iterable that yields
 # dnnlib.EasyDict(stats, images, batch_idx, num_batches)
 
 def calculate_stats_for_iterable(
-    image_iter,                         # Iterable of image batches: NCHW, uint8, 3 channels.
-    metrics     = ['fid', 'fd_dinov2'], # Metrics to compute the statistics for.
-    verbose     = True,                 # Enable status prints?
-    dest_path   = None,                 # Where to save the statistics. None = do not save.
-    feature_dir = None,                 # Where to save the feature. None = do not save.
-    device      = torch.device('cuda'), # Which compute device to use.
+    image_iter,                             # Iterable of image batches: NCHW, uint8, 3 channels.
+    metrics         = ['fid', 'fd_dinov2'], # Metrics to compute the statistics for.
+    verbose         = True,                 # Enable status prints?
+    dest_path       = None,                 # Where to save the statistics. None = do not save.
+    feature_dir     = None,                 # Where to save the feature. None = do not save.
+    calculate_clip  = True,                 # Save clip features for images?
+    device          = torch.device('cuda'), # Which compute device to use.
 ):
-    # Initialize.
-    num_batches = len(image_iter)
-    detectors = [get_detector(metric, verbose=verbose) for metric in metrics]
-    if verbose:
-        dist.print0('Calculating feature statistics...')
-
     # Convenience wrapper for torch.distributed.all_reduce().
     def all_reduce(x):
         x = x.clone()
         torch.distributed.all_reduce(x)
         return x
+    
+    # Convenience function for checking if torch tensor is one hot
+    def is_one_hot(vec):
+        vec = vec.to(torch.int)
+        return vec.dim() == 1 and torch.all((vec == 0) | (vec == 1)) and vec.sum() == 1
+
+    # Initialize.
+    num_batches = len(image_iter)
+    detectors = [get_detector(metric, verbose=verbose) for metric in metrics]
+    if verbose:
+        dist.print0('Calculating feature statistics...')
+    # Initialize CLIP feature extrator
+    if calculate_clip:
+        if verbose:
+            dist.print0('Loading CLIP model...')
+        get_clip_features = ClipImageModel(device=device)
 
     # Return an iterable over the batches.
     class StatsIterable:
@@ -274,13 +308,9 @@ def calculate_stats_for_iterable(
                 torch.save(features.cpu().detach(), os.path.join(metric_dir, file_path))
 
             # If classes and examples are passed also save CSV
-            def is_one_hot(vec):
-                vec = vec.to(torch.int)
-                return vec.dim() == 1 and torch.all((vec == 0) | (vec == 1)) and vec.sum() == 1
-
             if isinstance(images, dict) and 'images' in images: # dict(images)
                 classes = torch.argmax(images.labels, axis=1)
-                examples = images.examples
+                examples = images.example_idx
             elif isinstance(images, (tuple, list)) and len(images) == 2: # (images, labels)
                 labels = images[1]
                 if labels is None:
@@ -293,6 +323,7 @@ def calculate_stats_for_iterable(
                         classes = labels
                     examples = [None] * classes.shape[0]
 
+            # Document the the examples the features correspond to
             if classes is not None and examples is not None: 
                 with open(os.path.join(feature_dir, f"features.rank{rank:01d}.part{batch_idx:04d}.csv"), "w") as f:
                     writer = csv.writer(f)
@@ -320,7 +351,14 @@ def calculate_stats_for_iterable(
                         features = s.detector(imgs).to(torch.float64)
                         s.cum_mu += features.sum(0)
                         s.cum_sigma += features.T @ features
+
+                        # Hijack to get features and clip score saved
                         features_per_metric[s.metric]= features
+                        if calculate_clip:
+                            clip_features = get_clip_features(imgs).to(torch.float64)
+                            features_per_metric["clip"]= clip_features
+                        #############################################################
+
                     cum_images += imgs.shape[0]
 
                     # Save features of each image 
