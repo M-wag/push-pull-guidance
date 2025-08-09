@@ -70,11 +70,13 @@ def test_config_gvf_in_equals_config_gvf_out(
     ):
 
 
+    # Add non-seriazible values which need to be referenced
     args_references = {}
     args_references["features_template"] = torch.zeros((1, 3, 2, 2))
     args_references["network"] = None
     args_references["hook_manager"] = None
 
+    # Construct gvf args
     args_in = {
         "latent"       : args_latent,
         "vectorfield"  : args_vectorfield,
@@ -99,3 +101,6 @@ def test_config_gvf_in_equals_config_gvf_out(
 
 #----------------------------------------------------------------------------
 # Test for nested GuidanceVectorfield
+
+
+
