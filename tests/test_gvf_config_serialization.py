@@ -28,7 +28,6 @@ VECTORFIELD_ARGS = [
     {
         "noise_gate": gate, 
         "args_noise": noise, 
-        "scale": random.random(), 
         "features_template" : "__REF__features_template"
      }
     for gate, noise in itertools.product(
@@ -54,8 +53,7 @@ ALL_CONFIGS = list(itertools.product(
 #----------------------------------------------------------------------------
 # Assert config == load(save(config))
 
-@pytest.mark.skip()
-def test_json_save_and_load_equals_identity(config):
+def _test_json_save_and_load_equals_identity(config):
     assert config == load_from_json(save_to_json(config))
 
 #----------------------------------------------------------------------------
@@ -78,10 +76,11 @@ def test_config_gvf_in_equals_config_gvf_out(
 
     # Construct gvf args
     args_in = {
-        "latent"       : args_latent,
-        "vectorfield"  : args_vectorfield,
-        "pullback"     : args_pullback,
-        "noise"        : args_noise,
+        "latent"        : args_latent,
+        "vectorfield"   : args_vectorfield,
+        "pullback"      : args_pullback,
+        "noise"         : args_noise,
+        "scale"         : round(random.random(), 3)
     }
 
     # When a linear latent and a pulback are specified throw a error

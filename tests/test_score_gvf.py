@@ -10,8 +10,8 @@ def ambient_args():
     means = torch.randn((16, 1, 2))      #(batch, num_examples, dim)
     args = {
         "latent" : "ambient", 
+        "scale" : 1.0 , 
         "vectorfield" : { 
-            "scale" : 1.0 , 
             "features_template"  : means,
             "args_noise" : "edm", 
             "noise_gate" : {"type_gate" : "quadratic", "nu" : 30.0, },
@@ -50,7 +50,7 @@ def test_score_is_zero_for_scale_zero(ambient_args):
     _sigma_max = 80 
 
     args = ambient_args.copy()
-    args["vectorfield"]["scale"] = 0.0
+    args["scale"] = 0.0
 
     gvf = create_gvf(**args, device="cpu")
 
