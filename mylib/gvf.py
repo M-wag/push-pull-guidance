@@ -111,7 +111,6 @@ class AttentionWeightsMixture(torch.nn.Module):
 class VectorField(torch.nn.Module):
     def __init__(self, 
         features_template,              # Templates in feauture space (N, D1, D2, ....)
-        scale,                          # Scaling of score in feature space
         noise_gate,                     # Noise-dependent sigmoidal decay function in feature space \gamma(t) -> [0 ,1]
         noise,                          # Time-depedent noise function in feature space
         noise_dot,                      # Time-depdendent derivation of noise function in feature space
@@ -122,7 +121,6 @@ class VectorField(torch.nn.Module):
     ):
         super().__init__()
         self.register_buffer("_features_template", None)
-        self.register_buffer("scale", torch.tensor(scale))
         self.noise_gate = noise_gate
         self.noise = noise
         self.noise_dot = noise_dot
@@ -159,19 +157,18 @@ class VectorField(torch.nn.Module):
         return torch.flatten(x, start_dim=1)
     
     def _score_single_feature(self, x_latent, t):
-        features_template_reshaped = self.features_template.squeeze(1) # (B, 1, L) -> (B, L)
-        score = self.scale * self.noise_gate(self.noise(t)) * (features_template_reshaped - x_latent) / self.noise(t)**2
+        score = self.noise_gate(self.noise(t)) * (self.features_template - x_latent) / self.noise(t)**2
         return score
 
     def _score_attention(self, x_latent, t):
         diffs = self._features_template - x_latent.unsqueeze(1) #(B, N, L)
         attention = self.attention(diffs, passing_diff=True) #(B, N)
-        weights = attention * self.noise_gate(self.noise(t)).unsqueeze(0) * self.scale # (N, )
+        weights = attention * self.noise_gate(self.noise(t)).unsqueeze(0) * elf.scale # (N, )
         score =  torch.einsum("BN, BN... -> B...", weights, diffs) / self.noise(t) ** 2 # (B, D)
         return score
 
     def _should_apply_score(self, t) -> bool:
-        weight = torch.max(self.noise_gate(self.noise(t)) * self.scale)
+        weight = torch.max(self.noise_gate(self.noise(t)))
         apply_score = True
         # Check weight threshold
         if self.threshold_weight is not None and weight < self.threshold_weight:
@@ -189,7 +186,7 @@ class VectorField(torch.nn.Module):
 
     def setup_score(self) -> None:
         # Check if single or multiple templates ere passed
-        if self.features_template.shape[0] > 1:
+        if self.features_template.shape[1] > 1:
             self._score = self._score_attention
             self._attention_mixture =  AttentionWeightsMixture(self.flat(self.features_template), self.noise_gate.nu)
         else:
@@ -201,7 +198,6 @@ class VectorField(torch.nn.Module):
         return {
             "noise_gate": self.noise_gate.args, 
             "args_noise": self.noise.args,
-            "scale": self.scale,
             "features_template" : "__REF__features_template"
         }
 
@@ -216,6 +212,7 @@ class GuidanceVF(torch.nn.Module):
         pullback,           # Operation defining how to map V(z, t) to V(x, t)
         noise,              # Noise function in ambient space
         noise_dot,          # Derivative of noise function in ambient space
+        scale,              # Scaling of the gradients
     ):
         super().__init__()
         self.vf_latent = vectorfield
@@ -224,6 +221,7 @@ class GuidanceVF(torch.nn.Module):
         self._pullback = pullback
         self.noise = noise
         self.noise_dot = noise_dot
+        self.register_buffer("scale", torch.tensor(scale))
 
     def forward(self, x, t):
         if self._should_apply_score(t):
@@ -242,7 +240,7 @@ class GuidanceVF(torch.nn.Module):
         return score
     
     def reverse_step(self, x, t):
-        dx = -self.noise_dot(t) * self.noise(t) * self.score(x, t)
+        dx = self.scale * -self.noise_dot(t) * self.noise(t) * self.score(x, t)
         return dx
 
     def _should_apply_score(self, t):
@@ -276,6 +274,7 @@ class GuidanceVF(torch.nn.Module):
             "vectorfield"  : args_vectorfield,
             "pullback"     : args_pullback,
             "noise"        : args_noise,
+            "scale"        : round(self.scale.item(), 3), 
         }
 
 #----------------------------------------------------------------------------
@@ -350,14 +349,19 @@ def build_latent_hf(args, _args_out, _shp, device, dtype):
             }[args.autoencoder]
 
     try:
-        vae = Autoencoder.from_pretrained(args.id,  use_safetensors=True)
+            vae = Autoencoder.from_pretrained(args.id, subfolder="vae", use_safetensors=True)
     except Exception:
-        vae = Autoencoder.from_pretrained(args.id, subfolder="vae", use_safetensors=True)
+        try:
+            vae = Autoencoder.from_pretrained(args.id, use_safetensors=True)
+        except Exception:
+            vae = Autoencoder.from_pretrained(args.id)
 
     vae = vae.eval().requires_grad_(False).to(device=device, dtype=dtype)
     
-    def latent_fn(x, t) : return vae.encode(x).latent_dist.sample()
-    def latent_inv_fn(x, t) : return vae.decode(x).sample
+    def latent_fn(x, t) : 
+        return vae.encode(x).latent_dist.sample()
+    def latent_inv_fn(x, t) : 
+        return vae.decode(x).sample 
 
     latent_fn.args = args
     return latent_fn, latent_inv_fn
@@ -424,7 +428,7 @@ def match_args_to_latent(args):
     raise ValueError(f"Unrecognized latent/latent_inv args: {set(args) if isinstance(args, dict) else args!r}")
 
 # Specification for vectorfield
-# <VectorField>         := {features_template: _, scale: _, noise_gate: _, args_noise: _}
+# <VectorField>         := {features_template: _,  noise_gate: _, args_noise: _}
 # <GuidanceVectorField> := {latent: _, vectorfield:_, noise: _}
 
 def match_args_to_vectorfield(args):
@@ -432,7 +436,7 @@ def match_args_to_vectorfield(args):
         raise ValueError("args vectorfield should be dict, got type {type(args)!r}")
 
     required_args_gvf = set(["latent", "vectorfield", "noise"])
-    required_args_vf = set(["features_template", "scale", "noise_gate", "args_noise"])
+    required_args_vf = set(["features_template", "noise_gate", "args_noise"])
 
     keys = set(args)
     if required_args_gvf.issubset(keys):
@@ -499,6 +503,7 @@ def _create_gvf(
         args_pullback   = None, # Arguments for the pullback operation ("pullback")
         args_latent_inv = None, # Arguments for latent (pseudo)-inverse function ("latent_inv")
         args_references = {},   # Arguments which are not serializable and are passed by reference
+        scale           = 1.0,  # Scale of the gvf guidance
         device          = "cuda" if torch.cuda.is_available() else "cpu",
         dtype           = torch.float32,
     ):
@@ -544,7 +549,7 @@ def _create_gvf(
     # Get noise function
     noise, noise_dot = registry_noise[match_args_to_noise(args_noise)](args_noise) 
 
-    gvf = GuidanceVF(vectorfield, latent_fn, latent_inv_fn, pullback, noise, noise_dot)
+    gvf = GuidanceVF(vectorfield, latent_fn, latent_inv_fn, pullback, noise, noise_dot, scale)
     return gvf
 
 
