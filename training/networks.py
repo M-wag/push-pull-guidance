@@ -365,20 +365,6 @@ class PositionalEmbedding(torch.nn.Module):
         return x
 
 #----------------------------------------------------------------------------
-# Timestep embedding used in the NCSN++ architecture.
-
-@persistence.persistent_class
-class FourierEmbedding(torch.nn.Module):
-    def __init__(self, num_channels, scale=16):
-        super().__init__()
-        self.register_buffer('freqs', torch.randn(num_channels // 2) * scale)
-
-    def forward(self, x):
-        x = x.ger((2 * np.pi * self.freqs).to(x.dtype))
-        x = torch.cat([x.cos(), x.sin()], dim=1)
-        return x
-
-#----------------------------------------------------------------------------
 # Reimplementation of the ADM architecture from the paper
 # "Diffusion Models Beat GANS on Image Synthesis". Equivalent to the
 # original implementation by Dhariwal and Nichol, available at
