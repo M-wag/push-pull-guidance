@@ -100,7 +100,7 @@ def edm_sampler(
 
     return y, (t_steps.cpu().numpy(), )
 
-def load_templates(path, device=None, dtype=None, for_torch=True):
+def load_templates(path, device=None, dtype=None, for_torch=True, rescale=False):
     # Load templates data
     if isinstance(path, type(None)):
         return torch.tensor([0])
@@ -126,11 +126,11 @@ def load_templates(path, device=None, dtype=None, for_torch=True):
         templates = templates.to(device=device)
     if dtype:
         templates = templates.to(dtype=dtype)
-    if for_torch:
+    if rescale:
         templates = (templates - 128) / 127.5 
     return templates
 
-def load_templates_batch(batch_template_info, device=None, dtype=None, for_torch=True):
+def load_templates_batch(batch_template_info, device=None, dtype=None, for_torch=True, rescale=False):
     """
     batch_template_info: list of either paths, or list of filenames/indices to load from `template_dir`
     template_dir: if `batch_template_info` contains filenames or indices

@@ -129,7 +129,8 @@ def generate_images(
         
         def _update_examples_gvf(self, gvf, paths):
             examples = load_templates_batch(paths).unsqueeze(1).to(device)  # [B, N, C, H, W]
-            gvf.set_features_template(examples)
+            examples = encoder.encode_latents(examples)
+            gvf.set_features_template(examples) 
             gvf.setup_score()
         
         def __iter__(self):
