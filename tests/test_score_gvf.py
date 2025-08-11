@@ -2,7 +2,7 @@ import torch
 import pytest 
 
 from mylib.gvf import create_gvf
-
+from dnnlib.util import to_easydict
 
 @pytest.fixture
 def ambient_args():
@@ -18,7 +18,7 @@ def ambient_args():
         },
         "noise" : "edm",
     }
-    return args
+    return to_easydict(args)
 
 #----------------------------------------------------------------------------
 # When passing (B, N, D1, D2, ....) : N == 1 use score for single feature
@@ -67,8 +67,65 @@ def test_score_is_zero_for_scale_zero(ambient_args):
 # Numerically solved DE should be close to exact solution 
 # Apply this to the score of a Gaussian
 
-def _test_score_is_zero_for_scale_zero():
-    pass
-    # Def solution
-    # Match 
+class SolverGaussianExact:
+    """Solver for a Revers-SDE Gaussian in the EDM probablity flow ODE formulation"""
+    def __init__(self, x0, T, nu):
+        self.x0 = x0
+        self.T = T
+        self.nu = nu
+
+    def __call__(self, x_T, t):
+        coefficient = torch.sqrt(t**2 + self.nu**2) / torch.sqrt(self.T**2 / self.nu**2)
+        return (1 - coefficient) * self.x0 + coefficient * x_T
+
+
+def _test_solved_reversed_sde_matches_exact_solution(ambient_args):
+    args = ambient_args
+
+    # Determinine parameters of Gaussian and inital conditions
+    batch_size = 3
+    nu = torch.rand(1)
+    examples = torch.randn(batch_size, 1, 2)
+    T = 80
+
+    # Initialize exact solver and reverse-sde
+    solver_exact = SolverGaussianExact(x0=examples, nu=nu, T=T)
+    args.vectorfield.features_template = examples
+    args.vectorfield.noise_gate.nu = nu
+    gvf = create_gvf(**args)
+
+    # Solve the reverse-SDE:
+    x_Ts = torch.rand(batch_size, 1, 2) * T
+    t_steps = torch.linspace(T, 0, steps=100)
+    x_next = x_Ts
+    for t_cur, t_next in zip(t_steps[:-1], t_steps[1:]):
+        dt = t_next - t_cur 
+        x_next += gvf(x_next, t_cur) * dt
+
+        assert torch.all(x_next == solver_exact(x_Ts, t_next))
+
+
+def test_solved_reversed_sde_convereges_to_example_nu_equal_zero(ambient_args):
+    args = ambient_args
+
+    # Setup examples and initial XT
+    T = 80
+    batch_size = 2
+    x_T = torch.rand(batch_size, 1, 2) * T
+    examples = torch.rand(batch_size, 1, 2)
+
+    # Initialize exact solver and reverse-sde
+    args.vectorfield.features_template = examples
+    args.vectorfield.noise_gate.nu = 0
+    gvf = create_gvf(**args)
+
+    # Solve the reverse-SDE:
+    t_steps = torch.linspace(T, 0, steps=100)
+    xs = torch.empty(len(t_steps), batch_size,  1, 2)
+    xs[0] = x_T
+    for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
+        dt = t_next - t_cur 
+        xs[i+1] = xs[i] + gvf(xs[i], t_cur) * dt
+
+    assert torch.all(torch.isclose(xs[-1], args.vectorfield.features_template))
 
