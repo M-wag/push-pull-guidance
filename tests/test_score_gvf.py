@@ -55,12 +55,12 @@ def test_score_is_zero_for_scale_zero(ambient_args):
     gvf = create_gvf(**args, device="cpu")
 
     # Sample random points and times
-    x_random = torch.randn((16, 1, 2))
+    x_random = torch.randn((16, 2))
     ts_random = torch.rand(16) * _sigma_max
 
     for t in ts_random:
         dxdt = gvf(x_random, t)
-        assert torch.all(dxdt == torch.zeros((16, 1, 2))), \
+        assert torch.all(dxdt == torch.zeros((16, 2))), \
                 f"For scale = 0 all gradients of gvf should be 0, got : {dxdt}"
 
 #----------------------------------------------------------------------------
@@ -111,8 +111,8 @@ def test_solved_reversed_sde_convereges_to_example_nu_equal_zero(ambient_args):
     # Setup examples and initial XT
     T = 80
     batch_size = 2
-    x_T = torch.rand(batch_size, 1, 2) * T
-    examples = torch.rand(batch_size, 1, 2)
+    x_T = torch.rand(batch_size, 2) * T         # (batch, data)
+    examples = torch.rand(batch_size, 1, 2)     # (batch, examples, data)
 
     # Initialize exact solver and reverse-sde
     args.vectorfield.features_template = examples
@@ -121,11 +121,11 @@ def test_solved_reversed_sde_convereges_to_example_nu_equal_zero(ambient_args):
 
     # Solve the reverse-SDE:
     t_steps = torch.linspace(T, 0, steps=100)
-    xs = torch.empty(len(t_steps), batch_size,  1, 2)
+    xs = torch.empty(len(t_steps), batch_size, 2)
     xs[0] = x_T
     for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
         dt = t_next - t_cur 
         xs[i+1] = xs[i] + gvf(xs[i], t_cur) * dt
 
-    assert torch.all(torch.isclose(xs[-1], args.vectorfield.features_template))
+    assert torch.all(torch.isclose(xs[-1], args.vectorfield.features_template.squeeze(1)))
 

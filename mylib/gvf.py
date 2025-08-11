@@ -157,7 +157,8 @@ class VectorField(torch.nn.Module):
         return torch.flatten(x, start_dim=1)
     
     def _score_single_feature(self, x_latent, t):
-        score = self.noise_gate(self.noise(t)) * (self.features_template - x_latent) / self.noise(t)**2
+        features_template_flat = self.features_template.squeeze(1)  # (B, 1, D) -> (B, D)
+        score = self.noise_gate(self.noise(t)) * (features_template_flat - x_latent) / self.noise(t)**2
         return score
 
     def _score_attention(self, x_latent, t):
