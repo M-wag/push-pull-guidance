@@ -93,7 +93,7 @@ class ClipImageModel():
     def __init__(self, device=None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = transformers.CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
-        self.processor = transformers.AutoProcessor.from_pretrained("openai/clip-vit-large-patch14")
+        self.processor = transformers.AutoProcessor.from_pretrained("openai/clip-vit-large-patch14", use_fast=True)
 
     def __call__(self, x):
         inputs = self.processor(images=x, return_tensors="pt").to(self.device)
@@ -285,13 +285,15 @@ def calculate_stats_for_iterable(
     # Initialize.
     num_batches = len(image_iter)
     detectors = [get_detector(metric, verbose=verbose) for metric in metrics]
-    if verbose:
-        dist.print0('Calculating feature statistics...')
+
     # Initialize CLIP feature extrator
     if calculate_clip:
         if verbose:
-            dist.print0('Loading CLIP model...')
+            dist.print0('Setting up CLIP model...')
         get_clip_features = ClipImageModel(device=device)
+
+    if verbose:
+        dist.print0('Calculating feature statistics...')
 
     # Return an iterable over the batches.
     class StatsIterable:
@@ -504,7 +506,7 @@ def calculate_metrics_from_generator(
         sampler_kwargs=sampler_kwargs,
         template_dir=template_dir,
     )
-    
+
     # Calculate statistics
     stats_iter = calculate_stats_for_iterable(
         image_iter=image_iter,
@@ -562,3 +564,32 @@ def generate_reference_stats(
         return r.stats
     return None
 
+
+@click.group()
+def cmdline():
+     """Calculate evaluation metrics (FID and FD_DINOv2)."""
+
+@cmdline.command()
+@click.option('--images', 'image_path',     help='Path to the images', metavar='PATH|ZIP',                  type=str, required=True)
+@click.option('--ref', 'ref_path',          help='Dataset reference statistics ', metavar='PKL|NPZ|URL',    type=str, required=True)
+@click.option('--metrics',                  help='List of metrics to compute', metavar='LIST',              type=parse_metric_list, default='fid,fd_dinov2', show_default=True)
+@click.option('--num', 'num_images',        help='Number of images to use', metavar='INT',                  type=click.IntRange(min=2), default=50000, show_default=True)
+@click.option('--seed',                     help='Random seed for selecting the images', metavar='INT',     type=int, default=0, show_default=True)
+@click.option('--batch', 'max_batch_size',  help='Maximum batch size', metavar='INT',                       type=click.IntRange(min=1), default=64, show_default=True)
+@click.option('--workers', 'num_workers',   help='Subprocesses to use for data loading', metavar='INT',     type=click.IntRange(min=0), default=2, show_default=True)
+
+def calc(ref_path, metrics, **opts):
+    """Calculate metrics for a given set of images."""
+    torch.multiprocessing.set_start_method('spawn')
+    dist.init()
+    if dist.get_rank() == 0:
+        ref = load_stats(path=ref_path) # do this first, just in case it fails
+    stats_iter = calculate_stats_for_files(metrics=metrics, **opts)
+    for r in tqdm.tqdm(stats_iter, unit='batch', disable=(dist.get_rank() != 0)):
+        pass
+    if dist.get_rank() == 0:
+        calculate_metrics_from_stats(stats=r.stats, ref=ref, metrics=metrics)
+    torch.distributed.barrier()
+
+if __name__ == "__main__":
+    cmdline()
