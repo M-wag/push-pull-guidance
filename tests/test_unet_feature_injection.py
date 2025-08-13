@@ -1,5 +1,6 @@
 import torch
 import pytest
+import random
 
 from training.networks import EDMPrecond, UNetBlock, InjectionManager
 
@@ -13,6 +14,11 @@ def attention_block():
         attention = True,
         name = "test_block",
     )
+
+
+@pytest.fixture()
+def edm_net():
+    return EDMPrecond(img_resolution=16, img_channels=3)
 
 #----------------------------------------------------------------------------
 # Conditions under which no saving or loading should be done.
@@ -119,10 +125,77 @@ def test_attention_equal_when_save_then_load(attention_block, mocker):
 
 
 #----------------------------------------------------------------------------
-# Test integration between EDMPrecond and DhariwalUNet
+# Test integration between EDMPrecond and UNetBlocks
 
-def test_edm():
-    # Get all p
-    net = EDMPrecond()
+def test_edm_properly_manges_unet_feature_injection(edm_net, mocker):
+    net = edm_net
+    net.set_injection_manager(InjectionManager())
+    a = torch.randn(2, net.img_channels, net.img_resolution, net.img_resolution)
+    b = torch.randn(2, net.img_channels, net.img_resolution, net.img_resolution)
+    t = torch.rand(1) * 80
 
-    assert False
+    # Get all blocks with name 
+    names_blocks_with_attention = []
+    for name in net.names_unet_blocks["enc"]:
+        num_heads = getattr(net.model.enc[name], "num_heads", 0)
+        if num_heads > 0:
+            names_blocks_with_attention.append(name)
+
+
+    # Take a random subset of the names
+    names_registered = random.sample(names_blocks_with_attention, random.randint(1, len(names_blocks_with_attention)))
+
+    # Register blocks
+    net.register_injection([(name, "attention") for name in names_registered])
+
+    # Track registerd Unet Block
+    spies = [mocker.spy(net.model.enc[name], "get_attention") for name in names_registered]
+
+    # Run network and save values
+    net.enable_injection_saving(True)
+    _ = net(a, t)
+    net.enable_injection_saving(False)
+    attns_a = [spy.spy_return.detach().clone() for spy in spies]
+
+    # Run network with different values
+    _ = net(b, t)
+    attns_b = [spy.spy_return.detach().clone() for spy in spies]
+
+    # Verify attention outputs changed with different input
+    mismatches = []
+    for name, attn_a, attn_b in zip(names_registered, attns_a, attns_b):
+        if torch.allclose(attn_a, attn_b,):
+            mismatches.append(name)
+    
+    if mismatches:
+        pytest.fail(f"Attention didn't change for blocks: {mismatches}")
+
+    # Run network with different values, but loading oenable
+    net.enable_injection_loading(True)
+    _ = net(b, t)
+    attns_b_loaded = [spy.spy_return.detach().clone() for spy in spies]
+
+    # Verify loaded attention matches first run's attention
+    mismatches = []
+    for name, attn_a, attn_b_loaded in zip(names_registered, attns_a, attns_b_loaded):
+        if not torch.allclose(attn_a, attn_b_loaded):
+            mismatches.append(name)
+    
+    if mismatches:
+        pytest.fail(f"Loaded attention mismatch in blocks: {mismatches}")
+
+def test_edm_identical_when_injection_manager(edm_net):
+    net = edm_net
+    x = torch.randn(2, net.img_channels, net.img_resolution, net.img_resolution)
+    t = torch.rand(1) * 80
+
+    net.set_injection_manager(None)
+    out_a = net(x, t)
+
+    net.set_injection_manager(InjectionManager())
+    out_b = net(x, t)
+
+    assert torch.allclose(out_a, out_b), \
+            "Output of EDM network should not be changed when having an empty InjectionManager"
+
+    

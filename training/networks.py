@@ -190,8 +190,7 @@ class UNetBlock(torch.nn.Module):
         in_channels, out_channels, emb_channels, up=False, down=False, attention=False,
         num_heads=None, channels_per_head=64, dropout=0, skip_scale=1, eps=1e-5,
         resample_filter=[1,1], resample_proj=False, adaptive_scale=True,
-        init=dict(), init_zero=dict(init_weight=0), init_attn=None,
-        name=None, injection_manager=None
+        init=dict(), init_zero=dict(init_weight=0), init_attn=None, name=None, 
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -211,7 +210,7 @@ class UNetBlock(torch.nn.Module):
         self.skip = None
         
         self.name = name
-        self.injection_manager = injection_manager
+        self.injection_manager = None
 
         if out_channels != in_channels or up or down:
             kernel = 1 if resample_proj or out_channels!= in_channels else 0
@@ -249,7 +248,7 @@ class UNetBlock(torch.nn.Module):
         if self.injection_manager is None:
             return False
         is_registered = self.injection_manager.is_registered(self.name, attribute)
-        should_load_attribute = self.injection_manager.should_load()
+        should_load_attribute = self.injection_manager.should_load() 
         return is_registered and should_load_attribute
         
     def load(self, attribute):
@@ -397,6 +396,14 @@ class DhariwalUNet(torch.nn.Module):
         x = self.out_conv(silu(self.out_norm(x)))
         return x
 
+    @property
+    def names_unet_blocks(self):
+        return {"enc" : list(self.enc.keys()), "dec" : list(self.enc.keys())}
+
+    def _set_injection_manager(self, manager):
+        for layer in self.enc.values():
+            layer.injection_manager = manager
+
 #----------------------------------------------------------------------------
 # Improved preconditioning proposed in the paper "Elucidating the Design
 # Space of Diffusion-Based Generative Models" (EDM).
@@ -412,7 +419,7 @@ class EDMPrecond(torch.nn.Module):
         sigma_max           = float('inf'),     # Maximum supported noise level.
         sigma_data          = 0.5,              # Expected standard deviation of the training data.
         model_type          = 'DhariwalUNet',   # Class name of the underlying model.
-        injection_manager   = None,             # Class name of the underlying model.
+        injection_manager   = None,             # Manager for feature injection
         **model_kwargs,                         # Keyword arguments for the underlying model.
     ):
         super().__init__()
@@ -423,9 +430,10 @@ class EDMPrecond(torch.nn.Module):
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
         self.sigma_data = sigma_data
-        self.injection_manager = injection_manager
         self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels, out_channels=img_channels, 
-                                           label_dim=label_dim, injection_manager=injection_manager, **model_kwargs)
+                                           label_dim=label_dim,  **model_kwargs)
+
+        self.set_injection_manager(injection_manager)
 
     def forward(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
 
@@ -456,5 +464,18 @@ class EDMPrecond(torch.nn.Module):
     @property
     def names_unet_blocks(self):
         return self.model.names_unet_blocks
+
+    def enable_injection_saving(self, val: bool):
+        self._injection_manager.set_saving(val)
+
+    def enable_injection_loading(self, val: bool):
+        self._injection_manager.set_loading(val)
+
+    def register_injection(self, items):
+        self._injection_manager.register(items)
+
+    def set_injection_manager(self, value):
+        self._injection_manager = value
+        self.model._set_injection_manager(value)
 
 #----------------------------------------------------------------------------
