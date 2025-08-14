@@ -16,34 +16,39 @@ def _maybe_register_buffer(module, name, value):
 # Sigmoidal time gating function which can be either quadratic or logistic
 
 class NoiseGate(torch.nn.Module):
-    def __init__(self, type_gate: str, nu: float, decay_rate: float = None):
+    def __init__(self, type_gate: str, nu: float, decay_rate: float = None, noise_onset : float = float('inf')):
         super().__init__()
+        self.type_gate = type_gate  
         self.register_buffer("nu", torch.tensor(nu))
+        self.register_buffer("noise_onset", torch.tensor(noise_onset))
         _maybe_register_buffer(self, "decay_rate", decay_rate)
-        
-        # TODO: This is ugly, please refactor
-        if type_gate == "logistic":
-            self.args = {"type_gate" : type_gate, "nu" : nu, "decay_rate" : decay_rate}
-        else:
-            self.args = {"type_gate" : type_gate, "nu" : nu}
 
         if type_gate == "logistic":
             if decay_rate is None: 
                 raise ValueError("decay_rate must be provided for logistic gating")
-            self._fn = self._logistic_gate
+            self._gate = self._logistic_gate
         elif type_gate == "quadratic":
-            self._fn = self._quadratic_gate
+            self._gate = self._quadratic_gate
         else:
             raise ValueError(f"Unknown gating type: {type_gate!r}")
 
     def forward(self, noise):
-        return self._fn(noise)
+        if noise > self.noise_onset:
+            return torch.zeros_like(noise)
+        return self._gate(noise)
 
     def _logistic_gate(self, noise):
           return torch.sigmoid(self.decay_rate * (noise - self.nu))
 
     def _quadratic_gate(self, noise):
         return noise**2 / (noise**2 + self.nu**2)
+    
+    @property
+    def args(self):
+        if self.type_gate == "logistic":
+            return {"type_gate" : self.type_gate, "nu" : self.nu, "decay_rate" : self.decay_rate, "noise_onset" : self.noise_onset}
+        else:
+            return {"type_gate" : self.type_gate, "nu" : self.nu, "noise_onset" : self.noise_onset}
 
 #----------------------------------------------------------------------------
 # Pullback Operation evaluated by Numerical Differentiation
@@ -305,10 +310,10 @@ registry_noise = Registry()
 # Not all build functions require all arguments.
 
 @registry_latent.register("ambient")
-def build_latent_ambient(*args):
+def build_latent_ambient(args, _args_inv, _shp_templates, device, dtype):
     def latent_fn(x, t): return x
     def latent_inv_fn(x, t): return x
-    latent_fn.args = args[0]
+    latent_fn.args = args
     return latent_fn, latent_inv_fn
 
 def build_latent_from_matrix(mat_in, mat_out, shp_templates, device, dtype):
@@ -334,14 +339,11 @@ def build_latent_random_linear(args, _, shp_templates, device, dtype):
     return latent_fn, latent_inv_fn
 
 @registry_latent.register("unet")
-def build_latent_unet(args, _args_out, _shp, device, dtype):
-    def latent_fn(x, t): return x
-    def latent_inv_fn(x, t):return x
-    latent_fn.args = {"net" : "__REF__network", "hook_manager": "__REF__hook_manager"}
-    return latent_fn, latent_inv_fn
+def build_latent_unet(args, _args_inv, _shp, device, dtype):
+    raise NotImplementedError()
 
 @registry_latent.register("hf")
-def build_latent_hf(args, _args_out, _shp, device, dtype):
+def build_latent_hf(args, _args_inv, _shp, device, dtype):
     from diffusers import AutoencoderKL, AsymmetricAutoencoderKL, AutoencoderTiny
     Autoencoder = {
             "kl"        : AutoencoderKL,
@@ -413,7 +415,7 @@ def buld_noise_edm(*args):
 # Specification for latents
 # <LatentAmbient>   := "ambient"
 # <LatentLinear>    := {seed : _, dim_in: _, dim_out: _, n_features: _}
-# <LatentUNet>      := {net : _, hook_manager: _}
+# <LatentUNet>      := {net : _, attribute: _, index : _}
 # <LatentHF>        := {"autoencoder" : _, "id": _}
 
 def match_args_to_latent(args):
@@ -422,7 +424,7 @@ def match_args_to_latent(args):
             return "ambient"
         case {"seed" : _, "dim_in" : _, "dim_out" : _, "n_features": _}:
             return "linear"
-        case {"net" : _, "hook_manager" : _}:
+        case {"net" : _, "attribute" : _, "index": _}:
             return "unet"
         case {"autoencoder" : _, "id" : _ }:
             return "hf"
