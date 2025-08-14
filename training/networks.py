@@ -150,6 +150,11 @@ class InjectionManager():
     def load(self, name, attribute):
         return self.saved_values[name][attribute]
 
+    def is_empty(self):
+        if self.saved_values.values():
+            return False
+        return True
+
     def save(self, name, attribute, value):
         if isinstance(value, torch.Tensor):
             value = value.detach().clone()
@@ -274,7 +279,7 @@ class UNetBlock(torch.nn.Module):
             a = torch.einsum('nqk,nck->ncq', w, v)
 
             if self.should_save("attention"):
-                self.save("attention", a)
+                self.save("attention", a.reshape(*x.shape))
         return a
 
 #----------------------------------------------------------------------------

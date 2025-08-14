@@ -265,7 +265,7 @@ class GuidanceVF(torch.nn.Module):
         B, N, *shp_data = templates.shape
         templates_merged = templates.reshape(B*N, *shp_data)
         # Calculate features of tempaltes, unmerge and save to vf_latent
-        features_template_merged = self.latent(templates_merged, t=0)
+        features_template_merged = self.latent(templates_merged, t=torch.tensor(0.0).to(device=templates_merged.device))
         features_template = features_template_merged.reshape(B, N, *features_template_merged.shape[1:])
         self.vf_latent.set_features_template(features_template)
 
@@ -377,16 +377,20 @@ class UNetLatentBuilder(LatentBuilder):
         self.net.enable_injection_loading(False)
 
         def latent_fn(x, t, *, net, attribute, names):
-            # TODO : run if not ran efore
-            self.last_x = x.clone.detach()
-            attns = [self.net.injection_manager.load(name, self.attribute) for name in names]
+            if net._injection_manager.is_empty():
+                self.net.enable_injection_saving(True)
+                net(x, t) 
+                self.net.enable_injection_saving(False)
+
+            self.last_x = x.clone().detach()
+            attns = [net._injection_manager.load(name, self.attribute) for name in names]
             z = self.zero_padding_and_concat(attns)
             return z
 
         def latent_inv_fn(z, t, *, net, attribute, names):
             attns = self.undo_zero_padding_and_concat(z)
             for name, attn in zip(names, attns):
-                self.net.save(name, attribute, attn)
+                self.net._injection_manager.save(name, attribute, attn)
 
             net.enable_injection_saving(False)
             net.enable_injection_loading(True)

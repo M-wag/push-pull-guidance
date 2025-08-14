@@ -25,7 +25,6 @@ LATENT_ARGS = [
          {"autoencoder" : "tiny", "id" : "madebyollin/taesd"}
     ]
 
-
 NOISE_GATE_ARGS = [
         {"type_gate" : "quadratic", "nu" : random.randint(0, 80), "noise_onset" : random.random() * 80},
         {"type_gate" : "logistic", "nu" : random.randint(0, 80), "decay_rate" :  random.random(), "noise_onset" : random.random() * 80},
