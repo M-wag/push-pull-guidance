@@ -2,6 +2,7 @@ import torch
 import dnnlib
 
 from functools import partial
+from training.networks import InjectionManager
 
 #----------------------------------------------------------------------------
 # Helper function to assign buffers for arguments that 'may' be torch.Tensor
@@ -169,7 +170,7 @@ class VectorField(torch.nn.Module):
     def _score_attention(self, x_latent, t):
         diffs = self._features_template - x_latent.unsqueeze(1) #(B, N, L)
         attention = self.attention(diffs, passing_diff=True) #(B, N)
-        weights = attention * self.noise_gate(self.noise(t)).unsqueeze(0) * elf.scale # (N, )
+        weights = attention * self.noise_gate(self.noise(t)).unsqueeze(0) * self.scale # (N, )
         score =  torch.einsum("BN, BN... -> B...", weights, diffs) / self.noise(t) ** 2 # (B, D)
         return score
 
@@ -270,7 +271,7 @@ class GuidanceVF(torch.nn.Module):
 
     @property
     def args(self):
-        args_latent = self.latent.args
+        args_latent = self.latent._args
         args_vectorfield = self.vf_latent.args
         args_pullback = self._pullback.args
         args_noise = self.noise.args
@@ -326,7 +327,7 @@ class LatentBuilder:
         raise NotImplementedError
     
     def set_args(self, fn):
-        fn.args = self.args
+        fn._args = self.args
 
 @registry_latent.register("ambient")
 class AmbientLatentBuilder(LatentBuilder):
@@ -363,8 +364,97 @@ class RandomLinearLatentBuilder(LatentBuilder):
         )._build()
 
 @registry_latent.register("unet")
-def build_latent_unet(args, _args_inv, _shp, device, dtype):
-    raise NotImplementedError
+class UNetLatentBuilder(LatentBuilder):
+    def __init__(self, args, args_inv, shp, device, dtype):
+        self.net = args.net
+        self.index = args.index
+        self.attribute = args.attribute
+
+    def _build(self):
+        self.net.set_injection_manager(InjectionManager())
+        self.net.register_injection([(name, self.attribute) for name in self.names_registered])
+        self.net.enable_injection_saving(True)
+        self.net.enable_injection_loading(False)
+
+        def latent_fn(x, t, *, net, attribute, names):
+            # TODO : run if not ran efore
+            self.last_x = x.clone.detach()
+            attns = [self.net.injection_manager.load(name, self.attribute) for name in names]
+            z = self.zero_padding_and_concat(attns)
+            return z
+
+        def latent_inv_fn(z, t, *, net, attribute, names):
+            attns = self.undo_zero_padding_and_concat(z)
+            for name, attn in zip(names, attns):
+                self.net.save(name, attribute, attn)
+
+            net.enable_injection_saving(False)
+            net.enable_injection_loading(True)
+            y = net(self.last_x, t)
+            net.enable_injection_saving(True)
+            net.enable_injection_loading(False)
+            return y
+        
+        latent_fn = partial(latent_fn, net=self.net, names=self.names_registered, attribute=self.attribute)
+        latent_inv_fn = partial(latent_inv_fn, net=self.net, names=self.names_registered, attribute=self.attribute)
+
+        return latent_fn, latent_inv_fn
+
+    @property
+    def names_registered(self):
+        if len(self.names_with_attribute) < len(self.index):
+            raise ValueError(
+                f"Passed more indices than layers with that attribute: "
+                f"{self.names_with_attribute} (indices: {self.index})"
+            )
+        return [self.names_with_attribute[i] for i in self.index] 
+
+    @property 
+    def names_with_attribute(self):
+        if self.attribute == "attention":
+            names_with_attribute = []
+            for name in self.net.names_unet_blocks["enc"]:
+                if getattr(self.net.model.enc[name], "num_heads", 0) > 0:
+                    names_with_attribute.append(name)
+        return names_with_attribute
+
+        
+    def zero_padding_and_concat(self, tensor_list):
+        """ 
+        tensor_list: list of N tensors of shape [B, C_i, H_i, W_i]
+        returns: single tensor [B, sum(C_i), H_max, W_max]
+        """
+
+        max_H = max(t.shape[2] for t in tensor_list)
+        max_W = max(t.shape[3] for t in tensor_list)
+        
+        padded_tensors = []
+        self.padding_metadata = {"shp_og" : []}
+        
+        for t in tensor_list:
+            self.padding_metadata["shp_og"].append(t.shape)
+            _, C, H, W = t.shape
+            
+            # Top-left padding (
+            padding = (0, max_W - W, 0, max_H - H)
+                
+            padded = torch.nn.functional.pad(t, padding, mode='constant', value=0)
+            padded_tensors.append(padded)
+        
+        return torch.cat(padded_tensors, dim=1)
+                    
+    def undo_zero_padding_and_concat(self, concatenated_tensor):
+        shps_og = self.padding_metadata["shp_og"]
+        split_tensors = torch.split(concatenated_tensor, [shp[1] for shp in shps_og ], dim=1)
+        
+        original_tensors = []
+        for t, shape in zip(split_tensors, shps_og):
+            # Simply take the top-left portion
+            original_tensors.append(t[:, :, :shape[2], :shape[3]])
+        return original_tensors
+    
+    def set_args(self, fn):
+        fn._args = {"net" : "__REF__network", "attribute" : self.attribute, "index" : self.index}
 
 @registry_latent.register("hf")
 class HFLatentBuider(LatentBuilder):
@@ -384,14 +474,13 @@ class HFLatentBuider(LatentBuilder):
             except Exception:
                 vae = Autoencoder.from_pretrained(self.args.id)
 
-        vae = vae.eval().requires_grad_(False).to(device=device, dtype=self.dtype)
+        vae = vae.eval().requires_grad_(False).to(device=self.device, dtype=self.dtype)
         
         def latent_fn(x, t) : 
             return vae.encode(x).latent_dist.sample()
         def latent_inv_fn(x, t) : 
             return vae.decode(x).sample 
 
-        latent_fn.args = args
         return latent_fn, latent_inv_fn
 
 #----------------------------------------------------------------------------
