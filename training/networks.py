@@ -234,14 +234,15 @@ class UNetBlock(torch.nn.Module):
         else:
             x = silu(self.norm1(x.add_(params)))
 
+        x = self.conv1(torch.nn.functional.dropout(x, p=self.dropout, training=self.training))
+        x = x.add_(self.skip(orig) if self.skip is not None else orig)
+        x = x * self.skip_scale
+
         if self.num_heads:
             a = self.get_attention(x)
             x = self.proj(a.reshape(*x.shape)).add_(x)
             x = x * self.skip_scale
 
-        x = self.conv1(torch.nn.functional.dropout(x, p=self.dropout, training=self.training))
-        x = x.add_(self.skip(orig) if self.skip is not None else orig)
-        x = x * self.skip_scale
         return x
 
     def should_load(self, attribute) -> bool:
