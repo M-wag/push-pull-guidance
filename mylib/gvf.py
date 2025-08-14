@@ -309,65 +309,90 @@ registry_noise = Registry()
 # Have input (args_latent, args_latent_inv, shape_templates, device, dtype)
 # Not all build functions require all arguments.
 
+class LatentBuilder:
+    def __init__(self, args, args_inv, shp, device, dtype):
+        self.args = args
+        self.args_inv = args_inv
+        self.shp = shp
+        self.device = device
+        self.dtype = dtype
+
+    def build(self):
+        latent_fn, latent_inv_fn = self._build()
+        self.set_args(latent_fn)
+        return latent_fn, latent_inv_fn
+
+    def _build(self):
+        raise NotImplementedError
+    
+    def set_args(self, fn):
+        fn.args = self.args
+
 @registry_latent.register("ambient")
-def build_latent_ambient(args, _args_inv, _shp_templates, device, dtype):
-    def latent_fn(x, t): return x
-    def latent_inv_fn(x, t): return x
-    latent_fn.args = args
-    return latent_fn, latent_inv_fn
+class AmbientLatentBuilder(LatentBuilder):
+    def _build(self):
+        def latent_fn(x, t): return x
+        def latent_inv_fn(z, t): return z
+        return latent_fn, latent_inv_fn
 
-def build_latent_from_matrix(mat_in, mat_out, shp_templates, device, dtype):
-    def latent_fn(x): 
-        return torch.einsum("NOI, BI -> BNO", mat_in, x) # (batch, num_templates * num_features, dim_out)
+class MatrixLatentBuilder(LatentBuilder):
+    def _build(self):
+        mat_in, mat_out = self.args, self.args_inv
 
-    n_templates = shp_templates[0]
-    mat_out_stacked = torch.repeat_interleave(mat_out, dim=0, repeats=n_templates)
-    def latent_inv_fn(x):
-        return torch.einsum("NIO, BNO -> BNI", mat_out_stacked, x) #(batch, num_templates * num_features, dim_in)
+        n_templates = self.shp[0]
+        mat_out_stacked = torch.repeat_interleave(mat_out, dim=0, repeats=n_templates)
 
-    return latent_fn, latent_inv_fn
+        def latent_fn(x):
+            return torch.einsum("NOI, BI -> BNO", mat_in, x) # (batch, num_templates * num_features, dim_out)
+
+        def latent_inv_fn(x):
+            return torch.einsum("NIO, BNO -> BNI", mat_out_stacked, x) #(batch, num_templates * num_features, dim_in)
+
+        return latent_fn, latent_inv_fn
 
 @registry_latent.register("linear")
-def build_latent_random_linear(args, _, shp_templates, device, dtype):
-    # Construct the matrix from seed, along with pseudoinverse
-    g = torch.Generator(device).manual_seed(args.seed)
-    shp_mat_latent = (args.n_features, args.dim_out, args.dim_in)
-    mat_latent = torch.randn(shp_mat_latent, generator=g, device=device, dtype=dtype)
-    mat_latent_inv = torch.linalg.pinv(mat_latent)
-    latent_fn, latent_inv_fn = build_latent_from_matrix(mat_latent, mat_latent_inv, shp_templates, device, dtype)
-    latent_fn.args = args
-    return latent_fn, latent_inv_fn
+class RandomLinearLatentBuilder(LatentBuilder):
+    def _build(self):
+        g = torch.Generator(self.device).manual_seed(self.args.seed)
+        shp_mat_latent = (self.args.n_features, self.args.dim_out, self.args.dim_in)
+        mat_latent = torch.randn(shp_mat_latent, generator=g, device=self.device, dtype=self.dtype)
+        mat_latent_inv = torch.linalg.pinv(mat_latent)
+
+        return MatrixLatentBuilder(
+                mat_latent, mat_latent_inv, self.shp, self.device, self.dtype
+        )._build()
 
 @registry_latent.register("unet")
 def build_latent_unet(args, _args_inv, _shp, device, dtype):
-    raise NotImplementedError()
+    raise NotImplementedError
 
 @registry_latent.register("hf")
-def build_latent_hf(args, _args_inv, _shp, device, dtype):
-    from diffusers import AutoencoderKL, AsymmetricAutoencoderKL, AutoencoderTiny
-    Autoencoder = {
-            "kl"        : AutoencoderKL,
-            "asymmetric": AsymmetricAutoencoderKL,
-            "tiny"      : AutoencoderTiny,
-            }[args.autoencoder]
+class HFLatentBuider(LatentBuilder):
+    def _build(self):
+        from diffusers import AutoencoderKL, AsymmetricAutoencoderKL, AutoencoderTiny
+        Autoencoder = {
+                "kl"        : AutoencoderKL,
+                "asymmetric": AsymmetricAutoencoderKL,
+                "tiny"      : AutoencoderTiny,
+                }[self.args.autoencoder]
 
-    try:
-            vae = Autoencoder.from_pretrained(args.id, subfolder="vae", use_safetensors=True)
-    except Exception:
         try:
-            vae = Autoencoder.from_pretrained(args.id, use_safetensors=True)
+                vae = Autoencoder.from_pretrained(self.args.id, subfolder="vae", use_safetensors=True)
         except Exception:
-            vae = Autoencoder.from_pretrained(args.id)
+            try:
+                vae = Autoencoder.from_pretrained(self.args.id, use_safetensors=True)
+            except Exception:
+                vae = Autoencoder.from_pretrained(self.args.id)
 
-    vae = vae.eval().requires_grad_(False).to(device=device, dtype=dtype)
-    
-    def latent_fn(x, t) : 
-        return vae.encode(x).latent_dist.sample()
-    def latent_inv_fn(x, t) : 
-        return vae.decode(x).sample 
+        vae = vae.eval().requires_grad_(False).to(device=device, dtype=self.dtype)
+        
+        def latent_fn(x, t) : 
+            return vae.encode(x).latent_dist.sample()
+        def latent_inv_fn(x, t) : 
+            return vae.decode(x).sample 
 
-    latent_fn.args = args
-    return latent_fn, latent_inv_fn
+        latent_fn.args = args
+        return latent_fn, latent_inv_fn
 
 #----------------------------------------------------------------------------
 # Builder functions for the pullback operation
@@ -527,7 +552,7 @@ def _create_gvf(
     type_latent = match_args_to_latent(args_latent)
     type_latent_inv = match_args_to_pullback(args_latent_inv) if args_latent_inv else type_latent  # Copy type from type_latent if no args for inverse passed
     shp_templates = args_vectorfield.features_template.shape # Get template shape, necessary for initiliazation of some latents
-    latent_fn, latent_inv_fn = registry_latent[type_latent](args_latent, args_latent_inv, shp_templates, device, dtype)
+    latent_fn, latent_inv_fn = registry_latent[type_latent](args_latent, args_latent_inv, shp_templates, device, dtype).build()
 
     # Infer type of pullback and build from registry
     type_pullback = match_args_to_pullback(args_pullback)
