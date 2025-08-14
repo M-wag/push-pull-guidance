@@ -318,6 +318,7 @@ class LatentBuilder:
         self.device = device
         self.dtype = dtype
 
+    @torch.no_grad()
     def build(self):
         latent_fn, latent_inv_fn = self._build()
         self.set_args(latent_fn)
@@ -371,27 +372,40 @@ class UNetLatentBuilder(LatentBuilder):
         self.attribute = args.attribute
 
     def _build(self):
-        self.net.set_injection_manager(InjectionManager())
+        # Create a dedicated manager for this latent builder
+        self.injection_manager = InjectionManager()
+        self.net.set_injection_manager(self.injection_manager)
+        # Register only the blocks we need
         self.net.register_injection([(name, self.attribute) for name in self.names_registered])
-        self.net.enable_injection_saving(True)
+        # Initialize with saving enabled to capture next call
+        self.net.enable_injection_saving(False)
         self.net.enable_injection_loading(False)
 
+        @torch.no_grad()
         def latent_fn(x, t, *, net, attribute, names):
+            # Model has to run once to acquire attention maps
             if net._injection_manager.is_empty():
                 self.net.enable_injection_saving(True)
-                net(x, t) 
+                net(x, t + 1e-10) 
                 self.net.enable_injection_saving(False)
 
-            self.last_x = x.clone().detach()
+            # Load registered attention modules from last run
             attns = [net._injection_manager.load(name, self.attribute) for name in names]
+            # Store for calculating inverse
+            self.last_x = x.clone().detach()
+            # Concatenate with padding to ensure equal dimensionality
             z = self.zero_padding_and_concat(attns)
             return z
 
+        @torch.no_grad()
         def latent_inv_fn(z, t, *, net, attribute, names):
+            # Split and crop attention maps to original size
             attns = self.undo_zero_padding_and_concat(z)
+            # Save attention maps 
             for name, attn in zip(names, attns):
                 self.net._injection_manager.save(name, attribute, attn)
 
+            # Run network with injected attention
             net.enable_injection_saving(False)
             net.enable_injection_loading(True)
             y = net(self.last_x, t)
@@ -520,7 +534,7 @@ def build_pullback_jvp(*args):
 # Builder functions for noise and noise_dot 
 
 @registry_noise.register("edm")
-def buld_noise_edm(*args):
+def build_noise_edm(*args):
     def noise(t) : return t
     def noise_dot(t) : return 1
     noise.args = "edm"
