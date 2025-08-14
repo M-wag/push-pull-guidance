@@ -81,7 +81,11 @@ def main():
             import myconfig
             importlib.reload(myconfig)
             importlib.reload(generate)
-            
+            from myconfig import gvf_args
+
+            # Refernce non-serializbles
+            gvf_args["args_references"]["network"] = net
+
             # Generate images
             if dist.get_rank() == 0:
                 dist.print0("Generating images...")
@@ -96,6 +100,7 @@ def main():
                 template_dir=template_dir,
                 sampler_kwargs=myconfig.sampler_args,
             )
+
 
                 # Get paths from all batches, not just last
             results = []
