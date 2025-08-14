@@ -5,6 +5,14 @@ import torch
 
 from mylib.helpers import load_from_json, save_to_json
 from mylib.gvf import args_is_linear, create_gvf
+from training.networks import EDMPrecond
+
+#----------------------------------------------------------------------------
+# Dummy version for testing EDMPrecond
+
+@pytest.fixture()
+def edm_net():
+    return EDMPrecond(img_resolution=16, img_channels=3)
 
 #----------------------------------------------------------------------------
 # Options which generate possible GuidanceVectorField configurations
@@ -13,13 +21,14 @@ LATENT_ARGS = [
          "ambient",
          {"seed" : random.randint(0,100), "dim_in" : random.randint(16,32),
           "dim_out" : random.randint(8, 16), "n_features" : random.randint(1,3)},
-         {"net": "__REF__network", "hook_manager" : "__REF__hook_manager"},
+         {"net": "__REF__network", "attribute" : "attention", "index" : [-2, -1]},
          {"autoencoder" : "tiny", "id" : "madebyollin/taesd"}
     ]
 
+
 NOISE_GATE_ARGS = [
-        {"type_gate" : "quadratic", "nu" : random.randint(0, 80)},
-        {"type_gate" : "logistic", "nu" : random.randint(0, 80), "decay_rate" :  random.random()},
+        {"type_gate" : "quadratic", "nu" : random.randint(0, 80), "noise_onset" : random.random() * 80},
+        {"type_gate" : "logistic", "nu" : random.randint(0, 80), "decay_rate" :  random.random(), "noise_onset" : random.random() * 80},
     ]
 
 ARGS_NOISE_ARGS = ["edm"]
@@ -64,15 +73,14 @@ def test_config_gvf_in_equals_config_gvf_out(
         args_latent,
         args_vectorfield,
         args_pullback,
-        args_noise
+        args_noise,
+        edm_net,
     ):
-
 
     # Add non-seriazible values which need to be referenced
     args_references = {}
     args_references["features_template"] = torch.zeros((1, 3, 2, 2))
-    args_references["network"] = None
-    args_references["hook_manager"] = None
+    args_references["network"] = edm_net
 
     # Construct gvf args
     args_in = {
