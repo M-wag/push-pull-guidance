@@ -51,7 +51,7 @@ def main():
     dist.init()
     
     # Configuration
-    num_images = 10
+    num_images = 20
     device = "cuda" if torch.cuda.is_available() else "cpu"
     seeds = range(0, num_images)
     outdir = ".temp/last"
@@ -80,6 +80,7 @@ def main():
             # Reload configuration
             import myconfig
             importlib.reload(myconfig)
+            importlib.reload(generate)
             
             # Generate images
             if dist.get_rank() == 0:
