@@ -15,9 +15,6 @@ from typing import List, Any, Literal, Callable, Optional
 import torch.nn.functional as F
 from torch import Tensor
 from einops import rearrange
-from torch import Tensor
-from functools import partial
-from .helpers import Config
 
 DISABLE_TQDM = False
 
@@ -42,30 +39,25 @@ def edm_sampler(
     apply_2nd_order     : bool = True,
     scale_model_score   : float = 1.0, 
     save_all_timesteps  : bool = True,
-    network_hook        : Any = None,
     correct_rgb         : bool = True,
     disable_tqdm        : bool = False,
 ):
     # Gradient of denoiser
     def gradient(x, t):
+        grad = torch.zeros_like(x)
         denoised = net(x, t, labels).to(dtype)
-        grad = scale_model_score * (x - denoised) / t
+        grad += scale_model_score * (x - denoised) / t
         if gvf:
-            grad_template = gvf(x, t)
-            grad += grad_template
+            grad += gvf(x, t)
         return grad.to(dtype)
-
-    if network_hook is not None:
-        net.hook = network_hook
 
     # Adjust noise levels based on what's supported by the network.
     sigma_min = max(sigma_min, net.sigma_min)
     sigma_max = min(sigma_max, net.sigma_max)
 
     # Time step discretization.
-    step_indices = torch.arange(num_steps, dtype=dtype, device=noise.device)
-    t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
-    t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
+    t_steps = edm_time_step_discrretization(num_steps, sigma_min, sigma_max, rho) # t_N=0
+    t_steps = t_steps.to(device=device, dtype=dtype)
 
     xs = None 
     # Intialize empty array to save intermediate timestaps
@@ -99,6 +91,12 @@ def edm_sampler(
         y = (y * 127.5 + 128) / 255
 
     return y, (t_steps.cpu().numpy(), )
+
+def edm_time_step_discrretization(num_steps, sigma_min, sigma_max, rho):
+    step_indices = torch.arange(num_steps)
+    t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+    t_steps = torch.cat([torch.as_tensor(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
+    return t_steps
 
 def load_templates(path, device=None, dtype=None, for_torch=True, rescale=False):
     # Load templates data
