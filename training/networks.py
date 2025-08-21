@@ -1,4 +1,4 @@
-# Copyright (c) 2022, NVIDI
+# Copyright (c) 2022, NVIDIA
 #
 # This work is licensed under a Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -244,11 +244,24 @@ class UNetBlock(torch.nn.Module):
         x = x * self.skip_scale
 
         if self.num_heads:
-            a = self.get_attention(x)
-            x = self.proj(a.reshape(*x.shape)).add_(x)
+            a = self.compute_attention(x)
+            x = self.proj(a).add_(x)
             x = x * self.skip_scale
 
         return x
+
+    def compute_attention(self, x):
+        if self.should_load("attention"):
+            a = self.load("attention")
+        else:
+            q, k, v = self.qkv(self.norm2(x)).reshape(x.shape[0] * self.num_heads, x.shape[1] // self.num_heads, 3, -1).unbind(2)
+            w = AttentionOp.apply(q, k)
+            a = torch.einsum('nqk,nck->ncq', w, v)
+            a = a.reshape(*x.shape)
+
+            if self.should_save("attention"):
+                self.save("attention", a)
+        return a
 
     def should_load(self, attribute) -> bool:
         if self.injection_manager is None:
@@ -269,18 +282,6 @@ class UNetBlock(torch.nn.Module):
 
     def save(self, attribute, val):
         return self.injection_manager.save(self.name, attribute, val)
-
-    def get_attention(self, x):
-        if self.should_load("attention"):
-            a = self.load("attention")
-        else:
-            q, k, v = self.qkv(self.norm2(x)).reshape(x.shape[0] * self.num_heads, x.shape[1] // self.num_heads, 3, -1).unbind(2)
-            w = AttentionOp.apply(q, k)
-            a = torch.einsum('nqk,nck->ncq', w, v)
-
-            if self.should_save("attention"):
-                self.save("attention", a.reshape(*x.shape))
-        return a
 
 #----------------------------------------------------------------------------
 # Timestep embedding used in the DDPM++ and ADM architectures.

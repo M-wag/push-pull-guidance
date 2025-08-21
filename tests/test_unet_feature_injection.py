@@ -103,7 +103,7 @@ def test_attention_equal_when_save_then_load(attention_block, mocker):
 
     # Run the model and save track attention layer.
     injection_manager.set_saving(True)
-    spy = mocker.spy(attention_block, "get_attention") 
+    spy = mocker.spy(attention_block, "compute_attention") 
     _ = attention_block(a, emb)
     injection_manager.set_saving(False)
     attn_a = spy.spy_return.detach().clone()
@@ -149,7 +149,7 @@ def test_edm_properly_manges_unet_feature_injection(edm_net, mocker):
     net.register_injection([(name, "attention") for name in names_registered])
 
     # Track registerd Unet Block
-    spies = [mocker.spy(net.model.enc[name], "get_attention") for name in names_registered]
+    spies = [mocker.spy(net.model.enc[name], "compute_attention") for name in names_registered]
 
     # Run network and save values
     net.enable_injection_saving(True)
