@@ -60,15 +60,15 @@ class PullbackNumericalDifferentiation(torch.nn.Module):
         self.register_buffer("a", torch.tensor(step_size_slope))
         self.register_buffer("b", torch.tensor(step_size_intercept))
     
-    def step_size(self, t):
-        return t * self.a + self.b
+    def step_size(self, noise):
+        return  noise**2 * self.a + self.b
 
     @torch.no_grad
-    def forward(self, latent_inv, x_latent, dx_latent, t):
-        perturbed_latent = x_latent + self.step_size(t) * dx_latent
-        f_perturbed = latent_inv(perturbed_latent, t)
-        f_original = latent_inv(x_latent, t)
-        dx = (f_perturbed - f_original) / self.step_size(t)
+    def forward(self, latent_inv, x_latent, dx_latent, noise):
+        perturbed_latent = x_latent + self.step_size(noise) * dx_latent
+        f_perturbed = latent_inv(perturbed_latent, noise)
+        f_original = latent_inv(x_latent, noise)
+        dx = (f_perturbed - f_original) / self.step_size(noise)
         return dx
 
 #----------------------------------------------------------------------------
@@ -364,7 +364,49 @@ class RandomLinearLatentBuilder(LatentBuilder):
                 mat_latent, mat_latent_inv, self.shp, self.device, self.dtype
         )._build()
 
-@registry_latent.register("unet")
+
+@registry_latent.register("unet-skip")
+class SkipInjectionLatentBuilder(LatentBuilder):
+    def _build(self):
+        # Create a dedicated manager for this latent builder
+        self.injection_manager = InjectionManager()
+        self.net.set_injection_manager(self.injection_manager)
+        # Register only the parts we need
+        self.net.register_injection("unet", "skips")
+        self.net.register_injection("unet", "embedding")
+        # Initialize with saving enabled to capture next call
+        self.net.enable_injection_saving(True)
+
+        def latent_fn(x, t, *, net, index):
+            skips = net._injection_manager.load("unet", "skips")
+            skips_target = [skips[i] for i in index]
+            z = self.concat_and_flat(skips_target)
+            return z 
+
+        def latent_inv_fn(z, t, *, net, index):
+            # Split and crop skip connections to original size
+            skips_modified = self.undo_concat_and_crop(z)
+            # Combine unmodified skips with modified skips
+            skips_saved = load("unet", "skips")
+            skips_combined = []
+            for i in range(len(skips_saved)):
+                if i in index:
+                    skips_combined.append(skips_modified[index.index(i)])
+                else:
+                    skips_combined.append(skips_saved[i])
+
+            # Get noise embedding 
+            emb = net.get("unet", "embedding")
+            # Return reconstructed version
+            y = net.down(skips_combined, emb)
+            return y 
+        
+        latent_fn = partial(latent_fn, net=self.net, index=self.index)
+        latent_inv_fn = partial(latent_inv_fn, net=self.net, index=self.index)
+
+        return latent, latent_inv_fn
+
+@registry_latent.register("unet-attn")
 class UNetLatentBuilder(LatentBuilder):
     def __init__(self, args, args_inv, shp, device, dtype):
         self.net = args.net
@@ -378,7 +420,7 @@ class UNetLatentBuilder(LatentBuilder):
         # Register only the blocks we need
         self.net.register_injection([(name, self.attribute) for name in self.names_registered])
         # Initialize with saving enabled to capture next call
-        self.net.enable_injection_saving(False)
+        self.net.enable_injection_saving(True)
         self.net.enable_injection_loading(False)
 
         @torch.no_grad()
@@ -547,7 +589,8 @@ def build_noise_edm(*args):
 # Specification for latents
 # <LatentAmbient>   := "ambient"
 # <LatentLinear>    := {seed : _, dim_in: _, dim_out: _, n_features: _}
-# <LatentUNet>      := {net : _, attribute: _, index : _}
+# <LatentUNetAttn>  := {net : _, attribute: "attention", index : _}
+# <LatentUNetSkip>  := {net : _, attribute: "skip", index : _}
 # <LatentHF>        := {"autoencoder" : _, "id": _}
 
 def match_args_to_latent(args):
@@ -556,8 +599,10 @@ def match_args_to_latent(args):
             return "ambient"
         case {"seed" : _, "dim_in" : _, "dim_out" : _, "n_features": _}:
             return "linear"
-        case {"net" : _, "attribute" : _, "index": _}:
-            return "unet"
+        case {"net" : _, "attribute" : "attention", "index": _}:
+            return "unet-attn"
+        case {"net" : _, "attribute" : "skip", "index": _}:
+            return "unet-skip"
         case {"autoencoder" : _, "id" : _ }:
             return "hf"
     raise ValueError(f"Unrecognized latent/latent_inv args: {set(args) if isinstance(args, dict) else args!r}")
