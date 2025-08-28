@@ -1,8 +1,12 @@
+import copy
 import torch
 import pytest
 import random
-
+from contextlib import contextmanager
 from training.networks import EDMPrecond, UNetBlock, InjectionManager
+
+#----------------------------------------------------------------------------
+# Fixtures for AttentionBlock and EDMPrecond
 
 @pytest.fixture()
 def attention_block():
@@ -19,6 +23,68 @@ def attention_block():
 @pytest.fixture()
 def edm_net():
     return EDMPrecond(img_resolution=16, img_channels=3)
+
+
+
+#----------------------------------------------------------------------------
+# Helper function to deal with copying of when type is ambigious
+
+def safe_copy(obj):
+    """
+    Safely copy an object that could be a tensor, list, or other type.
+    Returns a copy that preserves the original structure and values.
+    """
+    if isinstance(obj, torch.Tensor):
+        # Clone tensors to preserve their values
+        return obj.clone()
+    elif isinstance(obj, list) or isinstance(obj, tuple):
+        # Recursively copy list elements
+        return type(obj)(safe_copy(item) for item in obj)
+    elif isinstance(obj, dict):
+        # Recursively copy dictionary values
+        return {key: safe_copy(value) for key, value in obj.items()}
+    else:
+        # For other types, use standard copy
+        return copy.copy(obj)
+
+#----------------------------------------------------------------------------
+# Context manager for tracking calls 
+
+@contextmanager
+def track_method(obj, method_name):
+    """
+    Track calls to a specific method on an object.
+    Yields a tracker object with input and output information.
+    """
+    
+    class Tracker():
+        def __init__(self):
+            self.called = False
+            self.call_count = 0
+            self.inputs = []
+            self.outputs = []
+
+        @property
+        def last_args(self):
+            return self.inputs[-1][0]
+
+    tracker = Tracker()
+    original_method = getattr(obj, method_name)
+
+    def tracked_method(*args, **kwargs):
+        tracker.called = True
+        tracker.call_count += 1
+        tracker.inputs.append((safe_copy(args), safe_copy(kwargs)))
+        result = original_method(*args, **kwargs)
+        tracker.outputs.append(result)
+        return result
+
+    try: 
+        setattr(obj, method_name, tracked_method)
+        yield tracker 
+    finally:
+        setattr(obj, method_name, original_method)
+
 
 #----------------------------------------------------------------------------
 # Conditions under which no saving or loading should be done.
@@ -119,13 +185,14 @@ def test_attention_equal_when_save_then_load(attention_block, mocker):
     injection_manager.set_loading(True)
     _ = attention_block(b, emb)
     attn_b_loaded = spy.spy_return.detach().clone()
+    breakpoint()
 
     assert torch.all(attn_a == attn_b_loaded), \
             "Loaded attention should identitical first run when injection_manager is loading"
 
 
 #----------------------------------------------------------------------------
-# Test integration between EDMPrecond and UNetBlocks
+# Test integration for attention injection between EDMPrecond and UNetBlocks
 
 def test_edm_properly_manges_unet_feature_injection(edm_net, mocker):
     net = edm_net
@@ -140,7 +207,6 @@ def test_edm_properly_manges_unet_feature_injection(edm_net, mocker):
         num_heads = getattr(net.model.enc[name], "num_heads", 0)
         if num_heads > 0:
             names_blocks_with_attention.append(name)
-
 
     # Take a random subset of the names
     names_registered = random.sample(names_blocks_with_attention, random.randint(1, len(names_blocks_with_attention)))
@@ -198,4 +264,79 @@ def test_edm_identical_when_injection_manager(edm_net):
     assert torch.allclose(out_a, out_b), \
             "Output of EDM network should not be changed when having an empty InjectionManager"
 
+
+def test_save_load_skips_only_when_registered():
+    pass
+
+#----------------------------------------------------------------------------
+# When saving then loading make sure attention matches
+
+def test_skips(edm_net):
+    # Setup network and pick random skips to register
+    net = edm_net
+    net.set_injection_manager(InjectionManager())
+    idxs = sorted(random.sample(range(0, net.num_skips), k=max(net.num_skips // 3, 1)))
+    for idx in idxs:
+        net.register_injection((f"skip_{idx}", "skip"))
     
+    # Random inputs
+    a = torch.randn(2, net.img_channels, net.img_resolution, net.img_resolution)
+    b = torch.randn(2, net.img_channels, net.img_resolution, net.img_resolution)
+    t = torch.rand(1) * 80
+
+    with track_method(net.model, "decoder") as tracker:
+        # Run the model and save track skip connections.
+        with net.injection_mode(save_features=True):
+            net(a, t)
+        skips_a = tracker.last_args[0]
+    
+        # Run the model again with different values
+        _ = net(b, t)
+        skips_b = tracker.last_args[0]
+
+        for index in idxs:
+            skip_a = skips_a[index]
+            skip_b = skips_b[index]
+            
+            # Verify that this specific skip connection differs between runs
+            assert not torch.equal(skip_a, skip_b), \
+                f"Skip connection at index {index} was identical between runs. " \
+                "This suggests injection loading may be occurring when it shouldn't be"
+
+        # Run the model again with differnet values, but with loading on
+        with net.injection_mode(load_features=True):
+            net(b, t)
+        skips_b_loaded = tracker.last_args[0]
+
+        assert len(skips_a) == len(skips_b)
+
+        for index in range(len(skips_a)):
+            if index in idxs:
+                skip = skips_a[index]
+            else:
+                skip = skips_b[index]
+
+            skip_b = skips_b_loaded[index]
+            
+            # Verify that this specific skip connection is identical between runs
+            assert torch.equal(skip, skip_b), \
+                f"Indices : {idxs} \n" \
+                f"Skip connection at index {index} differs between runs. " \
+                "This suggests injection loading may not be working correctly."
+
+#----------------------------------------------------------------------------
+# Make sure num skips matches len of sis 
+
+def test_num_skips_match_length_skips(edm_net):
+    # Initialize model and pick random inputs
+    net = edm_net
+    a = torch.randn(2, net.img_channels, net.img_resolution, net.img_resolution)
+    t = torch.rand(1) * 80
+
+    with track_method(net.model, "decoder") as tracker:
+        out = net(a, t)
+
+    skips = tracker.last_args[0]
+
+    assert net.num_skips == len(skips), \
+        f"Length of encoder output ({len(skips)}) should match net.num_skips property ({net.num_skips})"

@@ -22,6 +22,7 @@ LATENT_ARGS = [
          {"seed" : random.randint(0,100), "dim_in" : random.randint(16,32),
           "dim_out" : random.randint(8, 16), "n_features" : random.randint(1,3)},
          {"net": "__REF__network", "attribute" : "attention", "index" : [-2, -1]},
+         {"net": "__REF__network", "attribute" : "skip", "index" : [-2, -1]},
          {"autoencoder" : "tiny", "id" : "madebyollin/taesd"}
     ]
 
