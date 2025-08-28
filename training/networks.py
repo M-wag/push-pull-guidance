@@ -13,8 +13,7 @@ import torch
 from torch_utils import persistence
 from torch.nn.functional import silu
 from collections import defaultdict
-from typing import Optional
-from dataclasses import dataclass, field, asdict
+from contextlib import contextmanager
 #----------------------------------------------------------------------------
 # Unified routine for initializing weights and biases.
 
@@ -376,7 +375,21 @@ class DhariwalUNet(torch.nn.Module):
         self.out_conv = Conv2d(in_channels=cout, out_channels=out_channels, kernel=3, **init_zero)
 
     def forward(self, x, noise_labels, class_labels, augment_labels=None):
-        # Mapping.
+        emb = self.emb(x, noise_labels, class_labels, augment_labels)  # Mapping
+        skips = self.encoder(x, emb)
+
+        # Handle loading and saving of skips 
+        for i in range(len(skips)):
+            skip_name = f"skip_{i}"
+            if self.should_load(skip_name):
+                skips[i] = self.load(skip_name)
+            elif self.should_save(skip_name):
+                self.save(skip_name, skips[i])
+
+        x = self.decoder(skips, emb)
+        return x 
+
+    def emb(self, x, noise_labels, class_labels, augment_labels):
         emb = self.map_noise(noise_labels)
         if self.map_augment is not None and augment_labels is not None:
             emb = emb + self.map_augment(augment_labels)
@@ -388,14 +401,17 @@ class DhariwalUNet(torch.nn.Module):
                 tmp = tmp * (torch.rand([x.shape[0], 1], device=x.device) >= self.label_dropout).to(tmp.dtype)
             emb = emb + self.map_label(tmp)
         emb = silu(emb)
+        return emb 
 
-        # Encoder.
+    def encoder(self, x, emb):
         skips = []
         for block in self.enc.values():
             x = block(x, emb) if isinstance(block, UNetBlock) else block(x)
             skips.append(x)
+        return skips 
 
-        # Decoder.
+    def decoder(self, skips, emb):
+        x = skips[-1]
         for block in self.dec.values():
             if x.shape[1] != block.in_channels:
                 x = torch.cat([x, skips.pop()], dim=1)
@@ -407,9 +423,34 @@ class DhariwalUNet(torch.nn.Module):
     def names_unet_blocks(self):
         return {"enc" : list(self.enc.keys()), "dec" : list(self.enc.keys())}
 
+    @property
+    def num_skips(self):
+        return len(self.enc.values())
+
     def _set_injection_manager(self, manager):
+        self.injection_manager = manager
         for layer in self.enc.values():
             layer.injection_manager = manager
+
+    def should_load(self, name) -> bool:
+        if self.injection_manager is None:
+            return False
+        is_registered = self.injection_manager.is_registered(name, "skip")
+        should_load_attribute = self.injection_manager.should_load() 
+        return is_registered and should_load_attribute
+        
+    def load(self, name):
+        return self.injection_manager.load(name, "skip")
+
+    def should_save(self, name) -> bool:
+        if self.injection_manager is None:
+            return False
+        is_registered = self.injection_manager.is_registered(name, "skip")
+        should_save_attribute = self.injection_manager.should_save()
+        return is_registered and should_save_attribute
+
+    def save(self, name, val):
+        return self.injection_manager.save(name, "skip", val)
 
 #----------------------------------------------------------------------------
 # Improved preconditioning proposed in the paper "Elucidating the Design
@@ -465,12 +506,11 @@ class EDMPrecond(torch.nn.Module):
         D_x = c_skip * x + c_out * F_x.to(torch.float32)
         return D_x
 
+    def decoder(skips, sigma, class_labels=None, force_fp32=False, **model_kwargs):
+        pass
+
     def round_sigma(self, sigma):
         return torch.as_tensor(sigma)
-
-    @property
-    def names_unet_blocks(self):
-        return self.model.names_unet_blocks
 
     def enable_injection_saving(self, val: bool):
         self._injection_manager.set_saving(val)
@@ -484,5 +524,32 @@ class EDMPrecond(torch.nn.Module):
     def set_injection_manager(self, value):
         self._injection_manager = value
         self.model._set_injection_manager(value)
+
+    def injection_mode(self, save_features=False, load_features=False):
+        @contextmanager
+        def injection_context():
+            # Save state before injection context
+            old_save_state = self._injection_manager._save
+            old_load_state = self._injection_manager._load
+            # Set to new save and load state
+            self.enable_injection_saving(save_features)
+            self.enable_injection_loading(load_features)
+
+            try:
+                yield
+            finally:
+                self.enable_injection_saving(old_save_state)
+                self.enable_injection_loading(old_load_state)
+
+        return injection_context()
+
+    @property
+    def names_unet_blocks(self):
+        return self.model.names_unet_blocks
+
+    @property
+    def num_skips(self):
+        return self.model.num_skips
+
 
 #----------------------------------------------------------------------------
