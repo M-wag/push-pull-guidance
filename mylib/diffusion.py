@@ -1,102 +1,180 @@
 import tqdm
-import time
-import pickle
 import numpy as np
 import torch 
 import os
-import itertools
-import dnnlib
-from PIL import Image
-from einops import rearrange, repeat
 from torchvision.io import read_image, ImageReadMode
-from torch.autograd.functional import jvp
-from dataclasses import dataclass
-from typing import List, Any, Literal, Callable, Optional
-import torch.nn.functional as F
-from torch import Tensor
-from einops import rearrange
 
 DISABLE_TQDM = False
 
-@torch.no_grad()
-def edm_sampler(
-    net                 , 
-    noise               ,
-    labels              ,
-    gvf                 ,       
-    device              ,
-    *,
-    num_steps           : int, 
-    sigma_min           : float,
-    sigma_max           : float, 
-    rho                 : float, 
-    S_churn             : float, 
-    S_min               : float, 
-    S_max               : float,
-    S_noise             : float, 
+#----------------------------------------------------------------------------
+# Modified version of EDM sampler.
+# Modular options for gradient and time step discretization.
 
-    dtype               = torch.float32,
-    apply_2nd_order     : bool = True,
-    scale_model_score   : float = 1.0, 
-    save_all_timesteps  : bool = True,
-    correct_rgb         : bool = True,
-    disable_tqdm        : bool = False,
-):
-    # Gradient of denoiser
-    def gradient(x, t):
-        grad = torch.zeros_like(x)
-        denoised = net(x, t, labels).to(dtype)
-        grad += scale_model_score * (x - denoised) / t
-        if gvf:
-            grad += gvf(x, t)
-        return grad.to(dtype)
+class EDMSampler:
+    def __init__(self, method_gradient: str, method_discrete: str, gradient_kwargs={}, time_step_kwargs={}):
+         self.set_gradient_method(method_gradient, **gradient_kwargs)
+         self.set_time_step_method(method_discrete, **time_step_kwargs)
 
-    # Adjust noise levels based on what's supported by the network.
-    sigma_min = max(sigma_min, net.sigma_min)
-    sigma_max = min(sigma_max, net.sigma_max)
+    @torch.no_grad()
+    def __call__(
+        self                ,
+        net                 , 
+        noise               ,
+        labels              ,
+        gvf                 ,       
+        device              ,
+        *,
+        num_steps           : int, 
+        sigma_min           : float,
+        sigma_max           : float, 
+        rho                 : float, 
+        S_churn             : float, 
+        S_min               : float, 
+        S_max               : float,
+        S_noise             : float, 
 
-    # Time step discretization.
-    t_steps = edm_time_step_discrretization(num_steps, sigma_min, sigma_max, rho) # t_N=0
-    t_steps = t_steps.to(device=device, dtype=dtype)
-
-    xs = None 
-    # Intialize empty array to save intermediate timestaps
-    if save_all_timesteps:
-        xs = torch.empty((num_steps, noise.shape[0], net.img_channels, net.img_resolution, net.img_resolution))
-
-    # Main sampling loop.
-    x_next = noise.to(dtype) * t_steps[0]
-    for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1, disable=disable_tqdm): # 0, ..., N-1
-        x_cur = x_next
-
-        # Increase noise temporarily.
-        gamma = min(S_churn / num_steps, np.sqrt(2) - 1) if S_min <= t_cur <= S_max else 0
-        t_hat = net.round_sigma(t_cur + gamma * t_cur)
-        x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
-
-        # Euler step
-        d_cur = gradient(x_hat, t_hat) 
-        x_next = x_hat + d_cur * (t_next - t_hat)
-
-        # Apply 2nd order correction
-        if apply_2nd_order and i < num_steps - 1:
-            d_prime = gradient(x_next, t_next) 
-            x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
+        dtype               = torch.float32,
+        apply_2nd_order     : bool = True,
+        scale_model_score   : float = 1.0, 
+        save_all_timesteps  : bool = True,
+        correct_rgb         : bool = True,
+        disable_tqdm        : bool = False,
+    ):
+        # Adjust noise levels based on what's supported by the network
+        sigma_min = max(sigma_min, net.sigma_min)
+        sigma_max = min(sigma_max, net.sigma_max)
         
+        # Time step discretization.
+        t_steps = self.time_step_fn(num_steps, sigma_min=sigma_min, sigma_max=sigma_max, rho=rho) # t_N=0
+        t_steps = t_steps.to(device=device, dtype=dtype)
+
+        xs = None 
+        # Intialize empty array to save intermediate timesteps
         if save_all_timesteps:
-            xs[i] = x_next
+            xs = torch.empty((num_steps, noise.shape[0], net.img_channels, net.img_resolution, net.img_resolution))
 
-    y = xs if save_all_timesteps else x_next
-    if correct_rgb:
-        y = (y * 127.5 + 128) / 255
+        # Main sampling loop.
+        x_next = noise.to(dtype) * t_steps[0]
+        for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1, disable=disable_tqdm): # 0, ..., N-1
+            x_cur = x_next
 
-    return y, (t_steps.cpu().numpy(), )
+            # Increase noise temporarily.
+            gamma = min(S_churn / num_steps, np.sqrt(2) - 1) if S_min <= t_cur <= S_max else 0
+            t_hat = net.round_sigma(t_cur + gamma * t_cur)
+            x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
 
-def edm_time_step_discrretization(num_steps, sigma_min, sigma_max, rho):
-    step_indices = torch.arange(num_steps)
-    t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
-    t_steps = torch.cat([torch.as_tensor(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
-    return t_steps
+            # Euler step
+            d_cur = self.gradient_fn(x_hat, t_hat, net=net, gvf=gvf, scale_model_score=scale_model_score, labels=labels) 
+            x_next = x_hat + d_cur * (t_next - t_hat)
+
+            # Apply 2nd order correction
+            if apply_2nd_order and i < num_steps - 1:
+                d_prime = self.gradient_fn(x_next, t_next, net=net, gvf=gvf, scale_model_score=scale_model_score, labels=labels) 
+                x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
+            
+            if save_all_timesteps:
+                xs[i] = x_next
+
+        x_0= xs if save_all_timesteps else x_next
+        if correct_rgb:
+            x_0 = (x_0 * 127.5 + 128) / 255
+
+        return x_0, (t_steps.cpu().numpy(), )
+        
+    def set_gradient_method(self, method: str, **kwargs):
+        """Set the gradient computation method."""
+        if method == "gvf":
+            self.gradient_fn = gradient_gvf
+        elif method == "inject-fusion":
+            raise NotImplementedError()
+        else:
+            raise ValueError(f"Unknown gradient method: {method}")
+            
+    def set_time_step_method(self, method: str):
+        """Set the time step discretization method."""
+        if method == "edm":
+            self.time_step_fn = time_steps_edm
+        elif method == "ddim":
+            raise NotImplementedError()
+        else:
+            raise ValueError(f"Unknown time step method: {method}")
+
+    @torch.no_grad()
+    def edm_inversion(
+        self,
+        net,
+        images,  
+        labels,
+        device,
+        *,
+        num_steps: int,
+        sigma_min: float,
+        sigma_max: float,
+        rho: float,
+        dtype=torch.float32,
+        apply_2nd_order: bool = False,  
+        save_all_timesteps: bool = True,
+        disable_tqdm: bool = False,
+        **kwargs,
+    ):
+
+        # Adjust noise levels based on what's supported by the network
+        sigma_min = max(sigma_min, net.sigma_min)
+        sigma_max = min(sigma_max, net.sigma_max)
+
+        # Reverse the time steps (from low noise to high noise)
+        t_steps = self.time_step_fn(num_steps, sigma_min=sigma_min, sigma_max=sigma_max, rho=rho)
+        t_steps = torch.flip(t_steps, [0]) 
+        t_steps = t_steps.to(device=device, dtype=dtype)
+
+        # Initialize empty array arraty
+        if save_all_timesteps:
+            xs = torch.empty((num_steps, images.shape[0], net.img_channels, net.img_resolution, net.img_resolution))
+
+        # Main inversion loop (go from low noise to high noise)
+        x_cur = images.to(dtype)
+        for i, (t_cur, t_next) in tqdm.tqdm( list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1, disable=disable_tqdm):
+            print(t_cur.item(), t_next.item())
+            # Reverse Euler step
+            denoised = net(x_cur, t_cur, labels).to(dtype)
+            d_cur = (x_cur - denoised) / t_cur
+            x_next = x_cur - (t_next - t_cur) * d_cur
+            
+            if save_all_timesteps:
+                xs[i] = x_next
+                
+            x_cur = x_next
+
+        x_T = xs[-1] if save_all_timesteps else x_next
+        return x_T, xs if save_all_timesteps else None
+
+#----------------------------------------------------------------------------
+# Time step discretization functions 
+
+def time_steps_edm(num_steps,  net=None, *, sigma_min, sigma_max, rho):
+        step_indices = torch.arange(num_steps, dtype=torch.float64)
+        t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+        if net:
+            t_steps = net.round_sigma(t_steps)
+        t_steps = torch.cat([t_steps, torch.zeros_like(t_steps[:1])]) # t_N = 0
+        return t_steps
+
+def time_steps_ddim(num_steps, device, net=None):
+    raise NotImplementedError
+
+#----------------------------------------------------------------------------
+# Gradient functions for sampler 
+
+def gradient_gvf(x, t, *, net, gvf, scale_model_score, labels):
+    grad = torch.zeros_like(x)
+    denoised = net(x, t, labels).to(t.dtype)
+    grad += scale_model_score * (x - denoised) / t
+    grad += gvf(x, t)
+    return grad.to(t.dtype)
+
+
+#----------------------------------------------------------------------------
+# Helper functions for loading in templates from a path
 
 def load_templates(path, device=None, dtype=None, for_torch=True, rescale=False):
     # Load templates data
