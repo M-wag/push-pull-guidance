@@ -185,7 +185,6 @@ def test_attention_equal_when_save_then_load(attention_block, mocker):
     injection_manager.set_loading(True)
     _ = attention_block(b, emb)
     attn_b_loaded = spy.spy_return.detach().clone()
-    breakpoint()
 
     assert torch.all(attn_a == attn_b_loaded), \
             "Loaded attention should identitical first run when injection_manager is loading"
