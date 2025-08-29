@@ -51,7 +51,7 @@ def main():
     dist.init()
     
     # Configuration
-    num_images = 20
+    num_images = 2
     device = "cuda" if torch.cuda.is_available() else "cpu"
     seeds = range(0, num_images)
     outdir = ".temp/last"
@@ -99,6 +99,8 @@ def main():
                 device=device,
                 template_dir=template_dir,
                 sampler_kwargs=myconfig.sampler_args,
+                live_editing=True,
+                ddim_inversion=True
             )
 
 
@@ -127,7 +129,7 @@ def main():
                 compositions = compose_images_batched([original, edited, examples])
                 
                 for i, comp in enumerate(compositions):
-                    comp.save(os.path.join(outdir, f"{i:06d}.png"))  # Fixed typo
+                    comp.save(os.path.join(outdir, f"{i:06d}.png"))  
 
         except KeyboardInterrupt:
             if dist.get_rank() == 0:
