@@ -485,7 +485,8 @@ def calculate_metrics_from_generator(
     outdir          = None,                 # Where to save the output images. None = do not save.
     feature_dir     = None,                 # Where to save the features of images. None = do not save.
     subdirs         = False,                # Create subdirectory for every 1000 seeds?
-    template_dir    = None                  # Where templates are stored
+    template_dir    = None,                 # Where templates are stored
+    live_editing    = False,                # Whether to perform live editing during generate images
 ) -> dict[str, float]:
     """Calculate metrics for a generative model."""
     dist.init()
@@ -498,13 +499,14 @@ def calculate_metrics_from_generator(
     seeds = range(seed, seed + num_images)
     image_iter = generate.generate_images(
         net=network_pkl,
-        gvf_args=cfg_gvf,
+        sampler_kwargs=sampler_kwargs,
         seeds=seeds,
         max_batch_size=max_batch_size,
+        gvf_args=cfg_gvf,
         outdir=outdir,
         subdirs=subdirs,
-        sampler_kwargs=sampler_kwargs,
         template_dir=template_dir,
+        live_editing=live_editing,
     )
 
     # Calculate statistics
