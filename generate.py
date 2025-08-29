@@ -20,7 +20,7 @@ import dnnlib
 from torch_utils import distributed as dist
 
 from mylib.helpers import update_EDM
-from mylib.diffusion import edm_sampler, load_templates_batch
+from mylib.diffusion import EDMSampler,  load_templates_batch
 from mylib.gvf import create_gvf
 
 #----------------------------------------------------------------------------
@@ -78,8 +78,20 @@ def generate_images(
     device              = torch.device('cuda'), # Which compute device to use.
     template_dir        = None,                 # Where templates are stored
     sampler_kwargs      = None,                 # Additional arguments for the sampler function.
+    live_editing        = False,                # Allow live-editing of the code 
+    ddim_inversion      = False,                # Whether to use DDIM inversion to generate initial noise 
 ):
     
+    if live_editing:
+        # Allow live changes to code 
+        import importlib
+        import mylib.gvf
+        import mylib.diffusion
+        importlib.reload(mylib.gvf)
+        importlib.reload(mylib.diffusion)
+        from mylib.gvf import create_gvf
+        from mylib.diffusion import EDMSampler, load_templates_batch
+
     # Rank 0 goes first.
     if dist.get_rank() != 0:
         torch.distributed.barrier()
@@ -116,6 +128,9 @@ def generate_images(
             dist.print0(f'Creating Guidance Vectorfield from args ...')
         gvf = create_gvf(**gvf_args).to(device)
 
+    # Setup sampler 
+    edm_sampler = EDMSampler(method_gradient="gvf", method_discrete="edm")
+
     # Return an iterable over the batches.
     class ImageIterable:
         def __len__(self):
@@ -128,7 +143,7 @@ def generate_images(
             return torch.randint(0 , n_files, (), generator=g).item()
         
         def _update_examples_gvf(self, gvf, paths):
-            examples = load_templates_batch(paths).unsqueeze(1).to(device)  # [B, N, C, H, W]
+            examples = load_templates_batch(paths).unsqueeze(1).to(device)  # [B, N, C, H, W] TODO : will this mess up for N > 1
             examples = encoder.encode_latents(examples)
             gvf.set_features_template(examples) 
             gvf.setup_score()
@@ -142,8 +157,7 @@ def generate_images(
                 r.example_idx = []
                 # Randomly pick class index
                 if len(r.seeds) > 0:
-
-                    # Pick noise, labels and examples.
+                    # Pick labels and corresponding examples.
                     rnd = StackedRandomGenerator(device, r.seeds)
                     r.noise = rnd.randn([len(r.seeds), net.img_channels, net.img_resolution, net.img_resolution], device=device)
                     r.labels = None
@@ -160,12 +174,19 @@ def generate_images(
                             r.example_idx.append(example_idx)
                             r.example_paths.append(example_path)
 
-                    # Update gvf to match examples of current batch
+                    # Pick random noise or use DDIM inversion
+                    if ddim_inversion:
+                        print("Inverting examples")
+                        input_latents = encoder.encode_latents(load_templates_batch(r.example_paths)).to(device)
+                        xTs, _ = edm_sampler.edm_inversion(net, images=input_latents, labels=r.labels, device=device, disable_tqdm=True, **sampler_kwargs)
+                        r.noise = xTs.to(device)
+
+                    # Update gvf to use examples of current batch
                     if gvf:
                         self._update_examples_gvf(gvf, r.example_paths)
 
                     # Generate images
-                    xs, _ = edm_sampler(net, noise=r.noise, labels=r.labels, gvf=gvf, device=device,  disable_tqdm=True, **sampler_kwargs)
+                    xs, _ = edm_sampler(net, noise=r.noise, labels=r.labels, gvf=gvf, device=device, disable_tqdm=True, **sampler_kwargs)
                     r.images = encoder.decode(xs[-1])
 
                     # Save images.
