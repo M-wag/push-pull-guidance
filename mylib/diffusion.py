@@ -194,8 +194,8 @@ class ThresholdedGradient(GradientMethod):
         self.t0 = t0
 
     def __call__(self, x, t, labels, net):
-        if t > self.t0:
-            return x 
+        if t > self.t0: 
+            return torch.zeros_like(x)
         return self._gradient_denoise(x, t,  labels, net)
 
 def create_gradient_fn(grad_kwargs : dict) -> GradientMethod:

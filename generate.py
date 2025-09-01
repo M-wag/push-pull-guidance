@@ -81,6 +81,7 @@ def generate_images(
     gradient_kwargs     = None,                 # Arguments defining the type of gradient used in sampler
     live_editing        = False,                # Allow live-editing of the code 
     ddim_inversion      = False,                # Whether to use DDIM inversion to generate initial noise 
+    use_noisy_examples  = True,                 # Whether to use noisy version of latents of examples for x_T
 ):
     
     if live_editing:
@@ -185,8 +186,8 @@ def generate_images(
                         r.noise = xTs.to(device)
                     
                     # Initialize SDEdit
-                    if gradient_kwargs.get("t0"):
-                        r.noise = r.noise * gradient_kwargs["t0"] + latents_example
+                    if use_noisy_examples:
+                        r_noise = latents_example / net.sigma_max + r.noise
 
                     # Update gvf to use examples of current batch
                     if gradient_kwargs.get("gvf"):
