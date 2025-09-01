@@ -3,6 +3,7 @@ import numpy as np
 import torch 
 import os
 from torchvision.io import read_image, ImageReadMode
+from abc import ABC, abstractmethod
 
 DISABLE_TQDM = False
 
@@ -11,17 +12,22 @@ DISABLE_TQDM = False
 # Modular options for gradient and time step discretization.
 
 class EDMSampler:
-    def __init__(self, method_gradient: str, method_discrete: str, gradient_kwargs={}, time_step_kwargs={}):
-         self.set_gradient_method(method_gradient, **gradient_kwargs)
-         self.set_time_step_method(method_discrete, **time_step_kwargs)
+    def __init__(self, time_disc: str, gradient_kwargs={}):
+        self.gradient_fn = create_gradient_fn(gradient_kwargs)
+
+        if time_disc == "edm":
+            self.time_step_fn = time_steps_edm
+        elif time_disc == "ddim":
+            raise NotImplementedError()
+        else:
+            raise ValueError(f"Unknown time step method: {time_disc}")
 
     @torch.no_grad()
     def __call__(
-        self                ,
+        self                , 
         net                 , 
         noise               ,
         labels              ,
-        gvf                 ,       
         device              ,
         *,
         num_steps           : int, 
@@ -35,7 +41,6 @@ class EDMSampler:
 
         dtype               = torch.float32,
         apply_2nd_order     : bool = True,
-        scale_model_score   : float = 1.0, 
         save_all_timesteps  : bool = True,
         correct_rgb         : bool = True,
         disable_tqdm        : bool = False,
@@ -64,40 +69,25 @@ class EDMSampler:
             x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
 
             # Euler step
-            d_cur = self.gradient_fn(x_hat, t_hat, net=net, gvf=gvf, scale_model_score=scale_model_score, labels=labels) 
+            d_cur = self.gradient_fn(x_hat, t_hat, labels, net)
             x_next = x_hat + d_cur * (t_next - t_hat)
 
             # Apply 2nd order correction
             if apply_2nd_order and i < num_steps - 1:
-                d_prime = self.gradient_fn(x_next, t_next, net=net, gvf=gvf, scale_model_score=scale_model_score, labels=labels) 
+                d_prime = self.gradient_fn(x_next, t_next, labels, net) 
                 x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
             
             if save_all_timesteps:
                 xs[i] = x_next
 
-        x_0= xs if save_all_timesteps else x_next
+        x_0 = xs if save_all_timesteps else x_next
         if correct_rgb:
             x_0 = (x_0 * 127.5 + 128) / 255
 
         return x_0, (t_steps.cpu().numpy(), )
-        
-    def set_gradient_method(self, method: str, **kwargs):
-        """Set the gradient computation method."""
-        if method == "gvf":
-            self.gradient_fn = gradient_gvf
-        elif method == "inject-fusion":
-            raise NotImplementedError()
-        else:
-            raise ValueError(f"Unknown gradient method: {method}")
-            
-    def set_time_step_method(self, method: str):
-        """Set the time step discretization method."""
-        if method == "edm":
-            self.time_step_fn = time_steps_edm
-        elif method == "ddim":
-            raise NotImplementedError()
-        else:
-            raise ValueError(f"Unknown time step method: {method}")
+
+    #----------------------------------------------------------------------------
+    # Apply deterministic forward process of EDM sampler 
 
     @torch.no_grad()
     def edm_inversion(
@@ -163,15 +153,60 @@ def time_steps_ddim(num_steps, device, net=None):
     raise NotImplementedError
 
 #----------------------------------------------------------------------------
-# Gradient functions for sampler 
+# Different gradients useable by the EDM sampler
+# dx/dt = gradient(x, t)
 
-def gradient_gvf(x, t, *, net, gvf, scale_model_score, labels):
-    grad = torch.zeros_like(x)
-    denoised = net(x, t, labels).to(t.dtype)
-    grad += scale_model_score * (x - denoised) / t
-    grad += gvf(x, t)
-    return grad.to(t.dtype)
+class GradientMethod(ABC):
+    def __init__(self, scale_model_score):
+        self.scale_model_score = scale_model_score
 
+    @abstractmethod
+    def __call__(self, x, t, labels, net):
+        pass
+
+    def _gradient_denoise(self, x, t, labels, net):
+        """Standard gradient computation that can be reused by subclasses."""
+        denoised = net(x, t, labels).to(t.dtype)
+        grad = self.scale_model_score * (x - denoised) / t
+        return grad.to(t.dtype)
+
+class DenoisingGradient(GradientMethod):
+    def __init__(self, scale_model_score):
+        self.scale_model_score = scale_model_score
+
+    def __call__(self, x, t, labels, net):
+        return self._gradient_denoise(x, t, labels, net)
+
+class GVFGradient(GradientMethod):
+    def __init__(self, scale_model_score, gvf):
+        self.scale_model_score = scale_model_score
+        self.gvf = gvf
+
+    def __call__(self, x, t, labels, net):
+        grad = torch.zeros_like(x)
+        grad += self._gradient_denoise(x, t, labels, net)
+        grad += self.gvf(x, t)
+        return grad.to(t.dtype)
+
+class ThresholdedGradient(GradientMethod):
+    def __init__(self, scale_model_score, t0):
+        self.scale_model_score = scale_model_score
+        self.t0 = t0
+
+    def __call__(self, x, t, labels, net):
+        if t > self.t0:
+            return x 
+        return self._gradient_denoise(x, t,  labels, net)
+
+def create_gradient_fn(grad_kwargs : dict) -> GradientMethod:
+    keys = set(grad_kwargs.keys())
+
+    if {"gvf"}.issubset(keys):
+         return GVFGradient(**grad_kwargs)
+    elif {"t0"}.issubset(keys):
+         return ThresholdedGradient(**grad_kwargs)
+    else:
+         return DenoisingGradient(**grad_kwargs)
 
 #----------------------------------------------------------------------------
 # Helper functions for loading in templates from a path

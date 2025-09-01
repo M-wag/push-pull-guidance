@@ -78,6 +78,7 @@ def generate_images(
     device              = torch.device('cuda'), # Which compute device to use.
     template_dir        = None,                 # Where templates are stored
     sampler_kwargs      = None,                 # Additional arguments for the sampler function.
+    gradient_kwargs     = None,                 # Arguments defining the type of gradient used in sampler
     live_editing        = False,                # Allow live-editing of the code 
     ddim_inversion      = False,                # Whether to use DDIM inversion to generate initial noise 
 ):
@@ -127,9 +128,10 @@ def generate_images(
         if verbose:
             dist.print0(f'Creating Guidance Vectorfield from args ...')
         gvf = create_gvf(**gvf_args).to(device)
+        gradient_kwargs["gvf"] = gvf
 
     # Setup sampler 
-    edm_sampler = EDMSampler(method_gradient="gvf", method_discrete="edm")
+    edm_sampler = EDMSampler(time_disc = "edm", gradient_kwargs=gradient_kwargs)
 
     # Return an iterable over the batches.
     class ImageIterable:
@@ -174,19 +176,24 @@ def generate_images(
                             r.example_idx.append(example_idx)
                             r.example_paths.append(example_path)
 
-                    # Pick random noise or use DDIM inversion
+                    # Compute latents for the example
+                    latents_example  = encoder.encode_latents(load_templates_batch(r.example_paths)).to(device)
+                    # Whether to use DDIM inversion
                     if ddim_inversion:
                         print("Inverting examples")
-                        input_latents = encoder.encode_latents(load_templates_batch(r.example_paths)).to(device)
-                        xTs, _ = edm_sampler.edm_inversion(net, images=input_latents, labels=r.labels, device=device, disable_tqdm=True, **sampler_kwargs)
+                        xTs, _ = edm_sampler.edm_inversion(net, images=latents_example, labels=r.labels, device=device, disable_tqdm=True, **sampler_kwargs)
                         r.noise = xTs.to(device)
+                    
+                    # Initialize SDEdit
+                    if gradient_kwargs.get("t0"):
+                        r.noise = r.noise * gradient_kwargs["t0"] + latents_example
 
                     # Update gvf to use examples of current batch
-                    if gvf:
-                        self._update_examples_gvf(gvf, r.example_paths)
+                    if gradient_kwargs.get("gvf"):
+                        self._update_examples_gvf(gradient_kwargs["gvf"], r.example_paths)
 
                     # Generate images
-                    xs, _ = edm_sampler(net, noise=r.noise, labels=r.labels, gvf=gvf, device=device, disable_tqdm=True, **sampler_kwargs)
+                    xs, _ = edm_sampler(net, noise=r.noise, labels=r.labels, device=device, disable_tqdm=True, **sampler_kwargs)
                     r.images = encoder.decode(xs[-1])
 
                     # Save images.

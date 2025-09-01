@@ -99,12 +99,12 @@ def main():
                 device=device,
                 template_dir=template_dir,
                 sampler_kwargs=myconfig.sampler_args,
+                gradient_kwargs=myconfig.gradient_kwargs,
                 live_editing=True,
-                ddim_inversion=True
+                ddim_inversion=False,
             )
 
-
-                # Get paths from all batches, not just last
+            # Get paths from all batches, not just last
             results = []
             for r in tqdm.tqdm(image_iter, unit='batch', disable=(dist.get_rank() != 0)):
                 results.append(r)
