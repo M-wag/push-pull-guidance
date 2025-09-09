@@ -28,7 +28,7 @@ if __name__ == "__main__":
     build_label_json(image_dir, json_file)
 
     # Save features
-    feature_dir  = f"data/features_per_classid"
+    feature_dir  = f"data/features_per_classid_2"
     os.makedirs(feature_dir, exist_ok=True)
     calculate_metrics.generate_reference_stats(
         image_path      = image_dir,
@@ -41,8 +41,6 @@ if __name__ == "__main__":
     )
 
     if dist.get_rank() == 0:
-        calculate_metrics.merge_metric_feature_directories(feature_dir)
-        calculate_metrics.merge_feature_csvs(feature_dir)
 
         # Write it to the right format [classid, exampple] -> class_id, example
         with open(os.path.join(feature_dir, "features.csv") , "r", newline="") as f:
