@@ -1,10 +1,10 @@
 import torch
 
 gradient_kwargs = {
-        "scale_model_score" : 0.0, 
+        "scale_model_score" : 1.0, 
 } 
 
-sampler_args = {
+sampler_kwargs = {
         "num_steps"         : 32, 
         "sigma_min"         : 0.002  , 
         "sigma_max"         : 80, 
@@ -12,30 +12,22 @@ sampler_args = {
         "S_churn"           : 0.0,  
         "S_min"             : 0.0, 
         "S_max"             : float('inf'), 
-        # "S_noise"           : 1, 
-        # "S_churn"           : 40.0,
-        # "S_min"             : 0.05,
-        # "S_max"             : 50.0,
-        "S_noise"           : 1.003, 
+        "S_noise"           : 1.0,
         "dtype"             : torch.float32,
         "correct_rgb"       : False,
         "apply_2nd_order"   : True,
 }
 
 
-gvf_args = {
-        # "latent" : "ambient",
-        # "latent" : {"autoencoder" : "asymmetric", "id" :"cross-attention/asymmetric-autoencoder-kl-x-1-5" },
+gvf_kwargs = {
         "latent" : {"autoencoder" : "kl", "id" :"stabilityai/sd-turbo" },
-        # "latent" : {"net" : "__REF__network", "attribute" :"attention", "index" : list(range(4,9)) },
-
         "vectorfield": {
             "features_template" : "__REF__features_template",
             "noise_gate"    : {
                 "type_gate" : "logistic", 
-                "nu" : 6.5,
-                "decay_rate" : 1.0,
-                "noise_onset" :  80.0,
+                "decay_rate": 1e10,
+                "nu" : 16.59,
+                "noise_onset" : 80.0,
             },
             "args_noise" : "edm",
         },
@@ -48,12 +40,10 @@ gvf_args = {
         },
 }
 
-gvf_args = None
-
 generate_kwargs = {
-        "num_images"             : 10,
-        "ddim_inversion"        : True,
-        "live_editing"          : True,
+        "num_images"            : 10_000,
+        "ddim_inversion"        : False,
+        "live_editing"          : False,
         "use_noisy_examples"    : False,
 }
 

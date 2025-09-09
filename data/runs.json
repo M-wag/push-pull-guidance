@@ -642,3 +642,446 @@
         "clip_csmean": 0.7162911186899747
     }
 }
+{
+    "run_id": 1,
+    "datetime": "2025-09-09T08:51:24.908070+00:00",
+    "duration": 12.408698116666667,
+    "num_images": 10000,
+    "sampler": {
+        "num_steps": 32,
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "apply_2nd_order": true
+    },
+    "gvf": null,
+    "metrics": {
+        "fid": 5.098343163170151,
+        "fd_dinov2": 145.35981946305958,
+        "fid_csmean": 0.6563022919027237,
+        "fd_dinov2_csmean": 0.34118624705841494,
+        "clip_csmean": 0.7708744907903414
+    }
+}
+{
+    "run_id": 1,
+    "datetime": "2025-09-09T09:49:47.967783+00:00",
+    "duration": 19.430353516666667,
+    "num_images": 10000,
+    "sampler": {
+        "num_steps": 32,
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "apply_2nd_order": true
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "logistic",
+                "decay_rate": 10000000000.0,
+                "nu": 6.46,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 26.698813540861863,
+        "fd_dinov2": 241.89499757350785,
+        "fid_csmean": 0.6512269829778301,
+        "fd_dinov2_csmean": 0.35896758378652016,
+        "clip_csmean": 0.7657144720920647
+    }
+}
+{
+    "run_id": 1,
+    "datetime": "2025-09-09T10:09:44.995163+00:00",
+    "duration": 19.4532021,
+    "num_images": 10000,
+    "sampler": {
+        "num_steps": 32,
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "apply_2nd_order": true
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "logistic",
+                "decay_rate": 10000000000.0,
+                "nu": 10.52,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 24.12401477454845,
+        "fd_dinov2": 235.9254353669387,
+        "fid_csmean": 0.6407794456699994,
+        "fd_dinov2_csmean": 0.33973862737846805,
+        "clip_csmean": 0.7616252383933375
+    }
+}
+{
+    "run_id": 1,
+    "datetime": "2025-09-09T10:33:27.948476+00:00",
+    "duration": 19.542406616666664,
+    "num_images": 10000,
+    "sampler": {
+        "num_steps": 32,
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "apply_2nd_order": true
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "logistic",
+                "decay_rate": 10000000000.0,
+                "nu": 5.0,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 26.70380985648708,
+        "fd_dinov2": 241.903779343648,
+        "fid_csmean": 0.651239564273081,
+        "fd_dinov2_csmean": 0.35896742534030857,
+        "clip_csmean": 0.7656954573555451
+    }
+}
+{
+    "run_id": 1,
+    "datetime": "2025-09-09T10:54:45.049594+00:00",
+    "duration": 19.989088516666666,
+    "num_images": 10000,
+    "sampler": {
+        "num_steps": 32,
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "apply_2nd_order": true
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "logistic",
+                "decay_rate": 10000000000.0,
+                "nu": 3.83,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 23.78673017883534,
+        "fd_dinov2": 221.08243252663715,
+        "fid_csmean": 0.6680908669252396,
+        "fd_dinov2_csmean": 0.3855128784498382,
+        "clip_csmean": 0.7740328463912776
+    }
+}
+{
+    "run_id": 1,
+    "datetime": "2025-09-09T11:17:37.654515+00:00",
+    "duration": 25.94870308333333,
+    "num_images": 10000,
+    "sampler": {
+        "num_steps": 32,
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "apply_2nd_order": true
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "logistic",
+                "decay_rate": 10000000000.0,
+                "nu": 2.9,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 14.698830521622524,
+        "fd_dinov2": 165.64101549954603,
+        "fid_csmean": 0.7175087413608294,
+        "fd_dinov2_csmean": 0.46315645886997636,
+        "clip_csmean": 0.8016266322985646
+    }
+}
+{
+    "run_id": 1,
+    "datetime": "2025-09-09T11:45:18.375291+00:00",
+    "duration": 25.96599795,
+    "num_images": 10000,
+    "sampler": {
+        "num_steps": 32,
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "apply_2nd_order": true
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "logistic",
+                "decay_rate": 10000000000.0,
+                "nu": 13.26,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 20.210189685079037,
+        "fd_dinov2": 214.07677358410712,
+        "fid_csmean": 0.6434125918195506,
+        "fd_dinov2_csmean": 0.34158207185303274,
+        "clip_csmean": 0.7636786146481199
+    }
+}
+{
+    "run_id": 1,
+    "datetime": "2025-09-09T12:12:02.333190+00:00",
+    "duration": 25.96526815,
+    "num_images": 10000,
+    "sampler": {
+        "num_steps": 32,
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "apply_2nd_order": true
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "logistic",
+                "decay_rate": 10000000000.0,
+                "nu": 1.6,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 8.667023045995839,
+        "fd_dinov2": 143.91791951899083,
+        "fid_csmean": 0.7680095460371833,
+        "fd_dinov2_csmean": 0.5325039384784583,
+        "clip_csmean": 0.8277976932741538
+    }
+}
+{
+    "run_id": 1,
+    "datetime": "2025-09-09T12:40:26.966943+00:00",
+    "duration": 25.982535416666668,
+    "num_images": 10000,
+    "sampler": {
+        "num_steps": 32,
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "apply_2nd_order": true
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "logistic",
+                "decay_rate": 10000000000.0,
+                "nu": 20.61,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 16.150289142097975,
+        "fd_dinov2": 189.51066436701302,
+        "fid_csmean": 0.6468347057651969,
+        "fd_dinov2_csmean": 0.3478032453521035,
+        "clip_csmean": 0.7665600055243734
+    }
+}
