@@ -367,18 +367,23 @@ class RandomLinearLatentBuilder(LatentBuilder):
 
 @registry_latent.register("unet-skip")
 class SkipInjectionLatentBuilder(LatentBuilder):
+    def __init__(self, args, args_inv, shp, device, dtype):
+        self.net = args.net
+        self.index = args.index
+        self.attribute = args.attribute
+
     def _build(self):
         # Create a dedicated manager for this latent builder
         self.injection_manager = InjectionManager()
         self.net.set_injection_manager(self.injection_manager)
         # Register only the parts we need
-        self.net.register_injection("unet", "skips")
-        self.net.register_injection("unet", "embedding")
+        self.net.register_injection(("unet", "skips"))
+        self.net.register_injection(("unet", "embedding"))
         # Initialize with saving enabled to capture next call
         self.net.enable_injection_saving(True)
 
         def latent_fn(x, t, *, net, index):
-            skips = net._injection_manager.load("unet", "skips")
+            skips = net._injection_manager.load(("unet", "skips"))
             skips_target = [skips[i] for i in index]
             z = self.concat_and_flat(skips_target)
             return z 
@@ -404,7 +409,10 @@ class SkipInjectionLatentBuilder(LatentBuilder):
         latent_fn = partial(latent_fn, net=self.net, index=self.index)
         latent_inv_fn = partial(latent_inv_fn, net=self.net, index=self.index)
 
-        return latent, latent_inv_fn
+        return latent_fn, latent_inv_fn
+
+    def set_args(self, fn):
+        fn._args = {"net" : "__REF__network", "attribute" : self.attribute, "index" : self.index}
 
 @registry_latent.register("unet-attn")
 class UNetLatentBuilder(LatentBuilder):
