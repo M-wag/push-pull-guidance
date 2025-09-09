@@ -339,3 +339,18 @@ def test_num_skips_match_length_skips(edm_net):
 
     assert net.num_skips == len(skips), \
         f"Length of encoder output ({len(skips)}) should match net.num_skips property ({net.num_skips})"
+
+#----------------------------------------------------------------------------
+# decoder(encoder(x, t), t) == net(x ,t)
+
+def test_decoder_encoder_pass_matches_net_forward(edm_net):
+    # Initialize model and pick random inputs
+    net = edm_net
+    x = torch.randn(2, net.img_channels, net.img_resolution, net.img_resolution)
+    t = torch.rand(1) * 80
+
+    skips = net.encoder(x, t)
+    y = net.decoder(x, skips, t)
+
+    assert torch.equal(y, net(x, t))
+

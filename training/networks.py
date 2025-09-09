@@ -10,7 +10,7 @@
 
 import numpy as np
 import torch
-from torch_utils import persistence
+from torch_utils import persistence, misc
 from torch.nn.functional import silu
 from collections import defaultdict
 from contextlib import contextmanager
@@ -490,10 +490,11 @@ class EDMPrecond(torch.nn.Module):
         class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
         dtype = torch.float16 if (self.use_fp16 and not force_fp32 and x.device.type == 'cuda') else torch.float32
 
-        c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
-        c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt()
         c_in = 1 / (self.sigma_data ** 2 + sigma ** 2).sqrt()
         c_noise = sigma.log() / 4
+        c_noise = sigma.log() / 4
+        c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
+        c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt()
 
         F_x = self.model(
                 (c_in * x).to(dtype), 
@@ -502,12 +503,41 @@ class EDMPrecond(torch.nn.Module):
                 **model_kwargs
         )
 
+
         assert F_x.dtype == dtype
         D_x = c_skip * x + c_out * F_x.to(torch.float32)
         return D_x
 
-    def decoder(skips, sigma, class_labels=None, force_fp32=False, **model_kwargs):
-        pass
+    def encoder(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
+        x = x.to(torch.float32)
+        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
+        class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
+        dtype = torch.float16 if (self.use_fp16 and not force_fp32 and x.device.type == 'cuda') else torch.float32
+
+        c_in = 1 / (self.sigma_data ** 2 + sigma ** 2).sqrt()
+        c_noise = sigma.log() / 4
+
+        emb = self.model.emb(x, c_noise.flatten(), class_labels, model_kwargs.get("augment_labels"))
+        skips = self.model.encoder((c_in * x).to(dtype), emb, **model_kwargs)
+
+        return skips
+
+    def decoder(self, x, skips, sigma, class_labels=None, force_fp32=False, **model_kwargs):
+
+        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
+        class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
+        dtype = torch.float16 if (self.use_fp16 and not force_fp32 and x.device.type == 'cuda') else torch.float32
+
+        c_noise = sigma.log() / 4
+        c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
+        c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt()
+
+        emb = self.model.emb(x, c_noise.flatten(), class_labels, model_kwargs.get("augment_labels"))
+        F_x = self.model.decoder(skips, emb)
+
+        assert F_x.dtype == dtype
+        D_x = c_skip * x + c_out * F_x.to(torch.float32)
+        return D_x
 
     def round_sigma(self, sigma):
         return torch.as_tensor(sigma)
@@ -519,6 +549,8 @@ class EDMPrecond(torch.nn.Module):
         self._injection_manager.set_loading(val)
 
     def register_injection(self, items):
+        if self._injection_manager is None:
+            self.set_injection_manager(InjectionManager())
         self._injection_manager.register(items)
 
     def set_injection_manager(self, value):
@@ -553,3 +585,11 @@ class EDMPrecond(torch.nn.Module):
 
 
 #----------------------------------------------------------------------------
+# Persistence class preservers old code.
+# Following function overwrites with new class definition.
+
+def update_EDM(net_old):
+    net = EDMPrecond(*net_old.init_args, **net_old.init_kwargs)
+    net.eval()
+    misc.copy_params_and_buffers(net_old, net, require_all=True)
+    return net 
