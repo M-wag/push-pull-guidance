@@ -4,15 +4,9 @@ import json
 import torch
 import calculate_metrics
 
+from configs import gvf_sd as cfg 
 from datetime import datetime, timezone
 from torch_utils import distributed as dist
-
-
-# 50_000 images, template from custom image net
-# gvf 
-# sampler : 32
-# metrics : L2-Norm
-
 
 def get_next_run_id(log_path: str) -> int:
     """Get next available run ID from log file"""
@@ -32,8 +26,12 @@ def get_next_run_id(log_path: str) -> int:
 
 def log_run_record(log_path: str, record: dict) -> None:
     """Append run record to log file"""
+
+    def fallback(obj):
+        return f"<<non-serializable: {type(obj).__name__}>>"
+
     with open(log_path, "a") as f:
-        f.write(json.dumps(record, indent=4) + "\n")
+        f.write(json.dumps(record, indent=4, default=str) + "\n")
 
 def load_csv(path: str):
     with open(path, "r") as f:
@@ -68,103 +66,46 @@ def load_features(metric, run_dir: str, template_dir: str):
     # Select corresponding template features
     features_templates_matched = features_template_all[template_indices]
 
-    if features_templates_matched.numel() > 0:
-        assert features_templates_matched.shape == features_run.shape
+    assert features_templates_matched.shape == features_run.shape
 
     return features_run, features_templates_matched 
 
-def cosine_similarity(x: torch.Tensor, y: torch.Tensor):
-    """Cosine similarity between x (N, D) and y (N,D)"""
-    x_norm = torch.nn.functional.normalize(x, dim=1)
-    y_norm = torch.nn.functional.normalize(y, dim=1)
-    return (x_norm * y_norm).sum(dim=1)
-              
-
 def main():
+
     logs_path = "data/runs.json"
     feature_dir = "data/features"
     template_dir = "data/templates_per_classid"
+    outdir = "out/last"
 
-    num_images = 100
-    max_batch_size = 96
+    max_batch_size = 128
     network_pkl = "https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-imagenet-64x64-cond-adm.pkl"
 
-    sampler_prms = {
-            "num_steps"         : 32, 
-            "sigma_min"         : 0.002  , 
-            "sigma_max"         : 80, 
-            "rho"               : 7, 
-            "S_churn"           : 0.0,  
-            "S_min"             : 0.0, 
-            "S_max"             : float('inf'), 
-            "S_noise"           : 1, 
-            "dtype"             : torch.float32,
-            "correct_rgb"       : False,
-            "apply_2nd_order"   : True,
-    }
-
-    gvf_args = {
-            "latent"        : {
-                "net"           : "__REF__network",
-                "attn_blocks"   : [6, 7, 8],
-            },
-            "vectorfield"   : {
-                "features_template" : "__REF__features_template",
-                "scale"         : 1.0, 
-                "noise_gate"    : {
-                    "type_gate" : "quadratic", 
-                    "nu" : 30.0
-                },
-            },
-            "noise"         : "edm",
-            "pullback"      : {
-                "slope_step_size" : 1.0,
-                "intercept_step_size" : 0.0,
-            }, 
-    }
-
-    gvf_args = {
-            "latent" : "ambient",
-            "vectorfield": {
-                "features_template" : "__REF__features_template",
-                "scale"         : 0.0, 
-                "noise_gate"    : {
-                    "type_gate" : "quadratic", 
-                    "nu" : 30.0
-                },
-                "args_noise" : "edm",
-            },
-            "noise" : "edm",
-            "args_references" : {},
-    }
-
-    gvf_args = None
     # Execute run and save features
     start_time = datetime.now(timezone.utc)
     metrics = calculate_metrics.calculate_metrics_from_generator(
         network_pkl=network_pkl,
-        # ref_path="data/refs/edm-1-imagenet-64x64.npz",
-        ref_path="data/refs/edm-2-imagenet-64x64.pkl",
+        ref_path="data/refs/edm-1-imagnet-64x64.pkl",
         max_batch_size=max_batch_size,
-        num_images=num_images,
-        sampler_kwargs=sampler_prms,
-        outdir="out",
+        outdir=outdir,
         subdirs=True,
-        cfg_gvf = gvf_args,
         feature_dir = feature_dir,
         template_dir = template_dir,
         verbose=False,
+        gradient_kwargs=cfg.gradient_kwargs,
+        sampler_kwargs=cfg.sampler_kwargs,
+        gvf_kwargs=cfg.gvf_kwargs,
+        generate_kwargs=cfg.generate_kwargs,
     )
 
+    
     # Track duration of the run
     end_time = datetime.now(timezone.utc)
     duration = (end_time - start_time).total_seconds() / 60
 
     # Measure cosine similarity
-    for metric in list(metrics.keys()):
+    for metric in list(metrics.keys()) + ["clip"]:
         features_run, features_templates = load_features(metric, run_dir=feature_dir, template_dir="data/features_per_classid")
-        # metrics[f"{metric}_csmean"] = cosine_similarity(features_run, features_templates).mean().item()
-
+        metrics[f"{metric}_csmean"] = torch.nn.functional.cosine_similarity(features_run, features_templates).mean().item()
 
     if dist.get_rank() == 0:
         # Get next run ID
@@ -175,9 +116,9 @@ def main():
                 "run_id"    : run_id,
                 "datetime"  : start_time.isoformat(),
                 "duration"  : duration,
-                "num_images": num_images,
-                "sampler"   : sampler_prms,
-                "gvf"       : gvf_args,
+                "num_images": cfg.generate_kwargs["num_images"],
+                "sampler"   : cfg.sampler_kwargs,
+                "gvf"       : cfg.gvf_kwargs,
                 "metrics"   : metrics,
         }
 
@@ -189,17 +130,7 @@ def main():
         # Save results
         run_record["sampler"]["dtype"] = str(run_record["sampler"]["dtype"])
         log_run_record(logs_path, run_record)
-        breakpoint()
 
 if __name__ == "__main__":
-    import sys, pdb, traceback
-
-    def info(type, value, tb):
-        if dist.get_rank() == 0:
-            # Print the usual traceback...
-            traceback.print_exception(type, value, tb)
-            # …then drop into post‐mortem pdb at the point of the exception
-            pdb.post_mortem(tb)
-
-    # sys.excepthook = info
     main()
+
