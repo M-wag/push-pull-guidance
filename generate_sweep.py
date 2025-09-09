@@ -13,7 +13,7 @@ from PIL import Image
 from typing import Literal
 from torch_utils import distributed as dist
 from mylib.helpers import update_EDM
-from myconfig import sampler_args
+from myconfig import sampler_args as sampler_kwargs_og
 from myconfig import gvf_args as gvf_args_og
 
 #----------------------------------------------------------------------------
@@ -86,19 +86,16 @@ def main():
         encoder = dnnlib.util.construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
 
 
-    gvf_argss = []
-    for nu in [31.21, 8.28, 2.17, 0.41, 0.02]: # intial sweep
-    # for nu in [8.28, 6.46, 5.0, 3.83, 2.9, 2.17]: # zoom template reconstruction 
-    # for nu in [80.0, 66.93, 55.74, 46.19, 38.07, 31.22, 25.45, 20.61, 16.59, 13.26, 10.52, 8.28, 6.46, 5.0, 3.83, 2.9, 2.17, 1.60]: # zoom before 8.28 reconstruction 
-    # for nu in [1.6086, 1.1743, 0.8446, 0.5977, 0.4154, 0.283, 0.1886, 0.1226, 0.0774, 0.0474, 0.0279, 0.0158, 0.0085, 0.0043, 0.002]: # all the way at the end
-        clone = copy.deepcopy(gvf_args_og)
-        clone["vectorfield"]["noise_gate"] = copy.deepcopy(gvf_args_og["vectorfield"]["noise_gate"])
-        clone["vectorfield"]["noise_gate"]["nu"] = nu
-        gvf_argss.append(clone)
+    sampler_kwargss = []
+    for sigma_max in [31.21, 8.28, 2.17, 0.41, 0.02]: # intial sweep
+        clone = dict(sampler_kwargs_og)
+        clone["sigma_max"] = sigma_max
+        sampler_kwargss.append(clone)
 
     # Iterate through differnet configs
     edit_per_param = [] 
-    for gvf_args in gvf_argss:
+    gvf_args = gvf_args_og
+    for sampler_kwargs in sampler_kwargss:
         # Refernce non-serializbles
         gvf_args["args_references"]["network"] = net
 
@@ -114,11 +111,11 @@ def main():
             verbose=(dist.get_rank() == 0),
             device=device,
             template_dir=template_dir,
-            sampler_kwargs=sampler_args,
+            sampler_kwargs=sampler_kwargs,
             gradient_kwargs=myconfig.gradient_kwargs,
             live_editing=False,
             ddim_inversion=False,
-            use_noisy_examples=False,
+            use_noisy_examples=True,
         )
 
 

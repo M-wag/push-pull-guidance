@@ -17,9 +17,9 @@ import numpy as np
 import torch
 import PIL.Image
 import dnnlib
+from importlib import reload
 from torch_utils import distributed as dist
-
-from mylib.helpers import update_EDM
+from training.networks import update_EDM
 from mylib.diffusion import EDMSampler,  load_templates_batch
 from mylib.gvf import create_gvf
 
@@ -84,15 +84,10 @@ def generate_images(
     use_noisy_examples  = True,                 # Whether to use noisy version of latents of examples for x_T
 ):
     
+    import mylib.diffusion
     if live_editing:
-        # Allow live changes to code 
-        import importlib
-        import mylib.gvf
-        import mylib.diffusion
-        importlib.reload(mylib.gvf)
-        importlib.reload(mylib.diffusion)
-        from mylib.gvf import create_gvf
-        from mylib.diffusion import EDMSampler, load_templates_batch
+        reload(mylib.diffusion)
+    from mylib.diffusion import EDMSampler
 
     # Rank 0 goes first.
     if dist.get_rank() != 0:
@@ -100,16 +95,14 @@ def generate_images(
 
     # Load main network.
     if isinstance(net, str):
-        if verbose:
-            dist.print0(f'Loading main network from {net} ...')
+        dist.print0(f'Loading network from {net} ...')
         with dnnlib.util.open_url(net, verbose=(verbose and dist.get_rank() == 0)) as f:
             data = pickle.load(f)
         net = data['ema']
         net = update_EDM(net).to(device) # Update EDM code
+        encoder = data.get('encoder', None)
         if encoder is None:
-            encoder = data.get('encoder', None)
-            if encoder is None:
-                encoder = dnnlib.util.construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
+            encoder = dnnlib.util.construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
     assert net is not None
 
 
@@ -182,8 +175,13 @@ def generate_images(
                     # Whether to use DDIM inversion
                     if ddim_inversion:
                         print("Inverting examples")
-                        xTs, _ = edm_sampler.edm_inversion(net, images=latents_example, labels=r.labels, device=device, disable_tqdm=True, **sampler_kwargs)
+                        xTs, activations_by_t = edm_sampler.edm_inversion(
+                                net, images=latents_example, labels=r.labels, device=device, disable_tqdm=True, **sampler_kwargs)
                         r.noise = xTs.to(device)
+
+                        # Update bottleneck features 
+                        if "h_exam_per_t" in gradient_kwargs:
+                            gradient_kwargs["h_exam_per_t"] = {activations_by_t["bottleneck"][t] for t in activations_by_t["bottleneck"].keys()}
                     
                     # Initialize SDEdit
                     if use_noisy_examples:
@@ -192,6 +190,9 @@ def generate_images(
                     # Update gvf to use examples of current batch
                     if gradient_kwargs.get("gvf"):
                         self._update_examples_gvf(gradient_kwargs["gvf"], r.example_paths)
+
+                    # Update gradient kwargs for sampler
+                    edm_sampler.init_gradient(gradient_kwargs)
 
                     # Generate images
                     xs, _ = edm_sampler(net, noise=r.noise, labels=r.labels, device=device, disable_tqdm=True, **sampler_kwargs)

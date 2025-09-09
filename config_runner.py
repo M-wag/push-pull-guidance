@@ -11,7 +11,9 @@ import generate
 
 from PIL import Image
 from torch_utils import distributed as dist
-from mylib.helpers import update_EDM
+from training.networks import update_EDM
+
+RELOAD_NETWORK = False
 
 #----------------------------------------------------------------------------
 # Visualization functions for composing images together.
@@ -51,23 +53,21 @@ def main():
     dist.init()
     
     # Configuration
-    num_images = 2
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    seeds = range(0, num_images)
     outdir = ".temp/last"
     template_dir = "data/templates_per_classid"
 
     # Load Model 
     if dist.get_rank() == 0:
         dist.print0('Loading network...')
-    net_pkl = "https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-imagenet-64x64-cond-adm.pkl"
-    with dnnlib.util.open_url(net_pkl, verbose=True) as f:
-        data = pickle.load(f)
-    net = update_EDM(data['ema']).to(device)
-    # Load encoder
-    encoder = data.get('encoder', None)
-    if encoder is None:
-        encoder = dnnlib.util.construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
+        net_pkl = "https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-imagenet-64x64-cond-adm.pkl"
+        with dnnlib.util.open_url(net_pkl, verbose=True) as f:
+            data = pickle.load(f)
+        net = update_EDM(data['ema']).to(device)
+        # Load encoder
+        encoder = data.get('encoder', None)
+        if encoder is None:
+            encoder = dnnlib.util.construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
 
     # Main interactive loop
     while True:
@@ -83,8 +83,16 @@ def main():
             importlib.reload(generate)
             from myconfig import gvf_args
 
+            # Reload generations kwargs
+            num_images, live_editing, ddim_inversion, use_noisy_examples = (myconfig.generate_kwargs[k] 
+                                                                            for k in ["num_images", "live_editing", 
+                                                                                      "ddim_inversion", "use_noisy_examples"]) 
+            seeds = range(0, num_images)
+
             # Refernce non-serializbles
-            gvf_args["args_references"]["network"] = net
+            gvf_args = myconfig.gvf_args
+            if gvf_args:
+                gvf_args["args_references"]["network"] = net
 
             # Generate images
             if dist.get_rank() == 0:
@@ -93,15 +101,16 @@ def main():
             image_iter = generate.generate_images(
                 net,
                 encoder=encoder,
-                gvf_args=myconfig.gvf_args,
+                gvf_args=gvf_args,
                 seeds=seeds,
                 verbose=(dist.get_rank() == 0),
                 device=device,
                 template_dir=template_dir,
                 sampler_kwargs=myconfig.sampler_args,
                 gradient_kwargs=myconfig.gradient_kwargs,
-                live_editing=True,
-                ddim_inversion=False,
+                live_editing=live_editing,
+                ddim_inversion=ddim_inversion,
+                use_noisy_examples=use_noisy_examples
             )
 
             # Get paths from all batches, not just last
