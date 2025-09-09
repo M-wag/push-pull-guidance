@@ -251,12 +251,6 @@ def merge_feature_csvs(csv_dir, output_path="features.csv", delete_parts=True):
     print(f"Merged csvs to {output_path} "
           f"({len(csv_files)} files merged)")
 
-#---------------------------------------------------------------------------
-# Merge the seperate feature files
-
-def clip_encode_image(imgs):
-    return torch.flatten(imgs, start_dim=1)
-
 #----------------------------------------------------------------------------
 # Calculate feature statistics for the given image batches
 # in a distributed fashion. Returns an iterable that yields
@@ -353,15 +347,16 @@ def calculate_stats_for_iterable(
                         features = s.detector(imgs).to(torch.float64)
                         s.cum_mu += features.sum(0)
                         s.cum_sigma += features.T @ features
-
-                        # Hijack to get features and clip score saved
                         features_per_metric[s.metric]= features
-                        if calculate_clip:
-                            clip_features = get_clip_features(imgs).to(torch.float64)
-                            features_per_metric["clip"]= clip_features
-                        #############################################################
 
                     cum_images += imgs.shape[0]
+
+                    #############################################################
+                    # Hijack to get features and clip score saved
+                    if calculate_clip:
+                        clip_features = get_clip_features(imgs).to(torch.float64)
+                        features_per_metric["clip"]= clip_features
+                    #############################################################
 
                     # Save features of each image 
                     if feature_dir:
@@ -379,13 +374,12 @@ def calculate_stats_for_iterable(
                         r.stats[s.metric] = dict(mu=mu.cpu().numpy(), sigma=sigma.cpu().numpy())
                     if dest_path is not None and dist.get_rank() == 0:
                         save_stats(stats=r.stats, path=dest_path, verbose=False)
+
                 yield r
-
-                # Merge files in case features were saved
-                if feature_dir and dist.get_rank() == 0:
-                    merge_metric_feature_directories(feature_dir)
-                    merge_feature_csvs(feature_dir)
-
+            # Merge files in case features were saved
+            if feature_dir and dist.get_rank() == 0:
+                merge_metric_feature_directories(feature_dir)
+                merge_feature_csvs(feature_dir)
 
     return StatsIterable()
 
@@ -476,17 +470,17 @@ def calculate_metrics_from_generator(
     network_pkl:    str,
     ref_path:       str,
     metrics:        list[str] = ['fid', 'fd_dinov2'],
-    num_images:     int = 50000,
     seed:           int = 0,
     max_batch_size: int = 32,
     verbose:        bool = True,
-    sampler_kwargs: dict = None,
-    cfg_gvf         = None,                 # Config for Guidance Vector Field
     outdir          = None,                 # Where to save the output images. None = do not save.
     feature_dir     = None,                 # Where to save the features of images. None = do not save.
     subdirs         = False,                # Create subdirectory for every 1000 seeds?
     template_dir    = None,                 # Where templates are stored
-    live_editing    = False,                # Whether to perform live editing during generate images
+    sampler_kwargs  = None,
+    gradient_kwargs = None,
+    gvf_kwargs      = None,
+    generate_kwargs = {},
 ) -> dict[str, float]:
     """Calculate metrics for a generative model."""
     dist.init()
@@ -495,18 +489,23 @@ def calculate_metrics_from_generator(
     if dist.get_rank() == 0:
         ref = load_stats(ref_path) # do this first in case it fails
     
+    # Copy and pop num_images from generate_kwargs
+    generate_kwargs = dict(generate_kwargs)
+    num_images = generate_kwargs.pop("num_images")
+
     # Generate images
     seeds = range(seed, seed + num_images)
     image_iter = generate.generate_images(
         net=network_pkl,
-        sampler_kwargs=sampler_kwargs,
         seeds=seeds,
         max_batch_size=max_batch_size,
-        gvf_args=cfg_gvf,
         outdir=outdir,
         subdirs=subdirs,
         template_dir=template_dir,
-        live_editing=live_editing,
+        sampler_kwargs=sampler_kwargs,
+        gradient_kwargs=gradient_kwargs,
+        gvf_args=gvf_kwargs,
+        **generate_kwargs,
     )
 
     # Calculate statistics
