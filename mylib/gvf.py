@@ -17,12 +17,13 @@ def _maybe_register_buffer(module, name, value):
 # Sigmoidal time gating function which can be either quadratic or logistic
 
 class NoiseGate(torch.nn.Module):
-    def __init__(self, type_gate: str, nu: float, decay_rate: float = None, noise_onset : float = float('inf')):
+    def __init__(self, type_gate: str, nu: float, decay_rate: float = None,  noise_onset : float = float('inf'), decimals: int =4):
         super().__init__()
         self.type_gate = type_gate  
         self.register_buffer("nu", torch.tensor(nu))
         self.register_buffer("noise_onset", torch.tensor(noise_onset))
         _maybe_register_buffer(self, "decay_rate", decay_rate)
+        _maybe_register_buffer(self, "decimals", decimals)
 
         if type_gate == "logistic":
             if decay_rate is None: 
@@ -30,6 +31,8 @@ class NoiseGate(torch.nn.Module):
             self._gate = self._logistic_gate
         elif type_gate == "quadratic":
             self._gate = self._quadratic_gate
+        elif type_gate == "heaviside":
+            self._gate = self._heaviside_gate
         else:
             raise ValueError(f"Unknown gating type: {type_gate!r}")
 
@@ -43,6 +46,12 @@ class NoiseGate(torch.nn.Module):
 
     def _quadratic_gate(self, noise):
         return noise**2 / (noise**2 + self.nu**2)
+
+    def _heaviside_gate(self, noise):
+        if torch.round(noise, decimals=self.decimals) >= torch.round(self.nu.to(torch.float32), decimals=self.decimals):
+            return torch.ones_like(noise)
+        else:
+            return torch.zeros_like(noise)
     
     @property
     def args(self):
