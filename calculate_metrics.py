@@ -483,7 +483,9 @@ def calculate_metrics_from_generator(
     generate_kwargs = {},
 ) -> dict[str, float]:
     """Calculate metrics for a generative model."""
-    dist.init()
+
+    if not torch.distributed.is_initialized():
+        dist.init()
     
     # Load reference stats
     if dist.get_rank() == 0:
