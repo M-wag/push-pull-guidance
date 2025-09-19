@@ -265,16 +265,6 @@ def calculate_stats_for_iterable(
     calculate_clip  = True,                 # Save clip features for images?
     device          = torch.device('cuda'), # Which compute device to use.
 ):
-    # Convenience wrapper for torch.distributed.all_reduce().
-    def all_reduce(x):
-        x = x.clone()
-        torch.distributed.all_reduce(x)
-        return x
-    
-    # Convenience function for checking if torch tensor is one hot
-    def is_one_hot(vec):
-        vec = vec.to(torch.int)
-        return vec.dim() == 1 and torch.all((vec == 0) | (vec == 1)) and vec.sum() == 1
 
     # Initialize.
     num_batches = len(image_iter)
@@ -294,7 +284,19 @@ def calculate_stats_for_iterable(
         def __len__(self):
             return num_batches
 
+        def all_reduce(self, x):
+            """Convenience wrapper for torch.distributed.all_reduce()."""
+            x = x.clone()
+            torch.distributed.all_reduce(x)
+            return x
+        
+        def is_one_hot(self, vec):
+           """Convenience function for checking if torch tensor is one hot"""
+            vec = vec.to(torch.int)
+            return vec.dim() == 1 and torch.all((vec == 0) | (vec == 1)) and vec.sum() == 1
+
         def save_features(self, features_per_metric, feature_dir, batch_idx, images):
+            """ Save features parts to seperate file"""
             rank = dist.get_rank()
             # Save features in parts for each metric
             for metric, features in features_per_metric.items():
@@ -313,7 +315,7 @@ def calculate_stats_for_iterable(
                     classes = None
                     examples = None
                 else:
-                    if is_one_hot(labels):
+                    if self.is_one_hot(labels):
                         classes = torch.argmax(labels, axis=1)
                     else:
                         classes = labels
@@ -364,13 +366,13 @@ def calculate_stats_for_iterable(
 
                 # Output results.
                 r = dnnlib.EasyDict(stats=None, images=images, batch_idx=batch_idx, num_batches=num_batches)
-                r.num_images = int(all_reduce(cum_images).cpu())
+                r.num_images = int(self.all_reduce(cum_images).cpu())
                 if batch_idx == num_batches - 1:
                     assert r.num_images >= 2
                     r.stats = dict(num_images=r.num_images)
                     for s in state:
-                        mu = all_reduce(s.cum_mu) / r.num_images
-                        sigma = (all_reduce(s.cum_sigma) - mu.ger(mu) * r.num_images) / (r.num_images - 1)
+                        mu = self.all_reduce(s.cum_mu) / r.num_images
+                        sigma = (self.all_reduce(s.cum_sigma) - mu.ger(mu) * r.num_images) / (r.num_images - 1)
                         r.stats[s.metric] = dict(mu=mu.cpu().numpy(), sigma=sigma.cpu().numpy())
                     if dest_path is not None and dist.get_rank() == 0:
                         save_stats(stats=r.stats, path=dest_path, verbose=False)
