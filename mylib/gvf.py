@@ -20,10 +20,9 @@ class NoiseGate(torch.nn.Module):
     def __init__(self, type_gate: str, nu: float, decay_rate: float = None,  noise_onset : float = float('inf'), decimals: int =4):
         super().__init__()
         self.type_gate = type_gate  
+        self.decimals=decimals
         self.register_buffer("nu", torch.tensor(nu))
         self.register_buffer("noise_onset", torch.tensor(noise_onset))
-        _maybe_register_buffer(self, "decay_rate", decay_rate)
-        _maybe_register_buffer(self, "decimals", decimals)
 
         if type_gate == "logistic":
             if decay_rate is None: 
@@ -37,7 +36,8 @@ class NoiseGate(torch.nn.Module):
             raise ValueError(f"Unknown gating type: {type_gate!r}")
 
     def forward(self, noise):
-        if noise > self.noise_onset:
+        noise = self.round(noise)
+        if noise > self.round(self.noise_onset):
             return torch.zeros_like(noise)
         return self._gate(noise)
 
@@ -48,10 +48,13 @@ class NoiseGate(torch.nn.Module):
         return noise**2 / (noise**2 + self.nu**2)
 
     def _heaviside_gate(self, noise):
-        if torch.round(noise, decimals=self.decimals) >= torch.round(self.nu.to(torch.float32), decimals=self.decimals):
+        if noise >= self.round(self.nu):
             return torch.ones_like(noise)
         else:
             return torch.zeros_like(noise)
+    
+    def round(self, x):
+        return torch.round(x.to(torch.float32), decimals=self.decimals)
     
     @property
     def args(self):
