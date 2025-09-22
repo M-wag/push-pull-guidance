@@ -1,5 +1,7 @@
 import os 
+import importlib.util
 import csv
+import re
 import json
 import torch
 import calculate_metrics
@@ -7,6 +9,10 @@ import calculate_metrics
 from configs import gvf_sd as cfg 
 from datetime import datetime, timezone
 from torch_utils import distributed as dist
+from dnnlib.util import EasyDictNested
+
+#----------------------------------------------------------------------------
+# Helper functions for importing saved data
 
 def get_next_run_id(log_path: str) -> int:
     """Get next available run ID from log file"""
@@ -17,19 +23,13 @@ def get_next_run_id(log_path: str) -> int:
     with open(log_path, 'r') as f:
         for line in f:
             if stripped := line.strip():
-                try:
-                    record = json.loads(stripped)
-                    last_id = max(last_id, record.get("run_id", 0))
-                except json.JSONDecodeError:
-                    continue
+                match = re.search(r'"run_id":\s*(\d+)', stripped)
+                if match:
+                    number = int(match.group(1))  # This will be "1"
+                    last_id = max(last_id, number)
     return last_id + 1
 
 def log_run_record(log_path: str, record: dict) -> None:
-    """Append run record to log file"""
-
-    def fallback(obj):
-        return f"<<non-serializable: {type(obj).__name__}>>"
-
     with open(log_path, "a") as f:
         f.write(json.dumps(record, indent=4, default=str) + "\n")
 
@@ -38,7 +38,8 @@ def load_csv(path: str):
         return [(int(col) for col in row) for row in csv.reader(f)] 
 
 def load_features(metric, run_dir: str, template_dir: str):
-    """ Loads feature vectors from a run and matches them to corresponding template features based on (class_id, example_id) pairs from CSV files. """
+    """ Loads feature vectors from a run and matches them to corresponding template features 
+    based on (class_id, example_id) pairs from CSV files. """
 
     # Load in features and metadata
     features_run = torch.load(os.path.join(run_dir, f"{metric}.pt"))
@@ -70,67 +71,118 @@ def load_features(metric, run_dir: str, template_dir: str):
 
     return features_run, features_templates_matched 
 
-def main():
+#----------------------------------------------------------------------------
+# Import variables ending with "kwargs" by name from a .py file
 
-    logs_path = "data/runs.json"
-    feature_dir = "data/features"
-    template_dir = "data/templates_per_classid"
-    outdir = "out/last"
-
-    max_batch_size = 128
-    network_pkl = "https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-imagenet-64x64-cond-adm.pkl"
-
-    # Execute run and save features
-    start_time = datetime.now(timezone.utc)
-    metrics = calculate_metrics.calculate_metrics_from_generator(
-        network_pkl=network_pkl,
-        ref_path="data/refs/edm-1-imagnet-64x64.pkl",
-        max_batch_size=max_batch_size,
-        outdir=outdir,
-        subdirs=True,
-        feature_dir = feature_dir,
-        template_dir = template_dir,
-        verbose=False,
-        gradient_kwargs=cfg.gradient_kwargs,
-        sampler_kwargs=cfg.sampler_kwargs,
-        gvf_kwargs=cfg.gvf_kwargs,
-        generate_kwargs=cfg.generate_kwargs,
-    )
-
+def load_vars_from_pyfile(filename, endswith="kwargs") -> dict[str, dict]:
+    if not os.path.exists(filename):
+        raise FileNotFoundError(f"Config file not found: {filename}")
     
-    # Track duration of the run
-    end_time = datetime.now(timezone.utc)
-    duration = (end_time - start_time).total_seconds() / 60
+    # Get spec from file name 
+    module_name = os.path.splitext(os.path.basename(filename))[0]
+    spec = importlib.util.spec_from_file_location(module_name, filename)
+    
+    if spec is None:
+        raise ValueError(f"Could not load spec from file: {filename}")
+    
+    module = importlib.util.module_from_spec(spec)
 
-    # Measure cosine similarity
-    for metric in list(metrics.keys()) + ["clip"]:
-        features_run, features_templates = load_features(metric, run_dir=feature_dir, template_dir="data/features_per_classid")
-        metrics[f"{metric}_csmean"] = torch.nn.functional.cosine_similarity(features_run, features_templates).mean().item()
+    # Execute module 
+    try:
+        spec.loader.exec_module(module)
+    except Exception as e:
+        raise ValueError(f"Error executing module {filename}: {e}")
 
-    if dist.get_rank() == 0:
-        # Get next run ID
-        run_id = get_next_run_id(logs_path)
+    # Store only the dictionaries in module
+    dicts = {}
+    for name in dir(module):
+        if not name.endswith(endswith): # skip dunder methods
+            continue 
+        attr = getattr(module, name)
+        dicts[name] = attr
+
+    return dicts
+
+
+#----------------------------------------------------------------------------
+# Class for runnig metrics for images
+
+class ExperimentRunner:
+    def __init__(self, paths: dict, max_batch_size: int = 128):
+
+        self.paths  = EasyDictNested(paths)
+        self.max_batch_size = max_batch_size
+
+        if os.path.exists(self.paths.logs):
+            self.run_id = get_next_run_id(self.paths.logs)
+        else:
+            self.run_id = 0
+
+        config = load_vars_from_pyfile(self.paths.config)
+        self.config = EasyDictNested(config)
         
-        # Prepare complete record
+    def run(self):
+        # Calculate metrics and time duration
+        start_time = datetime.now(timezone.utc)
+        metrics = calculate_metrics.calculate_metrics_from_generator(
+            network_pkl     = "https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-imagenet-64x64-cond-adm.pkl",
+            max_batch_size  = self.max_batch_size,
+            ref_path        = self.paths.refs,
+            feature_dir     = self.paths.features,
+            template_dir    = self.paths.templates,
+            outdir          = self.paths.out,
+            verbose         = False,
+            subdirs         = True,
+            generate_kwargs = self.config.generate_kwargs,
+            sampler_kwargs  = self.config.sampler_kwargs,
+            gradient_kwargs = self.config.gradient_kwargs,
+            gvf_kwargs      = self.config.gvf_kwargs
+        )
+        end_time = datetime.now(timezone.utc)
+        duration = (end_time - start_time).total_seconds() / 60
+        
+        # Compute feature-dependent metrics
+        self.add_feature_metrics(metrics)
+
+        # Construct record
         run_record  = {
-                "run_id"    : run_id,
+                "run_id"    : self.run_id,
                 "datetime"  : start_time.isoformat(),
                 "duration"  : duration,
-                "num_images": cfg.generate_kwargs["num_images"],
-                "sampler"   : cfg.sampler_kwargs,
-                "gvf"       : cfg.gvf_kwargs,
+                "generate"  : self.config.generate_kwargs,
+                "sampler"   : self.config.sampler_kwargs,
+                "gradient"  : self.config.gradient_kwargs,
+                "gvf"       : self.config.gvf_kwargs,
                 "metrics"   : metrics,
         }
 
-        # Print summary
-        print(f"Run {run_id} completed in {run_record['duration']:.2f} mins")
+        # Print metrics
+        print(f"Run {self.run_id} completed in {run_record['duration']:.2f} mins")
         for metric, value in metrics.items():
             print(f"{metric} : {value:.02f}")
 
-        # Save results
-        run_record["sampler"]["dtype"] = str(run_record["sampler"]["dtype"])
-        log_run_record(logs_path, run_record)
+        return run_record
 
+    def add_feature_metrics(self, metrics):
+         for metric in list(metrics.keys()) + ["clip"]:
+            features_run, features_templates = load_features(metric, run_dir=self.paths.features, template_dir="data/features/examples")
+            metrics[f"{metric}_csmean"] = torch.nn.functional.cosine_similarity(features_run, features_templates).mean().item()
+
+def main():
+    run_id = get_next_run_id("data/runs.json")
+    run_id = f"{run_id:04d}"
+    paths = {
+        "config"    : "configs/test.py",
+        "logs"      : "data/runs.json",
+        "features"  : f"data/features/run_{run_id}",
+        "templates" : "data/images/examples",
+        "refs"      : "data/refs/edm-1-imagnet-64x64.pkl",
+        "out"       : "data/images/last"
+    }
+
+    runner = ExperimentRunner(paths)
+    run_record = runner.run()
+    log_run_record(paths["logs"], run_record)
+                
 if __name__ == "__main__":
     main()
-
