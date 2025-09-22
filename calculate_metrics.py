@@ -159,7 +159,7 @@ def save_stats(stats, path, verbose=True):
         pickle.dump(stats, f)
 
 #---------------------------------------------------------------------------
-# Merge the seperate feature files
+# Merge the seperate .pt feature files 
 
 def merge_metric_feature_directories(base_dir, delete_dirs=True):
     """
@@ -219,6 +219,9 @@ def merge_metric_feature_directories(base_dir, delete_dirs=True):
         if delete_dirs:
             shutil.rmtree(metric_dir)
 
+#---------------------------------------------------------------------------
+# Merge the seperate .csv feature files 
+
 def merge_feature_csvs(csv_dir, output_path="features.csv", delete_parts=True):
     """Merge CSV files from feature extraction"""
     csv_files = []
@@ -250,6 +253,50 @@ def merge_feature_csvs(csv_dir, output_path="features.csv", delete_parts=True):
 
     print(f"Merged csvs to {output_path} "
           f"({len(csv_files)} files merged)")
+
+#----------------------------------------------------------------------------
+# Load feature values from the given .pkl file.
+
+def load_features(metric, run_dir: str, template_dir: str):
+    """ Loads feature vectors from a run and matches them to corresponding template features 
+    based on (class_id, example_id) pairs from CSV files. """
+
+    # Load in features and metadata
+    features_run = torch.load(os.path.join(run_dir, f"{metric}.pt"))
+    features_template_all = torch.load(os.path.join(template_dir , f"{metric}.pt"))
+
+    metadata_run = load_csv(os.path.join(run_dir, "features.csv"))
+    metadata_templates = load_csv(os.path.join(template_dir, "features.csv"))
+
+    # Create lookup dictionary for templates: (class_id, example_id) -> feature index
+    template_id_to_index = {
+            (class_id, example_id) : idx
+            for idx, (class_id, example_id) in enumerate(metadata_templates)
+    }
+
+    # Find corresoding feature
+    template_indices = [] 
+    for class_id, example_id in metadata_run:
+        try:
+            template_indices.append(template_id_to_index[class_id, example_id])
+        except:
+            raise ValueError(
+                f"No matching template found for (class_id={class_id}, example_id={example_id})"
+            )
+
+    # Select corresponding template features
+    features_templates_matched = features_template_all[template_indices]
+
+    assert features_templates_matched.shape == features_run.shape
+
+    return features_run, features_templates_matched 
+
+#----------------------------------------------------------------------------
+# Load feature example and id from csv file
+
+def load_csv(path: str):
+    with open(path, "r") as f:
+        return [(int(col) for col in row) for row in csv.reader(f)] 
 
 #----------------------------------------------------------------------------
 # Calculate feature statistics for the given image batches
@@ -291,7 +338,7 @@ def calculate_stats_for_iterable(
             return x
         
         def is_one_hot(self, vec):
-           """Convenience function for checking if torch tensor is one hot"""
+            """Convenience function for checking if torch tensor is one hot"""
             vec = vec.to(torch.int)
             return vec.dim() == 1 and torch.all((vec == 0) | (vec == 1)) and vec.sum() == 1
 
@@ -541,8 +588,7 @@ def generate_reference_stats(
     max_batch_size: int = 64,
     num_workers: int = 2,
     verbose: bool = True,
-    feature_dir = None,
-    use_labels = False, 
+    feature_dir = None, use_labels = False, 
 ) -> Optional[dict]:
     """Generate reference statistics for a dataset."""
     torch.multiprocessing.set_start_method('spawn', force=True)
@@ -570,9 +616,13 @@ def generate_reference_stats(
     return None
 
 
+
+#----------------------------------------------------------------------------
+# Command-line interface for calculating metrics
+
 @click.group()
 def cmdline():
-     """Calculate evaluation metrics (FID and FD_DINOv2)."""
+ """Calculate evaluation metrics (FID and FD_DINOv2)."""
 
 @cmdline.command()
 @click.option('--images', 'image_path',     help='Path to the images', metavar='PATH|ZIP',                  type=str, required=True)
