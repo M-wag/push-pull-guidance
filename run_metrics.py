@@ -75,21 +75,23 @@ def load_vars_from_pyfile(filename, endswith="kwargs") -> dict[str, dict]:
 class ExperimentRunner:
     def __init__(self, 
                  paths: dict, 
+                 num_images: int,
                  max_batch_size: int = 128,
                  verbose : bool = False,
     ):
 
-        self.paths  = EasyDictNested(paths)
+        self.num_images = num_images
+        self.paths= EasyDictNested(paths)
         self.max_batch_size = max_batch_size
         self.verbose = verbose
 
-        if os.path.exists(self.paths.logs):
-            self.run_id = get_next_run_id(self.paths.logs)
+        if getattr(self.paths, "logs", None):
+            if os.path.exists(self.paths.logs):
+                self.run_id = get_next_run_id(self.paths.logs)
         else:
             self.run_id = 0
 
-        config = load_vars_from_pyfile(self.paths.config)
-        self.config = EasyDictNested(config)
+        self.set_config(self.paths.config)
         
     def run(self):
         if not torch.distributed.is_initialized():
@@ -110,6 +112,7 @@ class ExperimentRunner:
                     "run_id"    : self.run_id,
                     "datetime"  : start_time.isoformat(),
                     "duration"  : duration,
+                    "num_images": self.num_images,
                     "generate"  : self.config.generate_kwargs,
                     "sampler"   : self.config.sampler_kwargs,
                     "gradient"  : self.config.gradient_kwargs,
@@ -126,25 +129,28 @@ class ExperimentRunner:
             return run_record
 
 
-    def generate_images(self, seed=0):
-        # Copy and pop num_images from generate_kwargs
-        generate_kwargs = dict(self.config.generate_kwargs)
-        num_images = generate_kwargs.pop("num_images")
+    def generate_images(self, 
+                        seed    = 0,
+                        net     = "https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-imagenet-64x64-cond-adm.pkl",
+                        encoder = None,
+                        device  = "cuda" if torch.cuda.is_available() else "cpu",
+    ):
 
-        # Generate images
-        seeds = range(seed, seed + num_images)
+        seeds = range(seed, seed + self.num_images)
         image_iter = cm.generate.generate_images(
-            net             = "https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-imagenet-64x64-cond-adm.pkl",
+            net             = net,
+            encoder         = encoder,
             seeds           = seeds,
             max_batch_size  = self.max_batch_size,
             verbose         = self.verbose,
+            device          = device,
             outdir          = self.paths.out,
             template_dir    = self.paths.templates,
             subdirs         = True,
             sampler_kwargs  = self.config.sampler_kwargs,
             gradient_kwargs = self.config.gradient_kwargs,
             gvf_args        = self.config.gvf_kwargs,
-            **generate_kwargs,
+            **self.config.generate_kwargs,
         )
 
         return image_iter
@@ -180,6 +186,10 @@ class ExperimentRunner:
             features_run, features_templates = cm.load_features(metric, run_dir=self.paths.features, template_dir="data/features/examples")
             metrics[f"{metric}_csmean"] = torch.nn.functional.cosine_similarity(features_run, features_templates).mean().item()
 
+    def set_config(self, config_path):
+        config = load_vars_from_pyfile(config_path)
+        self.config = EasyDictNested(config)
+
 #----------------------------------------------------------------------------
 
 def main():
@@ -194,7 +204,7 @@ def main():
         "out"       : "data/images/last"
     }
 
-    runner = ExperimentRunner(paths)
+    runner = ExperimentRunner(paths, num_images=10)
     run_record = runner.run()
                 
 if __name__ == "__main__":

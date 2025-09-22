@@ -2,62 +2,25 @@
 
 import os
 import pickle
-import importlib
 import traceback
 import torch
-import tqdm
 import dnnlib
-import generate
+import tqdm
 
 from PIL import Image
+from run_metrics import ExperimentRunner
 from torch_utils import distributed as dist
 from training.networks import update_EDM
-
-RELOAD_NETWORK = False
-
-#----------------------------------------------------------------------------
-# Visualization functions for composing images together.
-# With possibility for batching.
-
-def compose_images(images : list[Image.Image]) -> Image.Image:
-    """Takes a list of PIL Images and produces a horizontal composition"""
-    if not images:
-        raise ValueError("Empty image list provided")
-
-    height = max(image.height for image in images)
-    width = sum([image.width for image in images])
-
-    comp = Image.new('RGB', (width, height))
-
-    cum_width = 0
-    for image in images:
-        comp.paste(image, (cum_width, 0))
-        cum_width += image.width
-
-    return comp
-    
-def compose_images_batched(image_lists: list[list[Image.Image]]) -> list[Image.Image]:
-    """Batched version of compose_images"""
-    if not image_lists:
-        raise ValueError("Empty batch list provided")
-
-    # Transpose the 2D list: [[img1a, img1b], [img2a, img2b]] -> [[img1a, img2a], [img1b, img2b]]
-    transposed = list(zip(*image_lists))
-    return [compose_images(list(group)) for group in transposed]
+from imgviz import compose_images_batched
 
 #----------------------------------------------------------------------------
 # Continously runs a network for gennerating images 
-# GVF and sampler args are passed from myconfig.py
 
 def main():
     dist.init()
     
-    # Configuration
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    outdir = ".temp/last"
-    template_dir = "data/templates_per_classid"
-
     # Load Model 
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     if dist.get_rank() == 0:
         dist.print0('Loading network...')
         net_pkl = "https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-imagenet-64x64-cond-adm.pkl"
@@ -69,6 +32,15 @@ def main():
         if encoder is None:
             encoder = dnnlib.util.construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
 
+    # Setup runner 
+    num_images = 5
+    paths = {
+        "config"    : "configs/test.py",
+        "templates" : "data/images/examples",
+        "out"       : "data/images/config_runner"
+    }
+    runner = ExperimentRunner(paths, num_images=num_images)
+
     # Main interactive loop
     while True:
         try:
@@ -77,51 +49,20 @@ def main():
             if user_input == 'quit':
                 break
                 
-            # Reload configuration
-            import myconfig
-            importlib.reload(myconfig)
-            importlib.reload(generate)
-            from myconfig import gvf_args
-
-            # Reload generations kwargs
-            num_images, live_editing, ddim_inversion, use_noisy_examples = (myconfig.generate_kwargs[k] 
-                                                                            for k in ["num_images", "live_editing", 
-                                                                                      "ddim_inversion", "use_noisy_examples"]) 
-            seeds = range(0, num_images)
-
-            # Refernce non-serializbles
-            gvf_args = myconfig.gvf_args
-            if gvf_args:
-                gvf_args["args_references"]["network"] = net
-
-            # Generate images
-            if dist.get_rank() == 0:
-                dist.print0("Generating images...")
-            
-            image_iter = generate.generate_images(
-                net,
-                encoder=encoder,
-                gvf_args=gvf_args,
-                seeds=seeds,
-                verbose=(dist.get_rank() == 0),
-                device=device,
-                template_dir=template_dir,
-                sampler_kwargs=myconfig.sampler_args,
-                gradient_kwargs=myconfig.gradient_kwargs,
-                live_editing=live_editing,
-                ddim_inversion=ddim_inversion,
-                use_noisy_examples=use_noisy_examples
-            )
+            # Reload configuration and run
+            runner.set_config(paths["config"])
+            image_iter = runner.generate_images(net=net, encoder=encoder)
 
             # Get paths from all batches, not just last
             results = []
             for r in tqdm.tqdm(image_iter, unit='batch', disable=(dist.get_rank() != 0)):
                 results.append(r)
-            
+            torch.distributed.barrier()
+
             # Only run composition on rank 0
             if dist.get_rank() == 0:
                 # Get path from unedited images
-                path_original = [f".temp/uncond-32steps-1storder/{i:06d}.png" for i in range(0, num_images)]    
+                path_original = [f"data/images/uncond-32steps-2ndorder/000000/{i:06d}.png" for i in range(0, num_images)]
                 # Get paths from all batches, not just last
                 path_examples = []
                 edited_images = []
@@ -135,10 +76,10 @@ def main():
                 edited = [Image.fromarray(arr.permute(1, 2, 0).cpu().numpy(), "RGB") for arr in edited_images]
 
                 # Compose and save
-                compositions = compose_images_batched([original, edited, examples])
+                compositions = compose_images_batched([original, edited, examples], "h")
                 
                 for i, comp in enumerate(compositions):
-                    comp.save(os.path.join(outdir, f"{i:06d}.png"))  
+                    comp.save(os.path.join(paths["out"], f"{i:06d}.png"))  
 
         except KeyboardInterrupt:
             if dist.get_rank() == 0:
