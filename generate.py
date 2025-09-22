@@ -132,11 +132,19 @@ def generate_images(
         def __len__(self):
             return len(rank_batches)
         
-        def _sample_example_idx(self, template_dir, seed, class_):
+        def _sample_example_idx(self, template_dir, seed, class_, idx_range=None):
+            # Determien directory for specific class
             class_dir = os.path.join(template_dir, str(int(class_)))
-            n_files = len(os.listdir(class_dir))
+
+            # If no custom range, sample from all files in class directory
+            if idx_range:
+                low, high = idx_range
+            else:
+                low = 0
+                high = len(os.listdir(class_dir))
+
             g = torch.Generator().manual_seed(seed)
-            return torch.randint(0 , n_files, (), generator=g).item()
+            return torch.randint(low , high, (), generator=g).item()
         
         def _update_examples_gvf(self, gvf, paths):
             examples = load_templates_batch(paths).unsqueeze(1).to(device)  # [B, N, C, H, W] TODO : will this mess up for N > 1
