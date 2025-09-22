@@ -23,7 +23,7 @@ sampler_kwargs = {
 gvf_kwargs = None
 
 generate_kwargs = {
-        "num_images"            : 10_000,
+        "num_images"            : 3,
         "ddim_inversion"        : False,
         "live_editing"          : False,
         "use_noisy_examples"    : False,

@@ -5,17 +5,21 @@ gradient_kwargs = {
 } 
 
 sampler_kwargs = {
-        "num_steps"         : 32, 
+        "num_steps"         : 64, 
         "sigma_min"         : 0.002  , 
         "sigma_max"         : 80, 
         "rho"               : 7, 
-        "S_churn"           : 0.0,  
-        "S_min"             : 0.0, 
-        "S_max"             : float('inf'), 
-        "S_noise"           : 1.0,
+        # "S_churn"           : 0.0,  
+        # "S_min"             : 0.0, 
+        # "S_max"             : float('inf'), 
+        # "S_noise"           : 1.0,
+        "S_churn"           : 40.0,
+        "S_min"             : 0.05, 
+        "S_max"             : 50,
+        "S_noise"           : 1.003, 
         "dtype"             : torch.float32,
         "correct_rgb"       : False,
-        "apply_2nd_order"   : True,
+        "apply_2nd_order"   : False,
 }
 
 
@@ -24,9 +28,8 @@ gvf_kwargs = {
         "vectorfield": {
             "features_template" : "__REF__features_template",
             "noise_gate"    : {
-                "type_gate" : "logistic", 
-                "decay_rate": 1e10,
-                "nu" : 16.59,
+                "type_gate" : "heaviside", 
+                "nu" : 80.0,
                 "noise_onset" : 80.0,
             },
             "args_noise" : "edm",
