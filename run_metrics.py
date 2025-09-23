@@ -1,16 +1,20 @@
 import os 
 import numpy as np
 import importlib.util
+import pickle
 import re
 import json
 import torch
 import tqdm
 import calculate_metrics as cm 
+import dnnlib.util
 
 from PIL import Image
 from datetime import datetime, timezone
 from torch_utils import distributed as dist
 from dnnlib.util import EasyDictNested
+from mylib.diffusion import time_steps_edm
+from training.networks import update_EDM
 
 
 #----------------------------------------------------------------------------
@@ -86,22 +90,17 @@ class ExperimentRunner:
         self.paths= EasyDictNested(paths)
         self.max_batch_size = max_batch_size
         self.verbose = verbose
-
-        if getattr(self.paths, "logs", None):
-            if os.path.exists(self.paths.logs):
-                self.run_id = get_next_run_id(self.paths.logs)
-        else:
-            self.run_id = 0
-
         self.set_config(self.paths.config)
         
     def run(self):
         if not torch.distributed.is_initialized():
             dist.init()
 
+        if not getattr(self, "net", None):
+            self.set_net_and_encoder()
         start_time = datetime.now(timezone.utc)
 
-        image_iter = self.generate_images()
+        image_iter = self.generate_images(net=self.net, encoder=self.encoder)
         metrics = self.calculate_metrics(image_iter)
         torch.distributed.barrier()
 
@@ -110,6 +109,7 @@ class ExperimentRunner:
 
         if dist.get_rank() == 0:
             # Construct record
+            self.set_run_id()
             run_record  = {
                     "run_id"    : self.run_id,
                     "datetime"  : start_time.isoformat(),
@@ -178,9 +178,9 @@ class ExperimentRunner:
         if dist.get_rank() == 0:
             results = cm.calculate_metrics_from_stats(r.stats, ref, metrics, self.verbose)
 
-        # Add custom metrics
-        self.add_feature_metrics(results)
-        self.add_image_metrics(results)
+            # Add custom metrics
+            self.add_feature_metrics(results)
+            self.add_image_metrics(results)
         
         return results
 
@@ -190,7 +190,6 @@ class ExperimentRunner:
             metrics[f"{metric}_csmean"] = torch.nn.functional.cosine_similarity(features_run, features_templates).mean().item()
 
     def add_image_metrics(self, metrics):
-        # Check if the file exist
         if not os.path.exists(self.paths.out):
             return 
 
@@ -240,10 +239,32 @@ class ExperimentRunner:
         l2_norms = torch.norm(images_run_flat - images_templates_flat, p=2, dim=1)
         metrics["L2_mean"] = l2_norms.mean().item()
         
+    def set_net_and_encoder(self):
+        net = "https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-imagenet-64x64-cond-adm.pkl"
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        dist.print0(f'Loading network from {net} ...')
+        with dnnlib.util.open_url(net, verbose=(self.verbose and dist.get_rank() == 0)) as f:
+            data = pickle.load(f)
+        net = data['ema']
+        self.net = update_EDM(net).to(device) # Update EDM code
+        self.encoder = data.get('encoder', None)
+        if self.encoder is None:
+            self.encoder = dnnlib.util.construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
 
     def set_config(self, config_path):
         config = load_vars_from_pyfile(config_path)
         self.config = EasyDictNested(config)
+
+    def set_run_id(self):
+        if getattr(self.paths, "logs", None):
+            if os.path.exists(self.paths.logs):
+                self.run_id = get_next_run_id(self.paths.logs)
+        else:
+            self.run_id = 0
+
+    def modify_config(self, keys, value):
+        self.config.set_nested(keys, value)
 
 #----------------------------------------------------------------------------
 
@@ -251,7 +272,7 @@ def main():
     run_id = get_next_run_id("data/runs.json")
     run_id = f"{run_id:04d}"
     paths = {
-        "config"    : "configs/test.py",
+        "config"    : "configs/gvf_sd.py",
         "logs"      : "data/runs.json",
         "features"  : f"data/features/run_{run_id}",
         "templates" : "data/images/examples",
@@ -259,8 +280,14 @@ def main():
         "out"       : "data/images/run_metrics"
     }
 
-    runner = ExperimentRunner(paths, num_images=10)
-    run_record = runner.run()
+    runner = ExperimentRunner(paths, num_images=10_000)
+    keys = ("gvf_kwargs", "vectorfield", "noise_gate", "nu")
+    values = time_steps_edm(num_steps=32, sigma_min=0.002, sigma_max=80, rho=7).tolist()[:21]
+    for value in values:
+        runner.modify_config(keys, value)
+        run_record = runner.run()
+        if dist.get_rank() == 0:
+            log_run_record(paths["logs"], run_record)
                 
 if __name__ == "__main__":
     main()
