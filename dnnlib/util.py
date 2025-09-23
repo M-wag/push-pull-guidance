@@ -77,6 +77,16 @@ class EasyDictNested(dict):
             value = EasyDictNested(value)
         super().__setitem__(key, value)
 
+    def set_nested(self, keys: tuple, value : Any) -> None:
+        current = self
+        for i, key in enumerate(keys[:-1]):
+            if not isinstance(current[key], dict):
+                raise TypeError(f"Key '{key}' at depth {i} is not a dictionary")
+            if key not in current:
+                raise KeyError(f"Key '{key}' not found at depth {i}")
+            current = current[key]
+        current[keys[-1]] = value
+
 class Logger(object):
     """Redirect stderr to stdout, optionally print stdout to a file, and optionally force flushing on both stdout and the file."""
 
