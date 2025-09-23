@@ -81,7 +81,7 @@ def generate_images(
     gradient_kwargs     = None,                 # Arguments defining the type of gradient used in sampler
     live_editing        = False,                # Allow live-editing of the code 
     ddim_inversion      = False,                # Whether to use DDIM inversion to generate initial noise 
-    use_noisy_examples  = True,                 # Whether to use noisy version of latents of examples for x_T
+    use_noisy_examples  = False,                 # Whether to use noisy version of latents of examples for x_T
     example_idx_range   = None,                 # Indicates a range (low, high) of the example indices you want to sample
 ):
     
