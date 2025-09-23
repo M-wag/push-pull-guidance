@@ -1,4 +1,5 @@
 import os 
+import numpy as np
 import importlib.util
 import re
 import json
@@ -6,6 +7,7 @@ import torch
 import tqdm
 import calculate_metrics as cm 
 
+from PIL import Image
 from datetime import datetime, timezone
 from torch_utils import distributed as dist
 from dnnlib.util import EasyDictNested
@@ -178,6 +180,7 @@ class ExperimentRunner:
 
         # Add custom metrics
         self.add_feature_metrics(results)
+        self.add_image_metrics(results)
         
         return results
 
@@ -185,6 +188,58 @@ class ExperimentRunner:
          for metric in list(metrics.keys()) + ["clip"]:
             features_run, features_templates = cm.load_features(metric, run_dir=self.paths.features, template_dir="data/features/examples")
             metrics[f"{metric}_csmean"] = torch.nn.functional.cosine_similarity(features_run, features_templates).mean().item()
+
+    def add_image_metrics(self, metrics):
+        # Check if the file exist
+        if not os.path.exists(self.paths.out):
+            return 
+
+        # Load metadata
+        metadata_run = cm.load_csv(os.path.join(self.paths.features, "features.csv"))
+
+        # Get each path to examples
+        path_examples = [] 
+        for class_idx, example_idx in metadata_run:
+            path_examples.append(os.path.join(self.paths.templates, str(class_idx), f"{example_idx}.png"))
+
+        # Get each path for run images
+        path_run = []
+        for i in range(0, self.num_images):
+            path_run.append(os.path.join(self.paths.out, f"{(i//1000)*1000:06d}", f"{i:06d}.png"))
+
+        # Load images as tensors
+        images_run = []
+        images_templates = []
+        
+        for run_path, example_path in zip(path_run, path_examples):
+            # Load run image
+            if os.path.exists(run_path):
+                img_run = Image.open(run_path).convert('RGB')
+                img_run_tensor = torch.tensor(np.array(img_run)).float() / 255.0
+                images_run.append(img_run_tensor)
+            else:
+                raise FileNotFoundError(f"Run image not found: {run_path}")
+            
+            # Load template image
+            if os.path.exists(example_path):
+                img_template = Image.open(example_path).convert('RGB')
+                img_template_tensor = torch.tensor(np.array(img_template)).float() / 255.0
+                images_templates.append(img_template_tensor)
+            else:
+                raise FileNotFoundError(f"Template image not found: {example_path}")
+
+        # Stack tensors and ensure they have the same shape
+        images_run_tensor = torch.stack(images_run)
+        images_templates_tensor = torch.stack(images_templates)
+        
+        # Reshape to (batch_size, height*width*channels) for L2 norm calculation
+        images_run_flat = torch.flatten(images_run_tensor, start_dim=1)
+        images_templates_flat = torch.flatten(images_templates_tensor, start_dim=1)
+        
+        # Compute L2 norm between each pair and take the mean
+        l2_norms = torch.norm(images_run_flat - images_templates_flat, p=2, dim=1)
+        metrics["L2_mean"] = l2_norms.mean().item()
+        
 
     def set_config(self, config_path):
         config = load_vars_from_pyfile(config_path)
@@ -201,7 +256,7 @@ def main():
         "features"  : f"data/features/run_{run_id}",
         "templates" : "data/images/examples",
         "refs"      : "data/refs/edm-1-imagnet-64x64.pkl",
-        "out"       : "data/images/last"
+        "out"       : "data/images/run_metrics"
     }
 
     runner = ExperimentRunner(paths, num_images=10)
@@ -209,3 +264,4 @@ def main():
                 
 if __name__ == "__main__":
     main()
+
