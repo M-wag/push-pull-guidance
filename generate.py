@@ -82,6 +82,7 @@ def generate_images(
     live_editing        = False,                # Allow live-editing of the code 
     ddim_inversion      = False,                # Whether to use DDIM inversion to generate initial noise 
     use_noisy_examples  = True,                 # Whether to use noisy version of latents of examples for x_T
+    example_idx_range   = None,                 # Indicates a range (low, high) of the example indices you want to sample
 ):
     
     import mylib.diffusion
@@ -173,7 +174,7 @@ def generate_images(
 
                         # For each label, pick a random example and save its path.
                         for seed, label in zip(r.seeds, torch.argmax(r.labels, axis=1)): 
-                            example_idx = self._sample_example_idx(template_dir, seed, label)
+                            example_idx = self._sample_example_idx(template_dir, seed, label, idx_range=example_idx_range)
                             example_path = os.path.join(template_dir, str(int(label)), f"{example_idx}.png")
                             r.example_idx.append(example_idx)
                             r.example_paths.append(example_path)
