@@ -282,7 +282,7 @@ def main():
 
     runner = ExperimentRunner(paths, num_images=10_000)
     keys = ("gvf_kwargs", "vectorfield", "noise_gate", "nu")
-    values = time_steps_edm(num_steps=32, sigma_min=0.002, sigma_max=80, rho=7).tolist()[:21]
+    values = time_steps_edm(num_steps=32, sigma_min=0.002, sigma_max=80, rho=7).tolist()[:21:2]
     for value in values:
         runner.modify_config(keys, value)
         run_record = runner.run()
