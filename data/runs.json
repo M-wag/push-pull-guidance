@@ -3588,3 +3588,2765 @@
         "clip_csmean": 0.834909738145702
     }
 }
+{
+    "run_id": 72,
+    "datetime": "2025-09-23T18:51:17.830537+00:00",
+    "duration": 30.651258883333334,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 80.0,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 5.014021919627532,
+        "fd_dinov2": 144.0321641523311,
+        "fid_csmean": 0.6525397727364596,
+        "fd_dinov2_csmean": 0.34142609130057683,
+        "clip_csmean": 0.7715683089216151,
+        "L2_mean": 40.270328521728516
+    }
+}
+{
+    "run_id": 73,
+    "datetime": "2025-09-23T19:21:56.911105+00:00",
+    "duration": 30.36789063333333,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 66.93087377626311,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 4.857070193770793,
+        "fd_dinov2": 139.59932995961887,
+        "fid_csmean": 0.6534833051431724,
+        "fd_dinov2_csmean": 0.34557728320766457,
+        "clip_csmean": 0.7719649660631376,
+        "L2_mean": 39.679176330566406
+    }
+}
+{
+    "run_id": 74,
+    "datetime": "2025-09-23T19:52:18.988845+00:00",
+    "duration": 30.379248766666667,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 55.736210463993665,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 4.901553119061873,
+        "fd_dinov2": 137.4960223846649,
+        "fid_csmean": 0.6542419615686438,
+        "fd_dinov2_csmean": 0.3499269542353208,
+        "clip_csmean": 0.7727056479229863,
+        "L2_mean": 39.046077728271484
+    }
+}
+{
+    "run_id": 75,
+    "datetime": "2025-09-23T20:22:41.753075+00:00",
+    "duration": 30.724727583333333,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 46.186391527643735,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 5.184885197057943,
+        "fd_dinov2": 136.26464318982917,
+        "fid_csmean": 0.6551730547374347,
+        "fd_dinov2_csmean": 0.35360372276707897,
+        "clip_csmean": 0.7731850115404448,
+        "L2_mean": 38.39643478393555
+    }
+}
+{
+    "run_id": 76,
+    "datetime": "2025-09-23T20:53:25.257448+00:00",
+    "duration": 30.3854675,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 38.07487557466407,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 5.906842967548779,
+        "fd_dinov2": 137.8309093853325,
+        "fid_csmean": 0.6550652122133541,
+        "fd_dinov2_csmean": 0.35795450107981547,
+        "clip_csmean": 0.7731104045912225,
+        "L2_mean": 37.77688980102539
+    }
+}
+{
+    "run_id": 77,
+    "datetime": "2025-09-23T21:23:48.390275+00:00",
+    "duration": 30.306573816666667,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 31.216413257960706,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 7.277330675787684,
+        "fd_dinov2": 143.7598592958491,
+        "fid_csmean": 0.6540036222747936,
+        "fd_dinov2_csmean": 0.35750089881258945,
+        "clip_csmean": 0.7724683576257662,
+        "L2_mean": 37.23179244995117
+    }
+}
+{
+    "run_id": 78,
+    "datetime": "2025-09-23T21:54:06.789543+00:00",
+    "duration": 30.309715349999998,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 25.445356714613787,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 9.436694503577673,
+        "fd_dinov2": 154.59107422380845,
+        "fid_csmean": 0.651811900769221,
+        "fd_dinov2_csmean": 0.3576888946897908,
+        "clip_csmean": 0.770859097278567,
+        "L2_mean": 36.82160568237305
+    }
+}
+{
+    "run_id": 79,
+    "datetime": "2025-09-23T22:24:25.377278+00:00",
+    "duration": 30.3257023,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 20.614060968247138,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 12.465650369907097,
+        "fd_dinov2": 172.87427191214397,
+        "fid_csmean": 0.6488130995394071,
+        "fd_dinov2_csmean": 0.35320540743534296,
+        "clip_csmean": 0.7689287407390498,
+        "L2_mean": 36.59469223022461
+    }
+}
+{
+    "run_id": 80,
+    "datetime": "2025-09-23T22:54:44.924147+00:00",
+    "duration": 30.334095866666665,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 16.591374722438335,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 16.505565341132556,
+        "fd_dinov2": 198.18712940971764,
+        "fid_csmean": 0.6455101962667006,
+        "fd_dinov2_csmean": 0.34847478908067675,
+        "clip_csmean": 0.7659894945773115,
+        "L2_mean": 36.55685043334961
+    }
+}
+{
+    "run_id": 81,
+    "datetime": "2025-09-23T23:25:04.974010+00:00",
+    "duration": 30.319361800000003,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 13.261217972558239,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 21.041890243993286,
+        "fd_dinov2": 229.01997109125605,
+        "fid_csmean": 0.6408965111883703,
+        "fd_dinov2_csmean": 0.3417142772903059,
+        "clip_csmean": 0.7633347609343532,
+        "L2_mean": 36.71116638183594
+    }
+}
+{
+    "run_id": 82,
+    "datetime": "2025-09-23T23:55:24.140350+00:00",
+    "duration": 30.33980958333333,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 10.521243863429767,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 25.265774390355293,
+        "fd_dinov2": 255.35657263290932,
+        "fid_csmean": 0.6387513848937071,
+        "fd_dinov2_csmean": 0.3388683141628142,
+        "clip_csmean": 0.761849926012822,
+        "L2_mean": 37.024044036865234
+    }
+}
+{
+    "run_id": 83,
+    "datetime": "2025-09-24T00:25:44.533330+00:00",
+    "duration": 30.336159533333333,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 8.281582220194846,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 28.20421603203878,
+        "fd_dinov2": 273.9058885583973,
+        "fid_csmean": 0.6404425196281318,
+        "fd_dinov2_csmean": 0.34343760585776,
+        "clip_csmean": 0.7625009871788007,
+        "L2_mean": 37.47214889526367
+    }
+}
+{
+    "run_id": 84,
+    "datetime": "2025-09-24T00:56:04.707025+00:00",
+    "duration": 30.3565189,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 6.46366217977906,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 28.754069634711595,
+        "fd_dinov2": 278.4788075253665,
+        "fid_csmean": 0.6492698044332297,
+        "fd_dinov2_csmean": 0.3583054860578721,
+        "clip_csmean": 0.7663207156968964,
+        "L2_mean": 38.04568862915039
+    }
+}
+{
+    "run_id": 85,
+    "datetime": "2025-09-24T01:26:26.103141+00:00",
+    "duration": 30.34034331666667,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 4.999111350343298,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 26.60424425473291,
+        "fd_dinov2": 269.66888773689857,
+        "fid_csmean": 0.6642462452757478,
+        "fd_dinov2_csmean": 0.3813307048463842,
+        "clip_csmean": 0.7730179304250557,
+        "L2_mean": 38.73331832885742
+    }
+}
+{
+    "run_id": 86,
+    "datetime": "2025-09-24T01:56:46.527761+00:00",
+    "duration": 30.355205116666664,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 3.828728926111624,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 22.778505835680686,
+        "fd_dinov2": 252.43335019919704,
+        "fid_csmean": 0.6859263935856423,
+        "fd_dinov2_csmean": 0.4129019245409332,
+        "clip_csmean": 0.784387337284402,
+        "L2_mean": 39.52285385131836
+    }
+}
+{
+    "run_id": 87,
+    "datetime": "2025-09-24T02:27:07.845101+00:00",
+    "duration": 30.38240985,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 2.901530184964863,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 18.667156024415526,
+        "fd_dinov2": 236.85232930562708,
+        "fid_csmean": 0.7111913424017563,
+        "fd_dinov2_csmean": 0.4491797956690738,
+        "clip_csmean": 0.7971665441091008,
+        "L2_mean": 40.39588928222656
+    }
+}
+{
+    "run_id": 88,
+    "datetime": "2025-09-24T02:57:30.794646+00:00",
+    "duration": 30.341781616666665,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 2.1738597961891104,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 15.610791927653112,
+        "fd_dinov2": 231.33240737021782,
+        "fid_csmean": 0.7381789995816421,
+        "fd_dinov2_csmean": 0.48618002141909417,
+        "clip_csmean": 0.8109834061931177,
+        "L2_mean": 41.29673767089844
+    }
+}
+{
+    "run_id": 89,
+    "datetime": "2025-09-24T03:27:51.306628+00:00",
+    "duration": 30.33233968333333,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 1.6085713657684715,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 13.957592023681286,
+        "fd_dinov2": 233.3947659886156,
+        "fid_csmean": 0.7639458576296033,
+        "fd_dinov2_csmean": 0.5208758424432166,
+        "clip_csmean": 0.8241163922849959,
+        "L2_mean": 42.15045166015625
+    }
+}
+{
+    "run_id": 90,
+    "datetime": "2025-09-24T03:58:11.251712+00:00",
+    "duration": 30.34304375,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 1.1742706466114932,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 13.904811390545232,
+        "fd_dinov2": 248.06720872947636,
+        "fid_csmean": 0.7817702067664639,
+        "fd_dinov2_csmean": 0.5409529520853049,
+        "clip_csmean": 0.8314642001746121,
+        "L2_mean": 42.87777328491211
+    }
+}
+{
+    "run_id": 91,
+    "datetime": "2025-09-24T04:28:31.839245+00:00",
+    "duration": 30.338771466666667,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 0.8446198411004494,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 15.90157711550022,
+        "fd_dinov2": 276.5759491627032,
+        "fid_csmean": 0.7904817835229095,
+        "fd_dinov2_csmean": 0.5423131263129509,
+        "clip_csmean": 0.8331706151806693,
+        "L2_mean": 43.43161392211914
+    }
+}
+{
+    "run_id": 92,
+    "datetime": "2025-09-24T04:58:52.170582+00:00",
+    "duration": 30.326412033333334,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 32,
+        "apply_2nd_order": true,
+        "S_churn": 0.0,
+        "S_min": 0.0,
+        "S_max": Infinity
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 0.5977004233529077,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 20.76179291569362,
+        "fd_dinov2": 322.7526900082586,
+        "fid_csmean": 0.7880399107708979,
+        "fd_dinov2_csmean": 0.5218157788505615,
+        "clip_csmean": 0.827559540317845,
+        "L2_mean": 43.82044219970703
+    }
+}
+{
+    "run_id": 93,
+    "datetime": "2025-09-24T05:36:24.248245+00:00",
+    "duration": 31.094224899999997,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 80.0,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 12.875270734231643,
+        "fd_dinov2": 161.25281854157882,
+        "fid_csmean": 0.6424760010530565,
+        "fd_dinov2_csmean": 0.341232572888362,
+        "clip_csmean": 0.7643434120748972,
+        "L2_mean": 36.84235763549805
+    }
+}
+{
+    "run_id": 94,
+    "datetime": "2025-09-24T06:07:29.908723+00:00",
+    "duration": 30.89862715,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 55.736210463993665,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 12.552650893207527,
+        "fd_dinov2": 157.08266481033007,
+        "fid_csmean": 0.6432418555843845,
+        "fd_dinov2_csmean": 0.3431876740206826,
+        "clip_csmean": 0.7650429194564936,
+        "L2_mean": 37.027793884277344
+    }
+}
+{
+    "run_id": 95,
+    "datetime": "2025-09-24T06:38:23.830949+00:00",
+    "duration": 30.89093935,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 38.07487557466407,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 12.816473466239069,
+        "fd_dinov2": 158.61220196181824,
+        "fid_csmean": 0.6446401921183633,
+        "fd_dinov2_csmean": 0.34506617470945133,
+        "clip_csmean": 0.7668629717656013,
+        "L2_mean": 37.12689208984375
+    }
+}
+{
+    "run_id": 96,
+    "datetime": "2025-09-24T07:09:17.292583+00:00",
+    "duration": 31.230652316666667,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 25.445356714613787,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 12.918360140421537,
+        "fd_dinov2": 158.15848522611742,
+        "fid_csmean": 0.6466527814470248,
+        "fd_dinov2_csmean": 0.34947610769344123,
+        "clip_csmean": 0.7671162600351511,
+        "L2_mean": 37.565635681152344
+    }
+}
+{
+    "run_id": 97,
+    "datetime": "2025-09-24T07:40:31.154262+00:00",
+    "duration": 31.385225016666666,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 16.591374722438335,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 13.159190532445884,
+        "fd_dinov2": 159.59768219552316,
+        "fid_csmean": 0.6513383605878832,
+        "fd_dinov2_csmean": 0.3581187486886303,
+        "clip_csmean": 0.769329926741755,
+        "L2_mean": 38.43416213989258
+    }
+}
+{
+    "run_id": 98,
+    "datetime": "2025-09-24T08:11:54.276155+00:00",
+    "duration": 30.94110385,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 10.521243863429767,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 14.56472553439641,
+        "fd_dinov2": 169.4298572981009,
+        "fid_csmean": 0.6572642296165381,
+        "fd_dinov2_csmean": 0.37105570513445757,
+        "clip_csmean": 0.7739532569655789,
+        "L2_mean": 39.42947769165039
+    }
+}
+{
+    "run_id": 99,
+    "datetime": "2025-09-24T08:42:50.747314+00:00",
+    "duration": 30.901417116666668,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 6.46366217977906,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 16.550728113863038,
+        "fd_dinov2": 183.42560220113816,
+        "fid_csmean": 0.6693784515553003,
+        "fd_dinov2_csmean": 0.39315843518638255,
+        "clip_csmean": 0.7817393944571646,
+        "L2_mean": 40.343658447265625
+    }
+}
+{
+    "run_id": 100,
+    "datetime": "2025-09-24T09:13:44.837550+00:00",
+    "duration": 30.90342965,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 3.828728926111624,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 17.786232991924408,
+        "fd_dinov2": 195.5483863565275,
+        "fid_csmean": 0.6867635983003656,
+        "fd_dinov2_csmean": 0.41719777495360205,
+        "clip_csmean": 0.7908205379600641,
+        "L2_mean": 41.25893020629883
+    }
+}
+{
+    "run_id": 101,
+    "datetime": "2025-09-24T09:44:39.048246+00:00",
+    "duration": 31.22816265,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 2.1738597961891104,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 18.277966495460767,
+        "fd_dinov2": 216.36226763943063,
+        "fid_csmean": 0.7201762426207597,
+        "fd_dinov2_csmean": 0.4728594646877401,
+        "clip_csmean": 0.8095905661408322,
+        "L2_mean": 42.59004592895508
+    }
+}
+{
+    "run_id": 102,
+    "datetime": "2025-09-24T10:15:52.772193+00:00",
+    "duration": 31.376740133333332,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 1.1742706466114932,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 17.751939737238487,
+        "fd_dinov2": 240.95997257161312,
+        "fid_csmean": 0.7688445464956276,
+        "fd_dinov2_csmean": 0.5414184420352792,
+        "clip_csmean": 0.8317832641884434,
+        "L2_mean": 43.7532958984375
+    }
+}
+{
+    "run_id": 103,
+    "datetime": "2025-09-24T10:47:15.399319+00:00",
+    "duration": 31.37944248333333,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": [
+            0,
+            1
+        ]
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 0.5977004233529077,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 17.307580883961982,
+        "fd_dinov2": 278.4102743897614,
+        "fid_csmean": 0.8014226482540089,
+        "fd_dinov2_csmean": 0.5692636552318406,
+        "clip_csmean": 0.8425977318274929,
+        "L2_mean": 44.40460205078125
+    }
+}
+{
+    "run_id": 104,
+    "datetime": "2025-09-24T11:38:30.410639+00:00",
+    "duration": 32.00241223333333,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": null
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 80.0,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 12.790450227253684,
+        "fd_dinov2": 162.534840435276,
+        "fid_csmean": 0.6457881982924477,
+        "fd_dinov2_csmean": 0.34126088722473136,
+        "clip_csmean": 0.765731498706919,
+        "L2_mean": 36.80733108520508
+    }
+}
+{
+    "run_id": 105,
+    "datetime": "2025-09-24T12:10:30.573110+00:00",
+    "duration": 30.912528333333334,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": null
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 55.736210463993665,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 12.911426639284588,
+        "fd_dinov2": 161.4455667168785,
+        "fid_csmean": 0.6450731186790591,
+        "fd_dinov2_csmean": 0.3438265854047182,
+        "clip_csmean": 0.7662768069018058,
+        "L2_mean": 36.852020263671875
+    }
+}
+{
+    "run_id": 106,
+    "datetime": "2025-09-24T12:41:25.330000+00:00",
+    "duration": 30.856920666666667,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": null
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 38.07487557466407,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 12.659738743938671,
+        "fd_dinov2": 158.62740202057168,
+        "fid_csmean": 0.6460635311409789,
+        "fd_dinov2_csmean": 0.34499128245545485,
+        "clip_csmean": 0.7656222345332238,
+        "L2_mean": 36.94023895263672
+    }
+}
+{
+    "run_id": 107,
+    "datetime": "2025-09-24T13:12:16.750916+00:00",
+    "duration": 30.82140456666667,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": null
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 25.445356714613787,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 12.953457946320142,
+        "fd_dinov2": 158.89442725570117,
+        "fid_csmean": 0.6477873702452497,
+        "fd_dinov2_csmean": 0.3511134345107883,
+        "clip_csmean": 0.7674350515065304,
+        "L2_mean": 37.48469543457031
+    }
+}
+{
+    "run_id": 108,
+    "datetime": "2025-09-24T13:43:06.040635+00:00",
+    "duration": 30.845621483333332,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": null
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 16.591374722438335,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 13.208583622073121,
+        "fd_dinov2": 155.97277781449867,
+        "fid_csmean": 0.6529541567859327,
+        "fd_dinov2_csmean": 0.36144969471354055,
+        "clip_csmean": 0.7709216110168774,
+        "L2_mean": 38.31867599487305
+    }
+}
+{
+    "run_id": 109,
+    "datetime": "2025-09-24T14:13:56.783398+00:00",
+    "duration": 30.852058583333335,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": null
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 10.521243863429767,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 13.743126745852969,
+        "fd_dinov2": 157.2712994852612,
+        "fid_csmean": 0.6586976876842524,
+        "fd_dinov2_csmean": 0.3737273811242223,
+        "clip_csmean": 0.7749863456735421,
+        "L2_mean": 39.43931198120117
+    }
+}
+{
+    "run_id": 110,
+    "datetime": "2025-09-24T14:44:47.929908+00:00",
+    "duration": 31.322454766666667,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": null
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 6.46366217977906,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 14.9576157532093,
+        "fd_dinov2": 160.82477773398,
+        "fid_csmean": 0.6719824079495244,
+        "fd_dinov2_csmean": 0.39464322542250896,
+        "clip_csmean": 0.7830195892656809,
+        "L2_mean": 40.27887725830078
+    }
+}
+{
+    "run_id": 111,
+    "datetime": "2025-09-24T15:16:07.300362+00:00",
+    "duration": 31.381964999999997,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": null
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 3.828728926111624,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 15.32364132445605,
+        "fd_dinov2": 156.21991041621772,
+        "fid_csmean": 0.6880662351239766,
+        "fd_dinov2_csmean": 0.4254688229839675,
+        "clip_csmean": 0.7935908606537877,
+        "L2_mean": 41.081485748291016
+    }
+}
+{
+    "run_id": 112,
+    "datetime": "2025-09-24T15:47:30.252131+00:00",
+    "duration": 30.923944366666667,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": null
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 2.1738597961891104,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 14.166805279922718,
+        "fd_dinov2": 150.18909312125373,
+        "fid_csmean": 0.7239493844744814,
+        "fd_dinov2_csmean": 0.4806045330411249,
+        "clip_csmean": 0.8121132509618064,
+        "L2_mean": 42.42754364013672
+    }
+}
+{
+    "run_id": 113,
+    "datetime": "2025-09-24T16:18:25.694373+00:00",
+    "duration": 30.843682750000003,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": null
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 1.1742706466114932,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 11.541772134102613,
+        "fd_dinov2": 144.48676844347833,
+        "fid_csmean": 0.771255182456571,
+        "fd_dinov2_csmean": 0.5458661233607814,
+        "clip_csmean": 0.8349338619033376,
+        "L2_mean": 43.51864242553711
+    }
+}
+{
+    "run_id": 114,
+    "datetime": "2025-09-24T16:49:16.321295+00:00",
+    "duration": 30.8066165,
+    "num_images": 10000,
+    "generate": {
+        "ddim_inversion": false,
+        "live_editing": false,
+        "use_noisy_examples": false,
+        "example_idx_range": null
+    },
+    "sampler": {
+        "sigma_min": 0.002,
+        "sigma_max": 80,
+        "rho": 7,
+        "S_noise": 1.0,
+        "S_churn": 40.0,
+        "S_min": 0.05,
+        "S_max": 50,
+        "dtype": "torch.float32",
+        "correct_rgb": false,
+        "num_steps": 64,
+        "apply_2nd_order": false
+    },
+    "gradient": {
+        "scale_model_score": 1.0,
+        "gvf": "GuidanceVF(\n  (vf_latent): VectorField(\n    (noise_gate): NoiseGate()\n  )\n  (_pullback): PullbackNumericalDifferentiation()\n)"
+    },
+    "gvf": {
+        "latent": {
+            "autoencoder": "kl",
+            "id": "stabilityai/sd-turbo"
+        },
+        "vectorfield": {
+            "features_template": "__REF__features_template",
+            "noise_gate": {
+                "type_gate": "heaviside",
+                "nu": 0.5977004233529077,
+                "noise_onset": 80.0
+            },
+            "args_noise": "edm"
+        },
+        "noise": "edm",
+        "dtype": "torch.float32",
+        "scale": 1.0,
+        "pullback": {
+            "step_size_slope": 1,
+            "step_size_intercept": 0
+        },
+        "args_references": {
+            "features_template": "tensor([], size=(1, 0, 0, 0))"
+        }
+    },
+    "metrics": {
+        "fid": 9.567474592748214,
+        "fd_dinov2": 161.8941055772118,
+        "fid_csmean": 0.8038064964536692,
+        "fd_dinov2_csmean": 0.5738427712365527,
+        "clip_csmean": 0.8467386086957642,
+        "L2_mean": 44.14567947387695
+    }
+}

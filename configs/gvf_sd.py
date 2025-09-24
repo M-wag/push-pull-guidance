@@ -1,6 +1,5 @@
 import torch
 
-
 determinstic_sampling = {
         "S_churn"           : 0.0,  
         "S_min"             : 0.0, 
@@ -28,10 +27,10 @@ sampler_kwargs = {
         "sigma_max"         : 80, 
         "rho"               : 7, 
         "S_noise"           : 1.0,
+        **stochastic_sampling,
         "dtype"             : torch.float32,
         "correct_rgb"       : False,
-        **second_order, 
-        **determinstic_sampling,
+        **first_order, 
 }
 
 
@@ -60,7 +59,7 @@ generate_kwargs = {
         "ddim_inversion"        : False,
         "live_editing"          : False,
         "use_noisy_examples"    : False,
-        "example_idx_range"     : [0, 1]
+        "example_idx_range"     : None,
 }
 
 gradient_kwargs = {
