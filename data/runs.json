@@ -9902,44 +9902,6 @@
     }
 }
 {
-    "run_id": 180,
-    "datetime": "2025-09-27T21:02:20.399515+00:00",
-    "duration": 16.406257133333334,
-    "num_images": 10000,
-    "generate": {
-        "ddim_inversion": false,
-        "live_editing": false,
-        "use_noisy_examples": true,
-        "example_idx_range": null
-    },
-    "sampler": {
-        "sigma_min": 0.002,
-        "sigma_max": 80.0,
-        "rho": 7,
-        "S_noise": 1.0,
-        "S_churn": 40.0,
-        "S_min": 0.05,
-        "S_max": 50,
-        "dtype": "torch.float32",
-        "correct_rgb": false,
-        "num_steps": 32,
-        "apply_2nd_order": true
-    },
-    "gradient": {
-        "scale_model_score": 1.0
-    },
-    "gvf": null,
-    "metrics": {
-        "fid": 4.922447207091062,
-        "fd_dinov2": 137.39492030271012,
-        "fid_csmean": 0.6594770138075244,
-        "fd_dinov2_csmean": 0.351388755308158,
-        "clip_csmean": 0.7743500877469455,
-        "L2_mean": 41.32527160644531
-    }
-}
-
-{
     "run_id": 181,
     "datetime": "2025-09-27T21:18:44.783106+00:00",
     "duration": 16.084112066666666,
