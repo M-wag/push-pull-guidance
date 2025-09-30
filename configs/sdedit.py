@@ -31,7 +31,7 @@ sampler_kwargs = {
         **stochastic_sampling,
         "dtype"             : torch.float32,
         "correct_rgb"       : False,
-        **first_order, 
+        **second_order, 
 }
 
 
@@ -41,7 +41,7 @@ generate_kwargs = {
         "ddim_inversion"        : False,
         "live_editing"          : False,
         "use_noisy_examples"    : True,
-        "example_idx_range"     : None,
+        "example_idx_range"     : [0,1],
 }
 
 gradient_kwargs = {

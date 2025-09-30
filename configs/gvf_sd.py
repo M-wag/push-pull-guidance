@@ -30,13 +30,14 @@ sampler_kwargs = {
         **stochastic_sampling,
         "dtype"             : torch.float32,
         "correct_rgb"       : False,
-        **first_order, 
+        **second_order, 
 }
 
 
 
 gvf_kwargs = {
-        "latent" : {"autoencoder" : "kl", "id" :"stabilityai/sd-turbo" },
+        # "latent" : {"autoencoder" : "kl", "id" :"stabilityai/sd-turbo" },
+        "latent" : "ambient",
         "vectorfield": {
             "features_template" : "__REF__features_template",
             "noise_gate"    : {
@@ -49,7 +50,7 @@ gvf_kwargs = {
         "noise" : "edm",
         "dtype" : torch.float32,
         "scale" : 1.0, 
-        "pullback" : {"step_size_slope" : 1, "step_size_intercept": 0},
+        # "pullback" : {"step_size_slope" : 1, "step_size_intercept": 0},
         "args_references" : {
             "features_template" : torch.zeros(1, 0, 0, 0),
         },
