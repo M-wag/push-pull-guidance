@@ -1,157 +1,65 @@
 """ Read the configs from a JSON and run images without reloading PyTorch models"""
 
 import os
-import copy
 import pickle
+import traceback
 import torch
-import tqdm
 import dnnlib
-import generate
-import myconfig
+import tqdm
 
 from PIL import Image
-from typing import Literal
+from run_metrics import ExperimentRunner
 from torch_utils import distributed as dist
-from mylib.helpers import update_EDM
-from myconfig import sampler_args as sampler_kwargs_og
-from myconfig import gvf_args as gvf_args_og
-
-#----------------------------------------------------------------------------
-# Visualization functions for composing images together.
-# With possibility for batching.
-
-def compose_images(images : list[Image.Image], axis=Literal["h", "v"]) -> Image.Image:
-    """Takes a list of PIL Images and produces a horizontal composition"""
-    if not images:
-        raise ValueError("Empty image list provided")
-
-    if axis == "h":
-        height = max(image.height for image in images)
-        width = sum(image.width for image in images)
-        comp = Image.new("RGB", (width, height))
-
-        cum_width = 0
-        for image in images:
-            comp.paste(image, (cum_width, 0))
-            cum_width += image.width
-
-    elif axis == "v":
-        width = max(image.width for image in images)
-        height = sum(image.height for image in images)
-        comp = Image.new("RGB", (width, height))
-
-        cum_height = 0
-        for image in images:
-            comp.paste(image, (0, cum_height))
-            cum_height += image.height
-
-    else:
-        raise ValueError(f"Invalid axis {axis}, must be 'h' or 'v'")
-
-    return comp
-    
-def compose_images_batched(image_lists: list[list[Image.Image]], axis=Literal["h", "v"]) -> list[Image.Image]:
-    """Batched version of compose_images"""
-    if not image_lists:
-        raise ValueError("Empty batch list provided")
-
-    # Transpose the 2D list: [[img1a, img1b], [img2a, img2b]] -> [[img1a, img2a], [img1b, img2b]]
-    transposed = list(zip(*image_lists))
-    return [compose_images(list(group), axis) for group in transposed]
+from training.networks import update_EDM
+from einops import rearrange
+from mylib.diffusion import time_steps_edm
 
 #----------------------------------------------------------------------------
 # Continously runs a network for gennerating images 
-# GVF and sampler args are passed from myconfig.py
 
 def main():
     dist.init()
     
-    # Configuration
-    num_images = 10
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    seeds = range(0, num_images)
-    outdir = ".temp/last"
-    template_dir = "data/templates_per_classid"
-
     # Load Model 
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     if dist.get_rank() == 0:
         dist.print0('Loading network...')
-    net_pkl = "https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-imagenet-64x64-cond-adm.pkl"
-    with dnnlib.util.open_url(net_pkl, verbose=True) as f:
-        data = pickle.load(f)
-    net = update_EDM(data['ema']).to(device)
-    # Load encoder
-    encoder = data.get('encoder', None)
-    if encoder is None:
-        encoder = dnnlib.util.construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
+        net_pkl = "https://nvlabs-fi-cdn.nvidia.com/edm/pretrained/edm-imagenet-64x64-cond-adm.pkl"
+        with dnnlib.util.open_url(net_pkl, verbose=True) as f:
+            data = pickle.load(f)
+        net = update_EDM(data['ema']).to(device)
+        # Load encoder
+        encoder = data.get('encoder', None)
+        if encoder is None:
+            encoder = dnnlib.util.construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
 
+    # Setup runner 
+    num_images = 9
+    outdir = "data/images/config_runner/"
 
-    sampler_kwargss = []
-    for sigma_max in [31.21, 8.28, 2.17, 0.41, 0.02]: # intial sweep
-        clone = dict(sampler_kwargs_og)
-        clone["sigma_max"] = sigma_max
-        sampler_kwargss.append(clone)
+    if True:
+        paths = {
+            "config"    : "configs/config_runner.py",
+            "templates" : "data/images/examples",
+            "out"       : None,
+        }
 
-    # Iterate through differnet configs
-    edit_per_param = [] 
-    gvf_args = gvf_args_og
-    for sampler_kwargs in sampler_kwargss:
-        # Refernce non-serializbles
-        gvf_args["args_references"]["network"] = net
-
-        # Generate images
-        if dist.get_rank() == 0:
-            dist.print0("Generating images...")
-        
-        image_iter = generate.generate_images(
-            net,
-            encoder=encoder,
-            gvf_args=gvf_args,
-            seeds=seeds,
-            verbose=(dist.get_rank() == 0),
-            device=device,
-            template_dir=template_dir,
-            sampler_kwargs=sampler_kwargs,
-            gradient_kwargs=myconfig.gradient_kwargs,
-            live_editing=False,
-            ddim_inversion=False,
-            use_noisy_examples=True,
-        )
-
+        # Setup runner and generate images
+        runner = ExperimentRunner(paths, num_images=num_images)
+        image_iter = runner.generate_images(net=net, encoder=encoder)
 
         # Get paths from all batches, not just last
         results = []
         for r in tqdm.tqdm(image_iter, unit='batch', disable=(dist.get_rank() != 0)):
             results.append(r)
-        
+        torch.distributed.barrier()
+
         # Only run composition on rank 0
         if dist.get_rank() == 0:
-            # Get path from unedited images
-            path_original = [f".temp/uncond-32steps-1storder/{i:06d}.png" for i in range(0, num_images)]    
-            # Get paths from all batches, not just last
-            path_examples = []
-            edited_images = []
-            for batch_result in results:
-                path_examples.extend(batch_result.example_paths)
-                edited_images.extend([img for img in batch_result.images])
+            img = rearrange(results[0].images, "(b1 b2) c h w -> (b1 h) (b2 w) c", b1=3)
+            Image.fromarray(img.cpu().numpy()).save(os.path.join(outdir, f"out.png"))
 
-            # Convert to PIL 
-            examples = [Image.open(path) for path in path_examples] 
-            original = [Image.open(path) for path in path_original]
-            edit_per_param.append([Image.fromarray(arr.permute(1, 2, 0).cpu().numpy(), "RGB") for arr in edited_images])
-
-    # Compose templates together 
-    og = compose_images(original, "v")
-    # Compose examples together
-    ex = compose_images(examples, "v")
-    # Compose edited images together
-    edited = compose_images(compose_images_batched(edit_per_param, "h"), "v")
-    # Put togetogher
-    comp = compose_images([og, edited, ex], "h")
-    comp.save(os.path.join(outdir, "batch.png"))  
-
-
-
+    # Cleanup
     torch.distributed.barrier()
     if dist.get_rank() == 0:
         print("Exiting...")
