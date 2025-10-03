@@ -160,47 +160,36 @@ def generate_images(
                 r.seeds = [seeds[idx] for idx in indices]
                 r.example_paths = []
                 r.example_idx = []
-                # Randomly pick class index
+
                 if len(r.seeds) > 0:
-                    # Pick labels and corresponding examples.
+                    # Pick noise 
                     rnd = StackedRandomGenerator(device, r.seeds)
                     r.noise = rnd.randn([len(r.seeds), net.img_channels, net.img_resolution, net.img_resolution], device=device)
+
                     r.labels = None
                     if net.label_dim > 0:
+                        # Pick labels
                         r.labels = torch.eye(net.label_dim, device=device)[rnd.randint(net.label_dim, size=[len(r.seeds)], device=device)]
                         if class_idx is not None:
                             r.labels[:, :] = 0
                             r.labels[:, class_idx] = 1
 
-                        # For each label, pick a random example and save its path.
+                        # Pick example, for each label
                         for seed, label in zip(r.seeds, torch.argmax(r.labels, axis=1)): 
                             example_idx = self._sample_example_idx(template_dir, seed, label, idx_range=example_idx_range)
                             example_path = os.path.join(template_dir, str(int(label)), f"{example_idx}.png")
                             r.example_idx.append(example_idx)
                             r.example_paths.append(example_path)
 
-                    # Compute latents for the example
-                    latents_example  = encoder.encode_latents(load_templates_batch(r.example_paths)).to(device)
-                    # Whether to use DDIM inversion
-                    if ddim_inversion:
-                        print("Inverting examples")
-                        xTs, activations_by_t = edm_sampler.edm_inversion(
-                                net, images=latents_example, labels=r.labels, device=device, disable_tqdm=True, **sampler_kwargs)
-                        r.noise = xTs.to(device)
-
-                        # Update bottleneck features 
-                        if "h_exam_per_t" in gradient_kwargs:
-                            gradient_kwargs["h_exam_per_t"] = {activations_by_t["bottleneck"][t] for t in activations_by_t["bottleneck"].keys()}
-                    
                     # Initialize SDEdit
                     if use_noisy_examples:
-                        r_noise = latents_example / net.sigma_max + r.noise
+                        examples = load_templates_batch(r.example_paths)
+                        latents_example = encoder.encode_latents(examples).to(device)
+                        r.noise += (latents_example / sampler_kwargs["sigma_max"])
 
                     # Update gvf to use examples of current batch
                     if gradient_kwargs.get("gvf"):
                         self._update_examples_gvf(gradient_kwargs["gvf"], r.example_paths)
-
-                    # Update gradient kwargs for sampler
                     edm_sampler.init_gradient(gradient_kwargs)
 
                     # Generate images
