@@ -60,7 +60,7 @@ generate_kwargs = {
         "ddim_inversion"        : False,
         "live_editing"          : False,
         "use_noisy_examples"    : False,
-        "example_idx_range"     : None,
+        "example_idx_range"     : [0,1],
 }
 
 gradient_kwargs = {

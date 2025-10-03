@@ -1,6 +1,5 @@
 import torch
 
-
 determinstic_sampling = {
         "S_churn"           : 0.0,  
         "S_min"             : 0.0, 
@@ -34,33 +33,15 @@ sampler_kwargs = {
         **second_order, 
 }
 
-gvf_kwargs = {
-        # "latent" : {"autoencoder" : "kl", "id" :"stabilityai/sd-turbo" },
-        "latent" : "ambient",
-        "vectorfield": {
-            "features_template" : "__REF__features_template",
-            "noise_gate"    : {
-                "type_gate" : "quadratic", 
-                "nu" : 3,
-                "noise_onset" : 80.0,
-            },
-            "args_noise" : "edm",
-        },
-        "noise" : "edm",
-        "dtype" : torch.float32,
-        "scale"         : 1.0, 
-        # "pullback" : {"step_size_slope" : 1, "step_size_intercept": 0},
-        "args_references" : {
-            "features_template" : torch.zeros(1, 0, 0, 0),
-        },
-}
+
+gvf_kwargs = None
 
 generate_kwargs = {
         "ddim_inversion"        : False,
         "live_editing"          : False,
         "use_noisy_examples"    : False,
         "example_idx_range"     : None,
-        "class_idx"             : None,
+        "class_idx"             : [],
 }
 
 gradient_kwargs = {
