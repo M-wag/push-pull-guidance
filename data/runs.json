@@ -14494,46 +14494,6 @@
     }
 }
 {
-    "run_id": 280,
-    "datetime": "2025-10-04T01:30:29.468237+00:00",
-    "duration": 13.78144285,
-    "num_images": 10000,
-    "generate": {
-        "ddim_inversion": false,
-        "live_editing": false,
-        "use_noisy_examples": true,
-        "example_idx_range": [
-            0,
-            1
-        ]
-    },
-    "sampler": {
-        "sigma_min": 0.002,
-        "sigma_max": 2.901530184964863,
-        "rho": 7,
-        "S_noise": 1.0,
-        "S_churn": 40.0,
-        "S_min": 0.05,
-        "S_max": 50,
-        "dtype": "torch.float32",
-        "correct_rgb": false,
-        "num_steps": 32,
-        "apply_2nd_order": true
-    },
-    "gradient": {
-        "scale_model_score": 1.0
-    },
-    "gvf": null,
-    "metrics": {
-        "fid": 6.051758644246461,
-        "fd_dinov2": 155.1468475290872,
-        "fid_csmean": 0.7071598941674528,
-        "fd_dinov2_csmean": 0.43253319854530675,
-        "clip_csmean": 0.8043145034718787,
-        "L2_mean": 39.91828918457031
-    }
-}
-{
     "run_id": 281,
     "datetime": "2025-10-04T01:44:16.364149+00:00",
     "duration": 13.829652066666666,
@@ -14574,46 +14534,6 @@
     }
 }
 {
-    "run_id": 282,
-    "datetime": "2025-10-04T01:58:06.152561+00:00",
-    "duration": 13.839254250000002,
-    "num_images": 10000,
-    "generate": {
-        "ddim_inversion": false,
-        "live_editing": false,
-        "use_noisy_examples": true,
-        "example_idx_range": [
-            0,
-            1
-        ]
-    },
-    "sampler": {
-        "sigma_min": 0.002,
-        "sigma_max": 1.6085713657684715,
-        "rho": 7,
-        "S_noise": 1.0,
-        "S_churn": 40.0,
-        "S_min": 0.05,
-        "S_max": 50,
-        "dtype": "torch.float32",
-        "correct_rgb": false,
-        "num_steps": 32,
-        "apply_2nd_order": true
-    },
-    "gradient": {
-        "scale_model_score": 1.0
-    },
-    "gvf": null,
-    "metrics": {
-        "fid": 7.4007207015967715,
-        "fd_dinov2": 179.24966205960592,
-        "fid_csmean": 0.740874935188413,
-        "fd_dinov2_csmean": 0.4816366407373673,
-        "clip_csmean": 0.8200729189094543,
-        "L2_mean": 39.839141845703125
-    }
-}
-{
     "run_id": 283,
     "datetime": "2025-10-04T02:11:56.517410+00:00",
     "duration": 13.838495733333334,
@@ -14651,46 +14571,6 @@
         "fd_dinov2_csmean": 0.5134351696078733,
         "clip_csmean": 0.8312130729548757,
         "L2_mean": 39.77622985839844
-    }
-}
-{
-    "run_id": 284,
-    "datetime": "2025-10-04T02:25:46.836956+00:00",
-    "duration": 13.799352783333335,
-    "num_images": 10000,
-    "generate": {
-        "ddim_inversion": false,
-        "live_editing": false,
-        "use_noisy_examples": true,
-        "example_idx_range": [
-            0,
-            1
-        ]
-    },
-    "sampler": {
-        "sigma_min": 0.002,
-        "sigma_max": 0.8446198411004494,
-        "rho": 7,
-        "S_noise": 1.0,
-        "S_churn": 40.0,
-        "S_min": 0.05,
-        "S_max": 50,
-        "dtype": "torch.float32",
-        "correct_rgb": false,
-        "num_steps": 32,
-        "apply_2nd_order": true
-    },
-    "gradient": {
-        "scale_model_score": 1.0
-    },
-    "gvf": null,
-    "metrics": {
-        "fid": 9.074206140070448,
-        "fd_dinov2": 200.67673743466193,
-        "fid_csmean": 0.7852092403884096,
-        "fd_dinov2_csmean": 0.5566677911264868,
-        "clip_csmean": 0.8438252498424886,
-        "L2_mean": 39.74931335449219
     }
 }
 {
@@ -15252,43 +15132,6 @@
     }
 }
 {
-    "run_id": 300,
-    "datetime": "2025-10-04T06:06:47.203568+00:00",
-    "duration": 13.878232166666667,
-    "num_images": 10000,
-    "generate": {
-        "ddim_inversion": false,
-        "live_editing": false,
-        "use_noisy_examples": true,
-        "example_idx_range": null
-    },
-    "sampler": {
-        "sigma_min": 0.002,
-        "sigma_max": 2.901530184964863,
-        "rho": 7,
-        "S_noise": 1.0,
-        "S_churn": 40.0,
-        "S_min": 0.05,
-        "S_max": 50,
-        "dtype": "torch.float32",
-        "correct_rgb": false,
-        "num_steps": 32,
-        "apply_2nd_order": true
-    },
-    "gradient": {
-        "scale_model_score": 1.0
-    },
-    "gvf": null,
-    "metrics": {
-        "fid": 4.812514077007715,
-        "fd_dinov2": 127.09000025743634,
-        "fid_csmean": 0.7093951567720002,
-        "fd_dinov2_csmean": 0.4369217782384514,
-        "clip_csmean": 0.8054878664259966,
-        "L2_mean": 39.81780242919922
-    }
-}
-{
     "run_id": 301,
     "datetime": "2025-10-04T06:20:39.907218+00:00",
     "duration": 13.8471734,
@@ -15326,43 +15169,6 @@
     }
 }
 {
-    "run_id": 302,
-    "datetime": "2025-10-04T06:34:30.748345+00:00",
-    "duration": 13.875437733333333,
-    "num_images": 10000,
-    "generate": {
-        "ddim_inversion": false,
-        "live_editing": false,
-        "use_noisy_examples": true,
-        "example_idx_range": null
-    },
-    "sampler": {
-        "sigma_min": 0.002,
-        "sigma_max": 1.6085713657684715,
-        "rho": 7,
-        "S_noise": 1.0,
-        "S_churn": 40.0,
-        "S_min": 0.05,
-        "S_max": 50,
-        "dtype": "torch.float32",
-        "correct_rgb": false,
-        "num_steps": 32,
-        "apply_2nd_order": true
-    },
-    "gradient": {
-        "scale_model_score": 1.0
-    },
-    "gvf": null,
-    "metrics": {
-        "fid": 4.738781207389707,
-        "fd_dinov2": 127.77778250269367,
-        "fid_csmean": 0.7430618385404975,
-        "fd_dinov2_csmean": 0.4898720328798425,
-        "clip_csmean": 0.8225197430220049,
-        "L2_mean": 39.65869140625
-    }
-}
-{
     "run_id": 303,
     "datetime": "2025-10-04T06:48:23.284612+00:00",
     "duration": 13.79461055,
@@ -15397,43 +15203,6 @@
         "fd_dinov2_csmean": 0.5217993622256951,
         "clip_csmean": 0.8339841163788247,
         "L2_mean": 39.6052131652832
-    }
-}
-{
-    "run_id": 304,
-    "datetime": "2025-10-04T07:02:10.970957+00:00",
-    "duration": 13.80663145,
-    "num_images": 10000,
-    "generate": {
-        "ddim_inversion": false,
-        "live_editing": false,
-        "use_noisy_examples": true,
-        "example_idx_range": null
-    },
-    "sampler": {
-        "sigma_min": 0.002,
-        "sigma_max": 0.8446198411004494,
-        "rho": 7,
-        "S_noise": 1.0,
-        "S_churn": 40.0,
-        "S_min": 0.05,
-        "S_max": 50,
-        "dtype": "torch.float32",
-        "correct_rgb": false,
-        "num_steps": 32,
-        "apply_2nd_order": true
-    },
-    "gradient": {
-        "scale_model_score": 1.0
-    },
-    "gvf": null,
-    "metrics": {
-        "fid": 4.628239867521627,
-        "fd_dinov2": 121.88968701904402,
-        "fid_csmean": 0.7865180315948893,
-        "fd_dinov2_csmean": 0.5626790798598702,
-        "clip_csmean": 0.8464758856417751,
-        "L2_mean": 39.566951751708984
     }
 }
 {
