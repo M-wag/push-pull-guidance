@@ -7,7 +7,7 @@ import dnnlib.util as util
 # Let there be a dict appended to *.json .
 # Ensure dict = convert(read(*.json)) 
 
-def test_():
+def test_config_serialization_roundtrip():
     path_records = "tests/tests.json"
     # delete path if it exists
     if os.path.exists(path_records):
