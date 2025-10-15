@@ -15,7 +15,7 @@ def test_():
 
     # example config
     config_og = {
-        "sampler_kwargs" : {
+        "sampler" : {
             "sigma_min"         : 0.002 , 
             "sigma_max"         : 80, 
             "rho"               : 7, 
@@ -29,16 +29,16 @@ def test_():
             "apply_2nd_order"   : True,
         }, 
 
-        "gvf_kwargs" : None,
+        "gvf" : None,
 
-        "generate_kwargs" : {
+        "generate" : {
             "ddim_inversion"        : False,
             "live_editing"          : False,
             "use_noisy_examples"    : False,
             "example_idx_range"     : None,
         },
 
-        "gradient_kwargs" : {
+        "gradient" : {
             "scale_model_score" : 1.0, 
         },
     }

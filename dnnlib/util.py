@@ -594,7 +594,7 @@ def convert_entry_to_config(entry: dict, deserialize_map: dict=None):
 
     # copy only the key word arguments
     new_entry = {config_key : entry[config_key] 
-                 for config_key in ["sampler_kwargs", "gvf_kwargs", "gradient_kwargs",  "generate_kwargs"]}
+                 for config_key in ["sampler", "gvf", "gradient",  "generate"]}
 
     def replace_values(d: dict, val_to_replace):
         for key, val in d.items():
