@@ -573,16 +573,14 @@ def append_to_records(path: str, entry: dict):
     with open(path, "w") as f:
         json.dump(records, f, indent=4, default=str)
 
-def get_last_run_id_records(path : str):
+def get_last_run_id_records(records):
     """Return the highest run_id from all records."""
-    records = read_records(path)
     if not records:
         return None
     return max([entry["run_id"] for entry in records])
 
-def get_entry_from_records(path: str, run_id: int):
+def get_entry_from_records(records, run_id: int):
     """Retrieve the record entry matching the given run id."""
-    records = read_records(path)
     for entry in records:
         if entry["run_id"] == run_id:
             return entry
@@ -602,7 +600,7 @@ def convert_entry_to_config(entry: dict, deserialize_map: dict=None):
             if isinstance(val, dict):
                 replace_values(val, val_to_replace)
             # replace strings if it in the replacement dictionary
-            else: 
+            elif isinstance(val, str): 
                 if val in val_to_replace: d[key] = val_to_replace[val]
 
     # import the default deserialization map 

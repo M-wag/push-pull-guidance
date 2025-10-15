@@ -48,8 +48,10 @@ def test_config_serialization_roundtrip():
     util.append_to_records(path_records, entry_old)
 
     # loads from records
-    run_id = util.get_last_run_id_records(path_records)
-    entry = util.get_entry_from_records(path_records, run_id=run_id)
+    records_old = util.read_records(path_records)
+    run_id = util.get_last_run_id_records(records_old)
+    records = util.read_records(path_records)
+    entry = util.get_entry_from_records(records, run_id=run_id)
     # convert to config 
     config_recon = util.convert_entry_to_config(entry)
 
