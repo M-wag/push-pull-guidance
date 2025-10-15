@@ -5,6 +5,17 @@ from functools import partial
 from training.networks import InjectionManager
 
 #----------------------------------------------------------------------------
+# Some values in config will be stringified. The following map defines
+# the deserialization for common objects.
+
+DESERIALIZATION_MAP = {
+        "torch.float16" : torch.float16,
+        "torch.float32" : torch.float32,
+        "torch.float64" : torch.float64,
+    }
+
+
+#----------------------------------------------------------------------------
 # Helper function to assign buffers for arguments that 'may' be torch.Tensor
 
 def _maybe_register_buffer(module, name, value):

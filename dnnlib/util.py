@@ -11,6 +11,7 @@ import ctypes
 import fnmatch
 import importlib
 import inspect
+import json
 import numpy as np
 import os
 import shutil
@@ -550,3 +551,67 @@ def open_url(url: str, cache_dir: Optional[str] = None, num_attempts: int = 10, 
     # Return data as file object.
     assert not return_filename
     return io.BytesIO(url_data)
+
+# Helpers for dealing with loading and saving data from runs 
+# ------------------------------------------------------------------------------------------
+
+def read_records(path: str):
+    """Load and return run records from a JSON file."""
+    with open(path, "r") as f:
+        return json.load(f)
+
+def append_to_records(path: str, entry: dict):
+    """Append an entry to the records file, creating it if it doesn't exist."""
+    if not os.path.exists(path):
+        records = []
+    else:
+        records = read_records(path)
+
+    assert isinstance(records, list)
+    records.append(entry)
+
+    with open(path, "w") as f:
+        json.dump(records, f, indent=4, default=str)
+
+def get_last_run_id_records(path : str):
+    """Return the highest run_id from all records."""
+    records = read_records(path)
+    if not records:
+        return None
+    return max([entry["run_id"] for entry in records])
+
+def get_entry_from_records(path: str, run_id: int):
+    """Retrieve the record entry matching the given run id."""
+    records = read_records(path)
+    for entry in records:
+        if entry["run_id"] == run_id:
+            return entry
+    raise ValueError(f"No entry found with run_id: {run_id}")
+
+
+def convert_entry_to_config(entry: dict, deserialize_map: dict=None):
+    """Extract config parameters from entry and deserialize string values to objects."""
+
+    # copy only the key word arguments
+    new_entry = {config_key : entry[config_key] 
+                 for config_key in ["sampler_kwargs", "gvf_kwargs", "gradient_kwargs",  "generate_kwargs"]}
+
+    def replace_values(d: dict, val_to_replace):
+        for key, val in d.items():
+            # recursively replace values in nested dicts
+            if isinstance(val, dict):
+                replace_values(val, val_to_replace)
+            # replace strings if it in the replacement dictionary
+            else: 
+                if val in val_to_replace: d[key] = val_to_replace[val]
+
+    # import the default deserialization map 
+    if not deserialize_map:
+        deserialize_map = get_obj_by_name("mylib.gvf.DESERIALIZATION_MAP")
+
+    # apply replacement
+    replace_values(new_entry, deserialize_map)
+
+    return new_entry
+
+
