@@ -1,7 +1,9 @@
+import os 
 import torch
 import tqdm
 import polars as pl
 import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
 import dnnlib.util as util
 
 from typing import Dict, Tuple, Callable
@@ -30,17 +32,33 @@ def filter_raw_data(json_raw):
 
 class ExperimentVisualizer:
     def __init__(self, data_raw, condition_predicates):
+        many_examples = pl.col("example_idx_range").is_null()
 
         # transform raw data
         self.data_raw = data_raw
         self.data_all = filter_raw_data(json_raw)
-        self.data = {condition : self.data_all.filter(predicate) for condition, predicate in condition_to_predicates.items()}
+        self.data = {condition : self.data_all.filter(predicates ) for condition, predicates in condition_to_predicates.items()}
         # initialize visualiser grid
         self.grid = {}
         # figure params
         self.row_size = 5.3
         self.col_size = 5.3
 
+
+        self.style = {
+            #"font.family": "serif",
+            #"font.size": 10,
+            "axes.labelsize": 20,
+            "axes.titlesize": 10,
+            "legend.fontsize": 10,
+            "xtick.labelsize": 12,
+            "ytick.labelsize": 12,
+            "axes.linewidth": 0.5,
+            "lines.linewidth": 1.0,
+            "grid.linewidth": 1.0,
+            "xtick.major.width": 1.5,
+            "ytick.major.width": 1.5,
+        }
     def append_grid(self, pos: Tuple[int, int], fn: Callable) -> None:
         if pos in self.grid:
             self.grid[pos].append(fn)
@@ -64,20 +82,21 @@ class ExperimentVisualizer:
         # Make figure
         fig, axes = self.make_fig()
 
-        for pos, vizs in self.grid.items():
-            for viz in vizs:
-                viz(fig, axes[pos])
-        
+        with plt.rc_context(self.style):
+            for pos, vizs in self.grid.items():
+                for viz in vizs:
+                    viz(fig, axes[pos])
+            
         return fig, axes 
 
-    def scatter_metric(self, pos, conditions, metrics) -> None:
+    def scatter_metric(self, pos, conditions, metrics, xaxis="nu") -> None:
 
         def _scatter_metric(fig, ax):
             # Plot (nu, metric) for each specified metric
             for condition in conditions:
-                df = self.data[condition].select(["nu", "metrics"]).unnest("metrics")
+                df = self.data[condition].select([xaxis, "metrics"]).unnest("metrics")
                 for metric in metrics:
-                    ax.scatter(df["nu"], df[metric])
+                    ax.scatter(df[xaxis], df[metric], label=condition)
 
             # Stylize axis
             ax.set_axisbelow(True)
@@ -95,7 +114,14 @@ class ExperimentVisualizer:
 
         self.append_grid(pos, _imshow)
 
-    def show_examples(self, pos, condition=None, predicate=None):
+    def show_examples(self, 
+                      pos, 
+                      val
+                      condition=None, 
+                      path_template="data/images/examples", 
+                      class_idx=0, 
+                      example_idx_range=None,):
+
         def _show_examples(fig, ax):
 
             # whether to apply predicate entire data or sunset
@@ -105,15 +131,20 @@ class ExperimentVisualizer:
                 df = self.data_all
 
             # get run_id by applying predicate
-            run_id = df.filter(predicate)["run_id"].item()
+            run_id = df.filter(predicate)["run_id"].[0]item()
+
             # get entry and convert to config 
             entry = util.get_entry_from_records(self.data_raw, run_id=run_id)
             config = util.convert_entry_to_config(entry)
+            # modify config for nice visualization
+            config["generate"]["example_idx_range"] = example_idx_range
+            config["generate"]["class_idx"] = class_idx
 
             # init runner and append configs 
             paths = {"templates" : "data/images/examples", "out" : None}
             runner = ExperimentRunner(paths, num_images=9)
             runner.config.update({f"{key}_kwargs" : val for key, val in config.items()})
+
             
             # generate images
             image_iter = runner.generate_images()
@@ -125,19 +156,44 @@ class ExperimentVisualizer:
 
         self.append_grid(pos, _show_examples)
 
+    def add_border(self, pos, color):
+
+        def _add_border(fig, ax):
+            for spine in ax.spines.values():
+                spine.set_edgecolor(color)
+                spine.set_linewidth(3)
+
+        self.append_grid(pos, _add_border)
+
+    def add_line(self, pos, val):
+
+        def _add_line(fig, ax):
+            ax.axvline(val, c="red")
+
+        self.append_grid(pos, _add_line)
+
+
+    def add_memorization(self, conditions):
+        for condition in conditions:
+            for metric in ["fid", "fd_dinov2"]:
+                pass
 
 if __name__ == "__main__":
     # Predicates one can use to select data 
     first_order = (pl.col("apply_2nd_order") == False) & (pl.col("num_steps") == 64)
     second_order = (pl.col("apply_2nd_order") == True) & (pl.col("num_steps") == 32)
+
     autoencoder = (pl.col("autoencoder") == "kl") & (pl.col("id") == "stabilityai/sd-turbo")
+    no_noise_gate = (pl.col("type_gate").is_null()) & (pl.col("nu").is_null())
+
     heaviside = pl.col("type_gate") == "heaviside"
     delayed_guidance = pl.col("noise_onset") < 80.0
-    many_examples = pl.col("example_idx_range").is_null()
+
     deterministic = pl.col("S_churn") == 0
     stochastic = pl.col("S_churn")  != 0
-    use_noisy_examples = pl.col("use_noisy_examples") == False
+    use_noisy_examples = pl.col("use_noisy_examples") == True
 
+    many_examples = pl.col("example_idx_range").is_null()
     # For each condition assign predicates
     condition_to_predicates = {
             "exam-2ndord-stoch"  : (
@@ -145,23 +201,50 @@ if __name__ == "__main__":
                 stochastic,
                 autoencoder,
                 heaviside,
-                ~delayed_guidance,
                 many_examples,
+            ),
+            "sdedit-2ndord-stoch"  : (
+                second_order,
+                stochastic,
+                no_noise_gate,
+                use_noisy_examples,
+                many_examples,
+                pl.col("run_id") > 265,
             )
     }
 
 
     # Initialize and run visualizer
     json_raw = util.read_records("data/runs_2.json")
-    visualizer = ExperimentVisualizer(json_raw, condition_to_predicates)
-    # Add scatter
-    visualizer.scatter_metric((0, 1), ["exam-2ndord-stoch"], ["fd_dinov2"])
-    visualizer.scatter_metric((1, 1), ["exam-2ndord-stoch"], ["fd_dinov2_csmean"])
-    # Generate image for  specific config
-    visualizer.show_examples((1, 0), condition="exam-2ndord-stoch", predicate=(pl.col("nu") == 80.0))
 
-    # Plot image
-    visualizer.imshow((0, 0), torch.randn(64, 64, 3))
-    # visualizer.imshow((2, 0), torch.randn(64, 64, 3))
-    fig, axes = visualizer.eval()
-    fig.savefig("temp.pdf")
+    values = [20, 40, 80]
+    for i, val in enumerate(values):
+        visualizer = ExperimentVisualizer(json_raw, condition_to_predicates)
+        # Add scatter
+        visualizer.scatter_metric((0, 1), ["exam-2ndord-stoch"], ["fd_dinov2"])
+        visualizer.scatter_metric((0, 1), ["sdedit-2ndord-stoch"], ["fd_dinov2"], xaxis="sigma_max")
+        visualizer.scatter_metric((1, 1), ["exam-2ndord-stoch"], ["fd_dinov2_csmean"])
+        visualizer.scatter_metric((1, 1), ["sdedit-2ndord-stoch"], ["fd_dinov2_csmean"], xaxis="sigma_max")
+        visualizer.scatter_metric((2, 1), ["exam-2ndord-stoch"], ["L2_mean"])
+        visualizer.scatter_metric((2, 1), ["sdedit-2ndord-stoch"], ["L2_mean"], xaxis="sigma_max")
+        # Add templates
+        path_template = "data/images/examples"
+        visualizer.imshow((0, 0), mpimg.imread(os.path.join(path_template, "1/0.png")))
+        visualizer.imshow((0, 2), mpimg.imread(os.path.join(path_template, "1/0.png")))
+        # Color in borders
+        visualizer.add_border((1, 0), "blue")
+        visualizer.add_border((1, 2), "orange")
+        # Add line 
+        visualizer.add_line((0, 1), val)
+        visualizer.add_line((1, 1), val)
+        visualizer.add_line((2, 1), val)
+            
+        fig, axes = visualizer.eval()
+
+        # Add subtitle 
+        axes[0, 1].set_title(r"FD$_\text{DINOV2}$")
+        axes[1, 1].set_title(r"$<cos_\text{DINOV2}>$")
+        axes[2, 1].set_title(r"$<|x - \mu |_2^2>$")
+
+        fig.suptitle(rf"$\nu_0 / t_0 = {val:.2f}$", size=40)
+        fig.savefig(f"temp/{i}.pdf")
