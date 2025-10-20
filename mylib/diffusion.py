@@ -9,6 +9,16 @@ from torchvision.io import read_image, ImageReadMode
 DISABLE_TQDM = False
 
 #----------------------------------------------------------------------------
+# Modified version torch.randn_like
+def randn_like(tensor, generator=None):
+    return torch.randn(
+        tensor.shape,
+        device=tensor.device,
+        dtype=tensor.dtype,
+        generator=generator
+    )
+
+#----------------------------------------------------------------------------
 # Modified version of EDM sampler.
 # Modular options for gradient and time step discretization.
 
@@ -48,6 +58,7 @@ class EDMSampler:
         save_all_timesteps  : bool = True,
         correct_rgb         : bool = True,
         disable_tqdm        : bool = False,
+        noise_seed          : int = None,
     ):
         # Adjust noise levels based on what's supported by the network
         sigma_min = max(sigma_min, net.sigma_min)
@@ -62,6 +73,10 @@ class EDMSampler:
         if save_all_timesteps:
             xs = torch.empty((num_steps, noise.shape[0], net.img_channels, net.img_resolution, net.img_resolution))
 
+        noise_generator = noise_seed
+        if noise_seed is not None:
+            noise_generator = torch.Generator(device=device).manual_seed(noise_seed)
+
         # Main sampling loop.
         x_next = noise.to(dtype) * t_steps[0]
         for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1, disable=disable_tqdm): # 0, ..., N-1
@@ -70,7 +85,7 @@ class EDMSampler:
             # Increase noise temporarily.
             gamma = min(S_churn / num_steps, np.sqrt(2) - 1) if S_min <= t_cur <= S_max else 0
             t_hat = net.round_sigma(t_cur + gamma * t_cur)
-            x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
+            x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * randn_like(x_cur, noise_generator)
 
             # Euler step
             d_cur = self.gradient_fn(x_hat, t_hat, labels, net)
@@ -137,7 +152,6 @@ class EDMSampler:
             if i == 1:
                 return x_next, activations_per_t
                 
-            
             # Save bottleneck
             activations_per_t["bottleneck"][t_low] = net._injection_manager.load(name_bottleneck, "skip")
 
