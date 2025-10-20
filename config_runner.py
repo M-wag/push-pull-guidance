@@ -11,7 +11,7 @@ from PIL import Image
 from run_metrics import ExperimentRunner
 from torch_utils import distributed as dist
 from training.networks import update_EDM
-from imgviz import compose_images, compose_images_batched
+from imgviz import compose_images, compose_images_batched, draw_title, pad_top
 
 #----------------------------------------------------------------------------
 # Continously runs a network for gennerating images 
@@ -76,7 +76,7 @@ def main():
                 edited = [Image.fromarray(arr.permute(1, 2, 0).cpu().numpy(), "RGB") for arr in edited_images]
 
                 # Compose and save
-                compositions = compose_images_batched([edited, examples], "h")
+                compositions = compose_images_batched([edited], "h")
                 compositions = compose_images(compositions, "v")
                 compositions.save(os.path.join(paths["out"], f"out.png"))  
                 

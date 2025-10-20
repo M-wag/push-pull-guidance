@@ -37,7 +37,10 @@ class ExperimentVisualizer:
         # transform raw data
         self.data_raw = data_raw
         self.data_all = filter_raw_data(json_raw)
-        self.data = {condition : self.data_all.filter(predicates ) for condition, predicates in condition_to_predicates.items()}
+        self.data = {condition : self.data_all.filter(predicates + (many_examples,) ) for condition, predicates in condition_to_predicates.items()}
+        
+        # add memorization
+
         # initialize visualiser grid
         self.grid = {}
         # figure params
@@ -94,7 +97,7 @@ class ExperimentVisualizer:
         def _scatter_metric(fig, ax):
             # Plot (nu, metric) for each specified metric
             for condition in conditions:
-                df = self.data[condition].select([xaxis, "metrics"]).unnest("metrics")
+                df = self.data[condition].select([xaxis, "metrics", "fd_dinov2_mem"]).unnest("metrics")
                 for metric in metrics:
                     ax.scatter(df[xaxis], df[metric], label=condition)
 
@@ -116,7 +119,7 @@ class ExperimentVisualizer:
 
     def show_examples(self, 
                       pos, 
-                      val
+                      val,
                       condition=None, 
                       path_template="data/images/examples", 
                       class_idx=0, 
@@ -129,17 +132,24 @@ class ExperimentVisualizer:
                 df = self.data[condition]
             else: 
                 df = self.data_all
-
-            # get run_id by applying predicate
-            run_id = df.filter(predicate)["run_id"].[0]item()
+            run_id = df["run_id"][1]
 
             # get entry and convert to config 
-            entry = util.get_entry_from_records(self.data_raw, run_id=run_id)
+            # BUG : is modifying jsonb ojects
+            import copy
+            entry = copy.deepcopy(util.get_entry_from_records(self.data_raw, run_id=run_id))
             config = util.convert_entry_to_config(entry)
+
+            # get run_id by applying predicate
+            # modify config to apply value
+            if "sdedit" in condition:
+                config["sampler"]["sigma_max"] = val
+            else:
+                config["gvf"]["vectorfield"]["noise_gate"]["nu"] = val
             # modify config for nice visualization
             config["generate"]["example_idx_range"] = example_idx_range
             config["generate"]["class_idx"] = class_idx
-
+            config["sampler"]["noise_seed"] = 0
             # init runner and append configs 
             paths = {"templates" : "data/images/examples", "out" : None}
             runner = ExperimentRunner(paths, num_images=9)
@@ -173,10 +183,16 @@ class ExperimentVisualizer:
         self.append_grid(pos, _add_line)
 
 
-    def add_memorization(self, conditions):
+    def add_memorization(self, conditions, join_axis):
+        few_examples = pl.col("example_idx_range") == [0,1]
         for condition in conditions:
             for metric in ["fid", "fd_dinov2"]:
-                pass
+                df_few = self.data_all.filter(condition_to_predicates[condition] + (few_examples,))
+                few_minus_many = self.data[condition].unnest("metrics").join(df_few.unnest("metrics"), on=join_axis, suffix="_few").select([
+                    pl.col(join_axis), 
+                    (pl.col(f"{metric}_few") - pl.col(metric)).alias(f"{metric}_mem")
+                ])
+                self.data[condition] = self.data[condition].join(few_minus_many, on=join_axis)
 
 if __name__ == "__main__":
     # Predicates one can use to select data 
@@ -194,43 +210,55 @@ if __name__ == "__main__":
     use_noisy_examples = pl.col("use_noisy_examples") == True
 
     many_examples = pl.col("example_idx_range").is_null()
-    # For each condition assign predicates
-    condition_to_predicates = {
-            "exam-2ndord-stoch"  : (
-                second_order,
-                stochastic,
-                autoencoder,
-                heaviside,
-                many_examples,
-            ),
-            "sdedit-2ndord-stoch"  : (
-                second_order,
-                stochastic,
-                no_noise_gate,
-                use_noisy_examples,
-                many_examples,
-                pl.col("run_id") > 265,
-            )
-    }
 
 
     # Initialize and run visualizer
     json_raw = util.read_records("data/runs_2.json")
 
-    values = [20, 40, 80]
+    from mylib.diffusion import time_steps_edm
+    values = time_steps_edm(num_steps=32, sigma_min=0.002, sigma_max=80, rho=7).tolist()[0:21]
+    values = [2.7]
     for i, val in enumerate(values):
+        # For each condition assign predicates
+        condition_to_predicates = {
+                "exam-2ndord-stoch"  : (
+                    second_order,
+                    stochastic,
+                    autoencoder,
+                    heaviside,
+                ),
+                "sdedit-2ndord-stoch"  : (
+                    second_order,
+                    stochastic,
+                    no_noise_gate,
+                    use_noisy_examples,
+                    pl.col("run_id") > 265,
+                )
+        }
+
         visualizer = ExperimentVisualizer(json_raw, condition_to_predicates)
+        # Make memorization data
+        visualizer.add_memorization(["exam-2ndord-stoch"], join_axis="nu")
+        visualizer.add_memorization(["sdedit-2ndord-stoch"], join_axis="sigma_max")
+
         # Add scatter
         visualizer.scatter_metric((0, 1), ["exam-2ndord-stoch"], ["fd_dinov2"])
         visualizer.scatter_metric((0, 1), ["sdedit-2ndord-stoch"], ["fd_dinov2"], xaxis="sigma_max")
         visualizer.scatter_metric((1, 1), ["exam-2ndord-stoch"], ["fd_dinov2_csmean"])
         visualizer.scatter_metric((1, 1), ["sdedit-2ndord-stoch"], ["fd_dinov2_csmean"], xaxis="sigma_max")
-        visualizer.scatter_metric((2, 1), ["exam-2ndord-stoch"], ["L2_mean"])
-        visualizer.scatter_metric((2, 1), ["sdedit-2ndord-stoch"], ["L2_mean"], xaxis="sigma_max")
+        visualizer.scatter_metric((2, 1), ["exam-2ndord-stoch"], ["fd_dinov2_mem"])
+        visualizer.scatter_metric((2, 1), ["sdedit-2ndord-stoch"], ["fd_dinov2_mem"], xaxis="sigma_max")
+        visualizer.scatter_metric((3, 1), ["exam-2ndord-stoch"], ["L2_mean"])
+        visualizer.scatter_metric((3, 1), ["sdedit-2ndord-stoch"], ["L2_mean"], xaxis="sigma_max")
         # Add templates
+        class_idx = 0
         path_template = "data/images/examples"
-        visualizer.imshow((0, 0), mpimg.imread(os.path.join(path_template, "1/0.png")))
-        visualizer.imshow((0, 2), mpimg.imread(os.path.join(path_template, "1/0.png")))
+        visualizer.imshow((0, 0), mpimg.imread(os.path.join(path_template, f"{class_idx}/0.png")))
+        visualizer.imshow((0, 2), mpimg.imread(os.path.join(path_template, f"{class_idx}/0.png")))
+        # Generated data
+        visualizer.show_examples((1,0), val, condition="exam-2ndord-stoch", class_idx=class_idx, example_idx_range=[0,1])
+        visualizer.show_examples((1,2), val, condition="sdedit-2ndord-stoch", class_idx=class_idx, example_idx_range=[0,1])
+
         # Color in borders
         visualizer.add_border((1, 0), "blue")
         visualizer.add_border((1, 2), "orange")
@@ -244,7 +272,8 @@ if __name__ == "__main__":
         # Add subtitle 
         axes[0, 1].set_title(r"FD$_\text{DINOV2}$")
         axes[1, 1].set_title(r"$<cos_\text{DINOV2}>$")
-        axes[2, 1].set_title(r"$<|x - \mu |_2^2>$")
+        axes[2, 1].set_title(r"Memorizaton DINO$_\text{V2}$")
+        axes[3, 1].set_title(r"$<|x - \mu |_2^2>$")
 
         fig.suptitle(rf"$\nu_0 / t_0 = {val:.2f}$", size=40)
-        fig.savefig(f"temp/{i}.pdf")
+        fig.savefig(f"temp/temp.png")

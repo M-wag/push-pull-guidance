@@ -12,6 +12,7 @@ DESERIALIZATION_MAP = {
         "torch.float16" : torch.float16,
         "torch.float32" : torch.float32,
         "torch.float64" : torch.float64,
+        "tensor([], size=(1, 0, 0, 0))" : torch.zeros(1, 0, 0, 0),
     }
 
 

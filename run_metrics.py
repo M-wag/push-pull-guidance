@@ -17,10 +17,11 @@ from mylib.diffusion import time_steps_edm
 from training.networks import update_EDM
 
 
+
 #----------------------------------------------------------------------------
 # Determine run id from logs file.
 
-def get_next_run_id(log_path: str) -> int:
+def get_next_run_id(log_path: str, run_id) -> int:
     """Get next available run ID from log file"""
     if not os.path.exists(log_path):
         raise FileNotFoundError(f"Log file not found: {log_path}")
@@ -42,6 +43,36 @@ def log_run_record(log_path: str, record: dict) -> None:
     with open(log_path, "a") as f:
         f.write(json.dumps(record, indent=4, default=str) + "\n")
 
+
+#----------------------------------------------------------------------------
+# Load run data from path
+def load_json_data(filepath: str, return_idx_to_id=False) -> list[dict]:
+    """Load and parse JSON data from runs file."""
+    with open(filepath, 'r') as file:
+        content = file.read()
+    
+    # Split the content into individual JSON strings
+    json_strings = content.strip().split('\n}\n')
+    
+    # Add the missing closing brace to each split string (except the last one)
+    json_objects = []
+    idx_to_id = {}
+    for i, s in enumerate(json_strings):
+        if i < len(json_strings) - 1:
+            s += '}'  # Add the closing brace that was split off
+        json_objects.append(json.loads(s))
+        idx_to_id[i] = json_objects[-1]["run_id"]
+    
+    if return_idx_to_id:
+        return json_objects, idx_to_id
+    else:
+        return json_objects
+
+#----------------------------------------------------------------------------
+# Determine run id from logs file.
+
+def load_config_from_run_id(log_path: str, run_id: int) -> int:
+    pass
 #----------------------------------------------------------------------------
 # Import variables ending with "kwargs" by name from a .py file
 
@@ -90,7 +121,9 @@ class ExperimentRunner:
         self.paths= EasyDictNested(paths)
         self.max_batch_size = max_batch_size
         self.verbose = verbose
-        self.set_config(self.paths.config)
+        self.config = EasyDictNested()
+        if hasattr(self.paths, "config"):
+            self.set_config(self.paths.config)
         
     def run(self):
         if not torch.distributed.is_initialized():
@@ -137,6 +170,9 @@ class ExperimentRunner:
                         encoder = None,
                         device  = "cuda" if torch.cuda.is_available() else "cpu",
     ):
+
+        if not torch.distributed.is_initialized():
+            dist.init()
 
         seeds = range(seed, seed + self.num_images)
         image_iter = cm.generate.generate_images(
@@ -254,7 +290,7 @@ class ExperimentRunner:
 
     def set_config(self, config_path):
         config = load_vars_from_pyfile(config_path)
-        self.config = EasyDictNested(config)
+        self.config.update(EasyDictNested(config))
 
     def set_run_id(self):
         if getattr(self.paths, "logs", None):
@@ -272,7 +308,7 @@ def main():
     run_id = get_next_run_id("data/runs.json")
     run_id = f"{run_id:04d}"
     paths = {
-        "config"    : "configs/gvf_sd.py",
+        "config"    : "configs/sdedit.py",
         "logs"      : "data/runs.json",
         "features"  : f"data/features/run_{run_id}",
         "templates" : "data/images/examples",
@@ -281,13 +317,16 @@ def main():
     }
 
     runner = ExperimentRunner(paths, num_images=10_000)
-    keys = ("gvf_kwargs", "vectorfield", "noise_gate", "nu")
-    values = time_steps_edm(num_steps=32, sigma_min=0.002, sigma_max=80, rho=7).tolist()[:21:2]
-    for value in values:
-        runner.modify_config(keys, value)
-        run_record = runner.run()
-        if dist.get_rank() == 0:
-            log_run_record(paths["logs"], run_record)
+    keys = ("sampler_kwargs", "sigma_max")
+    values = time_steps_edm(num_steps=32, sigma_min=0.002, sigma_max=80, rho=7).tolist()[1:21]
+
+    for example_idx in [[0,1], None]:
+        runner.modify_config(("generate_kwargs", "example_idx_range"), example_idx)
+        for value in values:
+            runner.modify_config(keys, value)
+            run_record = runner.run()
+            if dist.get_rank() == 0:
+                log_run_record(paths["logs"], run_record)
                 
 if __name__ == "__main__":
     main()
