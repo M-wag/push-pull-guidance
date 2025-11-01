@@ -1,12 +1,14 @@
 import torch
 import dnnlib
 
+from typing import Optional, Tuple
+from einops import rearrange
 from functools import partial
 from training.networks import InjectionManager
 
 #----------------------------------------------------------------------------
-# Some values in config will be stringified. The following map defines
-# the deserialization for common objects.
+# Some values in config will be turned to strings. The following map defines
+# the deserialization for objects commonly found in configurations.
 
 DESERIALIZATION_MAP = {
         "torch.float16" : torch.float16,
@@ -98,215 +100,169 @@ class PullbackNumericalDifferentiation(torch.nn.Module):
 #----------------------------------------------------------------------------
 # Attention weights for the score of mixture of Gaussians
 # Essentialy performs softmax(-1/2 Mahalanobis(x)^2 + ln(weight) + ln(Z))
-# Includes optional modificaitons like Temperature parameter and scaling before softmax
+# However in our case Z and weighting are equal so can be ignored.
+# Includes optional modificaitons like Temperature parameter and normalization before softmax
 # See equation ..
 
-class AttentionWeightsMixture(torch.nn.Module):
-    def __init__(self, means, stds, weights_mixture=None):
+class AttentionMixture(torch.nn.Module):
+    def __init__(self, means, std, T=1.0, eps=1e-8, flat_data=False):
         super().__init__()
-        self.register_buffer("means", means)    # (N, D)
-        self.register_buffer("stds", stds)      # (N, )
-        N ,D = means.shape
-        self.D = D
+        self.register_buffer("means", means)    # (B, N, D)
+        self.std = std
+        self.T = T
+        self.eps = eps
+        self.flat_data = flat_data
 
-        if weights_mixture is None:
-            weights_mixture = torch.full((N,), 1/N, dtype=means.dtype, device=means.device)
-        self.register_buffer("weights_mixture", weights_mixture)     # (N, )
+        self.N, self.D = self.means.shape[0], self.means.shape[1]
 
-        if not torch.isclose(self.weights_mixture.sum(), torch.tensor(1.0, dtype=self.weights_mixture.dtype, device=self.weights_mixture.device), atol=1e-6):
-            raise ValueError(f"weights_mixture must sum to 1.0, got {self.weights_mixture.sum().item():.6f}")
 
-    def forward(self, x, T=1.0, passing_diff=False, normalize=True):
-        if passing_diff:
-            diff_x_to_means = x # (B, N, D)
-        else:
-            diff_x_to_means = self.means.unsqueeze(0) - x.unsqueeze(1)  # (B, N, D)
-            
+    def forward(self, x, *, passing_diff=False, normalize=False):
+        # Option to directly pass the difference between means and x
+        diff = x 
+        if not passing_diff:
+            diff = self.means - x.unsqueeze(1)  # (B, N, D) 
+        assert diff.shape == self.means.shape, f"Expect diff shape : {self.means.shape}, got : {diff.shape}"
+
+        # Flatten data
+        if self.flat_data:
+            diff = torch.flatten(diff, start_dim=2)
+
         # Difference between x and means has variance = 1 
         if normalize:
-            std_diff = diff_x_to_means.std(dim=1, unbiased=False, keepdim=True)  # shape (B, 1, D)
-            diff_x_to_means = diff_x_to_means / std_diff
+            std_diff = diff.std(dim=1, unbiased=False, keepdim=True).clamp(min=self.eps)
+            diff = diff / std_diff
 
-        mahalanobis_squared = (diff_x_to_means.pow(2).sum(-1)) / (self.stds.unsqueeze(0).pow(2)) # (B, N)
-        log_weights = torch.log(self.weights_mixture + 1e-8).unsqueeze(0) # (1, N)                     
-        log_partition = -self.D * torch.log(self.stds + 1e-8).unsqueeze(0) # (1, N)                    
-        logits = -1/2 * mahalanobis_squared + log_weights + log_partition # (B, N)
+        # squared Mahalanobis distance
+        mahalanobis_sq = (diff.pow(2).sum(dim=-1)) / (self.std ** 2 + self.eps) # (B, N) 
+        # Compute attention weight
+        logits = -1/2 * 1/self.T * mahalanobis_sq # (B, N) 
+        attn = torch.nn.functional.softmax(logits, dim=-1) # (B, N) 
 
-        attention_weights = torch.nn.functional.softmax(T * logits, dim=-1)
-        return attention_weights
+        assert attn.shape == self.means.shape[:2] , f"Expect attention shape : {self.means.shape[:2]}, got : {tuple(attn.shape)}"
+        return attn
 
 #----------------------------------------------------------------------------
-# Vectorfield of a Diffused Mixture Of Gaussians defined in lowest level of feature space
+# Score for a noise-gated and diffused mixture of Dirac-Delta functions 
 
-class VectorField(torch.nn.Module):
-    def __init__(self, 
-        features_template,              # Templates in feauture space (N, D1, D2, ....)
-        noise_gate,                     # Noise-dependent sigmoidal decay function in feature space \gamma(t) -> [0 ,1]
-        noise,                          # Time-depedent noise function in feature space
-        noise_dot,                      # Time-depdendent derivation of noise function in feature space
-        *, 
-        threshold_weight    = None,     # Cut off point based on noise_gate * scale 
-        threshold_time_min  = None,     # Start off point after a certain time
-        threshold_time_max  = None,     # Cut off point after a cetain time
-    ):
+class ScoreGatedDiracMixture(torch.nn.Module):
+    def __init__(
+            self, 
+            means, 
+            noise_gate, 
+            noise, *,
+            channeled: bool = False
+        ):
         super().__init__()
-        self.register_buffer("_features_template", None)
+
+        self.register_buffer("means", means)
+        self.noise = noise 
         self.noise_gate = noise_gate
-        self.noise = noise
-        self.noise_dot = noise_dot
-        _maybe_register_buffer(self, "threshold_weight", threshold_weight)
-        _maybe_register_buffer(self, "threshold_time_min", threshold_time_min)
-        _maybe_register_buffer(self, "threshold_time_max", threshold_time_max)
+        self.channeled = channeled
 
-        self.set_features_template(features_template)
-        self.setup_score()
+        self.n_modes = self.means.shape[1] 
+        if self.n_modes == 1:
+            self._score = self._score_single_component
+            self.attention = None
+        elif self.channeled:
+            self._score = self._score_for_mixture_channeled
+            self.attention = AttentionMixture(rearrange(self.means, "B N C ... -> B (N C) ... "), self.noise_gate.nu, flat_data=True)
+        else:
+            self._score = self._score_for_mixture
+            self.attention = AttentionMixture(self.means, self.noise_gate.nu, flat_data=True)
 
     def forward(self, x, t):
-        if self._should_apply_score(t):
-            dx_guidance = self.reverse_step(x, t)
+        if self.should_eval(x, t):
+            return self._score(x, t)
         else:
-            dx_guidance = torch.zeros_like(x)
-        
-        return dx_guidance
+            return torch.zeros_like(x)
 
-    @property
-    def features_template(self):
-        return self._features_template 
+    def should_eval(self, x, t):
+        if self.noise_gate(t) == 0:
+            return False
+        return True
 
-    def set_features_template(self, templates):
-        self._features_template = templates
-
-
-    def reverse_step(self, x, t):
-        return -self.noise_dot(t) * self.noise(t)  * self.score(x, t)
-
-    def score(self, x, t):
-        return self._score(x, t)
-
-    def flat(self, x):
-        return torch.flatten(x, start_dim=1)
-    
-    def _score_single_feature(self, x_latent, t):
-        features_template_flat = self.features_template.squeeze(1)  # (B, 1, D) -> (B, D)
-        score = self.noise_gate(self.noise(t)) * (features_template_flat - x_latent) / self.noise(t)**2
+    def _score_single_component(self, x, t):
+        means_flat = self.means.squeeze(1)  # (B, 1, *D) -> (B, *D)
+        noise = self.noise(t)
+        score = self.noise_gate(noise) * (means_flat - x) / noise**2
         return score
 
-    def _score_attention(self, x_latent, t):
-        diffs = self._features_template - x_latent.unsqueeze(1) #(B, N, L)
-        attention = self.attention(diffs, passing_diff=True) #(B, N)
-        weights = attention * self.noise_gate(self.noise(t)).unsqueeze(0) * self.scale # (N, )
-        score =  torch.einsum("BN, BN... -> B...", weights, diffs) / self.noise(t) ** 2 # (B, D)
+    def _score_for_mixture(self, x, t):
+        dif_x_to_mu = self.means - x.unsqueeze(1)                   # (B, N, *D)
+        attn = self.attention(dif_x_to_mu, passing_diff=True)       # (B, N)
+        noise = self.noise(t)
+        weights = attn * self.noise_gate(noise).unsqueeze(0)        # (B, N)
+        score =  torch.einsum("BN, BN... -> B...", weights, dif_x_to_mu) / noise ** 2 # (B, *D)
         return score
 
-    def _should_apply_score(self, t) -> bool:
-        weight = torch.max(self.noise_gate(self.noise(t)))
-        apply_score = True
-        # Check weight threshold
-        if self.threshold_weight is not None and weight < self.threshold_weight:
-            apply_score = False
-        # Check time thresholds
-        if self.threshold_time_min is not None and t < self.threshold_time_min:
-            apply_score = False
-        if self.threshold_time_max is not None and t > self.threshold_time_max:
-            apply_score = False
+    def _score_for_mixture_channeled(self, x, t):
+        dif_x_to_mu = self.means - x.unsqueeze(1)                           # (B, N, C, *D) = (1, N, C, *D) - (B, 1, C, *D)
+        dif_x_to_mu_flat = rearrange(dif_x_to_mu, "B N C ... -> B (N C) ...")
+        attn = self.attention(dif_x_to_mu_flat, passing_diff=True)          # (B, N*C)
+        attn = rearrange(attn, "B (N C) -> B N C", N=self.n_modes)          # (B, N, C)
+        noise = self.noise(t)
+        weights = attn * self.noise_gate(noise)                             # (B, N, C)
+        score =  torch.einsum("BNC, BNC... -> BC...", weights, dif_x_to_mu) / noise ** 2 # (B, C, *D)
+        return score
 
-        return apply_score 
+    def _score_channeled(self, x, t):
+        diff_x_to_mu = self.means - x.unsqueeze(1) # (B, N, C, D)
+        attn = self.attention(diff_x_to_mu, passing_diff=True) # (B, N, C)
+        weights = attn * self.noise_gate(noise).unsqueeze(0) # #(B, N, C)
+        score =  torch.einsum("", weights, dif_x_to_mu) / noise ** 2 # (B, C, D)
+        return score
 
-    def attention(self, x, **kwargs):
-        return self._attention_mixture(self.flat(x), **kwargs)
-
-    def setup_score(self) -> None:
-        # Check if single or multiple templates ere passed
-        if self.features_template.shape[1] > 1:
-            self._score = self._score_attention
-            self._attention_mixture =  AttentionWeightsMixture(self.flat(self.features_template), self.noise_gate.nu)
-        else:
-            self.attention = None
-            self._score = self._score_single_feature
-
-    @property
-    def args(self) -> dict:
-        return {
-            "noise_gate": self.noise_gate.args, 
-            "args_noise": self.noise.args,
-            "features_template" : "__REF__features_template"
-        }
 
 #----------------------------------------------------------------------------
-# Encode-Pullback Vector Field
+# Push-Pullback Vector Field
 
-class GuidanceVF(torch.nn.Module):
-    def __init__(self,
-        vectorfield,        # Vectorfield of V(z,t) = v_z
-        latent,             # Mapping from ambient space to feature space f(x, t) = z
-        latent_inv,         # Mapping from feature space to ambient g(z, t) = x            
-        pullback,           # Operation defining how to map V(z, t) to V(x, t)
-        noise,              # Noise function in ambient space
-        noise_dot,          # Derivative of noise function in ambient space
-        scale,              # Scaling of the gradients
+
+class PushPullVF(torch.nn.Module):
+    def __init__(
+        self,
+        vector_field,       # Vector field for most inner space 
+        maps,               # Mappings from ambient space to feature space f(x, t) = z, with inv g(z, t) = x
+        pullbacks,          # Operation defining how to map V(z, t) to V(x, t)
+        scale=1.0,          # Scaling of the gradients
     ):
         super().__init__()
-        self.vf_latent = vectorfield
-        self.latent = latent
-        self.latent_inv = latent_inv
-        self._pullback = pullback
-        self.noise = noise
-        self.noise_dot = noise_dot
-        self.register_buffer("scale", torch.tensor(scale))
+        self.vf_inner = vector_field
+        self.maps = maps
+        self.pullbacks = pullbacks
+        scale=1.0
 
     def forward(self, x, t):
-        if self._should_apply_score(t):
-            dx_guidance = self.reverse_step(x, t)
+        if self.should_eval(x, t):
+            return self.encode_and_pull(x, t)
         else:
-            dx_guidance = torch.zeros_like(x)
-        return dx_guidance
+            return torch.zeros_like(x)
 
-    @torch.no_grad
-    def score(self, x, t):
-        x_latent = self.latent(x, t)
-        score_latent = self.vf_latent.score(x_latent, t)
-        assert x_latent.shape == score_latent.shape, f"x_latent and score_latent shape mismatch , got : {x_latent.shape}, {score_latent.shape}"
-        score = self._pullback(self.latent_inv, x_latent, score_latent, t)
-        assert x.shape == score.shape, f"x and score shape mismatch, got : {x.shape}, {score.shape}"
-        return score
-    
-    def reverse_step(self, x, t):
-        dx = self.scale * -self.noise_dot(t) * self.noise(t) * self.score(x, t)
-        return dx
+    def encode_and_pull(self, x, t):
+        zs = self.encode(x, t)
+        v_z = self.vf_inner(zs[-1], t)
+        assert zs[-1].shape == v_z.shape, f"Inner z and v_z shape mismatch , got : {zs[-1].shape}, {v_z.shape}"
+        v_x = self.pullback(zs, v_z, t)
+        assert x.shape == v_x.shape, f"x and v_x shape mismatch, got : {x.shape}, {v_x.shape}"
+        return v_x
 
-    def _should_apply_score(self, t):
-        return self.vf_latent._should_apply_score(t)
-    
-    def setup_score(self):
-        self.vf_latent.setup_score
-    
-    @property 
-    def features_template(self):
-        return self.vf_latent.features_template
-    
-    def set_features_template(self, templates):
-        # Determine datashape of template and merge templates
-        B, N, *shp_data = templates.shape
-        templates_merged = templates.reshape(B*N, *shp_data)
-        # Calculate features of tempaltes, unmerge and save to vf_latent
-        features_template_merged = self.latent(templates_merged, t=torch.tensor(0.0).to(device=templates_merged.device))
-        features_template = features_template_merged.reshape(B, N, *features_template_merged.shape[1:])
-        self.vf_latent.set_features_template(features_template)
+    def encode(self, x, t):
+        zs = [x]
+        for map_ in self.maps:
+            zs.append(map_(zs[-1], t))
+        return zs
 
-    @property
-    def args(self):
-        args_latent = self.latent._args
-        args_vectorfield = self.vf_latent.args
-        args_pullback = self._pullback.args
-        args_noise = self.noise.args
+    def pullback(self, zs, v_in, noise):
+        for map_, pb in zip(reversed(self.maps), reversed(self.pullbacks)):
+            z_in = zs.pop()
+            v_out = pb(map_.inv, z_in, v_in, noise)
+            v_in = v_out 
+        return v_out 
 
-        return {
-            "latent"       : args_latent,
-            "vectorfield"  : args_vectorfield,
-            "pullback"     : args_pullback,
-            "noise"        : args_noise,
-            "scale"        : round(self.scale.item(), 3), 
-        }
+    def should_eval(self, x, t):
+        if hasattr(self.vf_inner, "should_apply"):
+            return self.vf_inner.should_apply(x, t)
+        else:
+            return True
 
 #----------------------------------------------------------------------------
 # A Register object is defined which maps key words to specific creation
@@ -325,256 +281,150 @@ class Registry:
     def __getitem__(self, key):
         return self._register[key]
 
-registry_latent = Registry()
+registry_maps = Registry()
 registry_pullback = Registry()
 registry_noise = Registry()
 
 #----------------------------------------------------------------------------
-# Builder functions for the latents and latent inverses. 
-# Have input (args_latent, args_latent_inv, shape_templates, device, dtype)
-# Not all build functions require all arguments.
+# Classes for the latents and latent inverses. 
 
-class LatentBuilder:
-    def __init__(self, args, args_inv, shp, device, dtype):
-        self.args = args
-        self.args_inv = args_inv
-        self.shp = shp
-        self.device = device
-        self.dtype = dtype
-
-    @torch.no_grad()
-    def build(self):
-        latent_fn, latent_inv_fn = self._build()
-        self.set_args(latent_fn)
-        return latent_fn, latent_inv_fn
-
-    def _build(self):
+class LatentMap(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.is_channeled = False
+    
+    def forward(self, x, *args, **kwargs):
+        """Encode x to latent space"""
         raise NotImplementedError
+        
+    def inv(self, z, *args, **kwargs):
+        """Decode z back to original space"""
+        raise NotImplementedError
+
+@registry_maps.register("ambient")
+class AmbientLatentMap(LatentMap):
+    def __init__(self):
+        super().__init__()
+        self.is_channeled = False
     
-    def set_args(self, fn):
-        fn._args = self.args
-
-@registry_latent.register("ambient")
-class AmbientLatentBuilder(LatentBuilder):
-    def _build(self):
-        def latent_fn(x, t): return x
-        def latent_inv_fn(z, t): return z
-        return latent_fn, latent_inv_fn
-
-class MatrixLatentBuilder(LatentBuilder):
-    def _build(self):
-        mat_in, mat_out = self.args, self.args_inv
-
-        n_templates = self.shp[0]
-        mat_out_stacked = torch.repeat_interleave(mat_out, dim=0, repeats=n_templates)
-
-        def latent_fn(x):
-            return torch.einsum("NOI, BI -> BNO", mat_in, x) # (batch, num_templates * num_features, dim_out)
-
-        def latent_inv_fn(x):
-            return torch.einsum("NIO, BNO -> BNI", mat_out_stacked, x) #(batch, num_templates * num_features, dim_in)
-
-        return latent_fn, latent_inv_fn
-
-@registry_latent.register("linear")
-class RandomLinearLatentBuilder(LatentBuilder):
-    def _build(self):
-        g = torch.Generator(self.device).manual_seed(self.args.seed)
-        shp_mat_latent = (self.args.n_features, self.args.dim_out, self.args.dim_in)
-        mat_latent = torch.randn(shp_mat_latent, generator=g, device=self.device, dtype=self.dtype)
-        mat_latent_inv = torch.linalg.pinv(mat_latent)
-
-        return MatrixLatentBuilder(
-                mat_latent, mat_latent_inv, self.shp, self.device, self.dtype
-        )._build()
-
-
-@registry_latent.register("unet-skip")
-class SkipInjectionLatentBuilder(LatentBuilder):
-    def __init__(self, args, args_inv, shp, device, dtype):
-        self.net = args.net
-        self.index = args.index
-        self.attribute = args.attribute
-
-    def _build(self):
-        # Create a dedicated manager for this latent builder
-        self.injection_manager = InjectionManager()
-        self.net.set_injection_manager(self.injection_manager)
-        # Register only the parts we need
-        self.net.register_injection(("unet", "skips"))
-        self.net.register_injection(("unet", "embedding"))
-        # Initialize with saving enabled to capture next call
-        self.net.enable_injection_saving(True)
-
-        def latent_fn(x, t, *, net, index):
-            skips = net._injection_manager.load(("unet", "skips"))
-            skips_target = [skips[i] for i in index]
-            z = self.concat_and_flat(skips_target)
-            return z 
-
-        def latent_inv_fn(z, t, *, net, index):
-            # Split and crop skip connections to original size
-            skips_modified = self.undo_concat_and_crop(z)
-            # Combine unmodified skips with modified skips
-            skips_saved = load("unet", "skips")
-            skips_combined = []
-            for i in range(len(skips_saved)):
-                if i in index:
-                    skips_combined.append(skips_modified[index.index(i)])
-                else:
-                    skips_combined.append(skips_saved[i])
-
-            # Get noise embedding 
-            emb = net.get("unet", "embedding")
-            # Return reconstructed version
-            y = net.down(skips_combined, emb)
-            return y 
-        
-        latent_fn = partial(latent_fn, net=self.net, index=self.index)
-        latent_inv_fn = partial(latent_inv_fn, net=self.net, index=self.index)
-
-        return latent_fn, latent_inv_fn
-
-    def set_args(self, fn):
-        fn._args = {"net" : "__REF__network", "attribute" : self.attribute, "index" : self.index}
-
-@registry_latent.register("unet-attn")
-class UNetLatentBuilder(LatentBuilder):
-    def __init__(self, args, args_inv, shp, device, dtype):
-        self.net = args.net
-        self.index = args.index
-        self.attribute = args.attribute
-
-    def _build(self):
-        # Create a dedicated manager for this latent builder
-        self.injection_manager = InjectionManager()
-        self.net.set_injection_manager(self.injection_manager)
-        # Register only the blocks we need
-        self.net.register_injection([(name, self.attribute) for name in self.names_registered])
-        # Initialize with saving enabled to capture next call
-        self.net.enable_injection_saving(True)
-        self.net.enable_injection_loading(False)
-
-        @torch.no_grad()
-        def latent_fn(x, t, *, net, attribute, names):
-            # Model has to run once to acquire attention maps
-            if net._injection_manager.is_empty():
-                self.net.enable_injection_saving(True)
-                net(x, t + 1e-10) 
-                self.net.enable_injection_saving(False)
-
-            # Load registered attention modules from last run
-            attns = [net._injection_manager.load(name, self.attribute) for name in names]
-            # Store for calculating inverse
-            self.last_x = x.clone().detach()
-            # Concatenate with padding to ensure equal dimensionality
-            z = self.zero_padding_and_concat(attns)
-            return z
-
-        @torch.no_grad()
-        def latent_inv_fn(z, t, *, net, attribute, names):
-            # Split and crop attention maps to original size
-            attns = self.undo_zero_padding_and_concat(z)
-            # Save attention maps 
-            for name, attn in zip(names, attns):
-                self.net._injection_manager.save(name, attribute, attn)
-
-            # Run network with injected attention
-            net.enable_injection_saving(False)
-            net.enable_injection_loading(True)
-            y = net(self.last_x, t)
-            net.enable_injection_saving(True)
-            net.enable_injection_loading(False)
-            return y
-        
-        latent_fn = partial(latent_fn, net=self.net, names=self.names_registered, attribute=self.attribute)
-        latent_inv_fn = partial(latent_inv_fn, net=self.net, names=self.names_registered, attribute=self.attribute)
-
-        return latent_fn, latent_inv_fn
-
-    @property
-    def names_registered(self):
-        if len(self.names_with_attribute) < len(self.index):
-            raise ValueError(
-                f"Passed more indices than layers with that attribute: "
-                f"{self.names_with_attribute} (indices: {self.index})"
-            )
-        return [self.names_with_attribute[i] for i in self.index] 
-
-    @property 
-    def names_with_attribute(self):
-        if self.attribute == "attention":
-            names_with_attribute = []
-            for name in self.net.names_unet_blocks["enc"]:
-                if getattr(self.net.model.enc[name], "num_heads", 0) > 0:
-                    names_with_attribute.append(name)
-        return names_with_attribute
-
-        
-    def zero_padding_and_concat(self, tensor_list):
-        """ 
-        tensor_list: list of N tensors of shape [B, C_i, H_i, W_i]
-        returns: single tensor [B, sum(C_i), H_max, W_max]
-        """
-
-        max_H = max(t.shape[2] for t in tensor_list)
-        max_W = max(t.shape[3] for t in tensor_list)
-        
-        padded_tensors = []
-        self.padding_metadata = {"shp_og" : []}
-        
-        for t in tensor_list:
-            self.padding_metadata["shp_og"].append(t.shape)
-            _, C, H, W = t.shape
-            
-            # Top-left padding (
-            padding = (0, max_W - W, 0, max_H - H)
-                
-            padded = torch.nn.functional.pad(t, padding, mode='constant', value=0)
-            padded_tensors.append(padded)
-        
-        return torch.cat(padded_tensors, dim=1)
-                    
-    def undo_zero_padding_and_concat(self, concatenated_tensor):
-        shps_og = self.padding_metadata["shp_og"]
-        split_tensors = torch.split(concatenated_tensor, [shp[1] for shp in shps_og ], dim=1)
-        
-        original_tensors = []
-        for t, shape in zip(split_tensors, shps_og):
-            # Simply take the top-left portion
-            original_tensors.append(t[:, :, :shape[2], :shape[3]])
-        return original_tensors
+    def forward(self, x, *args, **kwargs):
+        return x
     
-    def set_args(self, fn):
-        fn._args = {"net" : "__REF__network", "attribute" : self.attribute, "index" : self.index}
+    def inv(self, z, *args, **kwargs):
+        return z
 
-@registry_latent.register("hf")
-class HFLatentBuider(LatentBuilder):
-    def _build(self):
+class MatrixLatentMap(LatentMap):
+    def __init__(self, mat: torch.Tensor, mat_inv: torch.Tensor):
+        super().__init__()
+        self.register_buffer('mat', mat)
+        self.register_buffer('mat_inv', mat_inv)
+    
+    def forward(self, x, *args, **kwargs):
+        if len(x.shape) == 2:
+            return torch.einsum("ld, bd -> bl", self.mat, x) 
+        elif len(x.shape) == 3:
+            return torch.einsum("ld, bnd -> bnl", self.mat, x) 
+        else:
+            raise ValueError(f"Expected tensor of rank 2 or 3 got shape : {x.shape}")
+    
+    def inverse(self, z, *args, **kwargs):
+        if len(z.shape) == 2:
+            return torch.einsum("dl, bl -> bd", self.mat_inv, z) 
+        elif len(z.shape) == 3:
+            return torch.einsum("dl, bnl -> bnd", self.mat_inv, z) 
+        else:
+            raise ValueError(f"Expected tensor of rank 2 or 3 got shape : {z.shape}")
+
+class MatrixLatentMapChanneled(LatentMap):
+    def __init__(self, mat: torch.Tensor, mat_inv: torch.Tensor):
+        super().__init__()
+        self.is_channeled = True
+        self.register_buffer('mat', mat)
+        self.register_buffer('mat_inv', mat_inv)
+    
+    def forward(self, x, *args, **kwargs):
+        if len(x.shape) == 2:
+            return torch.einsum("cld, bd -> bcl", self.mat, x) 
+        elif len(x.shape) == 3:
+            return torch.einsum("cld, bnd -> bncl", self.mat, x) 
+        else:
+            raise ValueError(f"Expected tensor of rank 2 or 3 got shape : {x.shape}")
+    
+    def inverse(self, z, *args, **kwargs):
+        if len(z.shape) == 3:
+            return torch.einsum("cdl, bcl -> bd", self.mat_inv, z) 
+        elif len(z.shape) == 4:
+            return torch.einsum("cdl, bncl -> bnd", self.mat_inv, z) 
+        else:
+            raise ValueError(f"Expected tensor of rank 3 or 4 got shape : {z.shape}")
+
+@registry_maps.register("linear")
+@registry_maps.register("linear_ch")
+class RandomLinearLatentMap(LatentMap):
+    def __init__(self, seed: int , dim_in: int, dim_out: int, n_features=None):
+        super().__init__()
+
+        # Create random matrix 
+        g = torch.Generator().manual_seed(seed)
+        if n_features:
+            shp_mat = (n_features, dim_out, dim_in)
+            self.is_channeled = True
+            MatMap = MatrixLatentMapChanneled
+        else:
+            shp_mat = (dim_out, dim_in)
+            MatMap = MatrixLatentMap
+        # Compute pseuodo-inverse 
+        mat = torch.randn(shp_mat, generator=g)
+        mat_inv = torch.linalg.pinv(mat)
+        self.matrix_map = MatMap(mat, mat_inv)
+    
+    def forward(self, x, *args, **kwargs):
+        return self.matrix_map.forward(x)
+    
+    def inv(self, z, *args, **kwargs):
+        return self.matrix_map.inverse(z)
+
+@registry_maps.register("hf")
+class HFLatentMap(LatentMap):
+    def __init__(self, autoencoder, name):
+        super().__init__()
         from diffusers import AutoencoderKL, AsymmetricAutoencoderKL, AutoencoderTiny
+
         Autoencoder = {
-                "kl"        : AutoencoderKL,
-                "asymmetric": AsymmetricAutoencoderKL,
-                "tiny"      : AutoencoderTiny,
-                }[self.args.autoencoder]
+            "kl": AutoencoderKL,
+            "asymmetric": AsymmetricAutoencoderKL,
+            "tiny": AutoencoderTiny,
+        }[autoencoder]
 
         try:
-                vae = Autoencoder.from_pretrained(self.args.id, subfolder="vae", use_safetensors=True)
+            self.vae = Autoencoder.from_pretrained(name, subfolder="vae", use_safetensors=True)
         except Exception:
             try:
-                vae = Autoencoder.from_pretrained(self.args.id, use_safetensors=True)
+                self.vae = Autoencoder.from_pretrained(name, use_safetensors=True)
             except Exception:
-                vae = Autoencoder.from_pretrained(self.args.id)
-
-        vae = vae.eval().requires_grad_(False).to(device=self.device, dtype=self.dtype)
+                self.vae = Autoencoder.from_pretrained(name)
         
-        def latent_fn(x, t) : 
-            return vae.encode(x).latent_dist.sample()
-        def latent_inv_fn(x, t) : 
-            return vae.decode(x).sample 
+        self.vae = self.vae.eval().requires_grad_(False)
+    
+    def forward(self, x, *args, **kwargs):
+        return self.vae.encode(x).latent_dist.sample()
+    
+    def inv(self, z, *args, **kwargs):
+        return self.vae.decode(z).sample
 
-        return latent_fn, latent_inv_fn
+@registry_maps.register("flatten")
+class FlattenMap(LatentMap):
+    def __init__(self):
+        super().__init__()
+        self.shp_og = None
 
+    def forward(self, x, *args, **kwargs):
+        self.shp_og = x.shape[1:]
+        return torch.flatten(x, start_dim=1)
+    
+    def inv(self, z, *args, **kwargs):
+        return z.view(-1, *self.shp_og)
+    
 #----------------------------------------------------------------------------
 # Builder functions for the pullback operation
 # Return a pullback function, taking input (latent_inv, x_latent, dx_latent, t)
@@ -586,13 +436,11 @@ def build_pullback_linear(*args):
     def pullback(latent_inv, __x_latent, dx_latent, t):
         dx = latent_inv(dx_latent, t)
         return dx
-    pullback.args = args[0]
     return pullback
 
 @registry_pullback.register("numdiff")
 def build_pullback_numdiff(kwargs):
     pullback = PullbackNumericalDifferentiation(**kwargs)
-    pullback.args = kwargs
     return pullback
 
 @registry_pullback.register("jvp")
@@ -601,7 +449,6 @@ def build_pullback_jvp(*args):
     def pullback(latent_inv, x_latent, dx_latent, t):
         _, dx = torch.autograd.functional.jvp(partial(latent_inv, t=t), x_latent, dx_latent, strict=False)
         return dx
-    pullback.args = "jvp" 
     return pullback
 
 #----------------------------------------------------------------------------
@@ -625,19 +472,24 @@ def build_noise_edm(*args):
 # <LatentUNetSkip>  := {net : _, attribute: "skip", index : _}
 # <LatentHF>        := {"autoencoder" : _, "id": _}
 
-def match_args_to_latent(args):
+def match_args_to_map(args):
+
     match args:
         case "ambient":
             return "ambient"
+        case "flatten":
+            return "flatten"
         case {"seed" : _, "dim_in" : _, "dim_out" : _, "n_features": _}:
+            return "linear_ch"
+        case {"seed" : _, "dim_in" : _, "dim_out" : _}:
             return "linear"
         case {"net" : _, "attribute" : "attention", "index": _}:
             return "unet-attn"
         case {"net" : _, "attribute" : "skip", "index": _}:
             return "unet-skip"
-        case {"autoencoder" : _, "id" : _ }:
+        case {"autoencoder" : _, "name" : _ }:
             return "hf"
-    raise ValueError(f"Unrecognized latent/latent_inv args: {set(args) if isinstance(args, dict) else args!r}")
+    raise ValueError(f"Unrecognized map/map_inv args: {set(args) if isinstance(args, dict) else args!r}")
 
 # Specification for vectorfield
 # <VectorField>         := {features_template: _,  noise_gate: _, args_noise: _}
@@ -683,85 +535,108 @@ def match_args_to_noise(args):
 # Determnine if a type or args of latent is linear
 
 def args_is_linear(args):
-    return type_is_linear(match_args_to_latent(args))
+    return type_is_linear(match_args_to_map(args))
 
 def type_is_linear(type_):
-    return type_ in ["ambient", "linear"]
+    return type_ in ["ambient", "linear", "linear_ch", "flatten"]
     
 #----------------------------------------------------------------------------
-# Allow create_gvf to take different kwargs by name
-# and ensure that they are valid GuidanceVectorfield arguments
+# Builder for Push Pull Vectorfield
 
-def create_gvf(
-        latent,            # Arguments for latent function ("latent")
-        vectorfield,       # Arguments for vectorfield in feature space ("vectorfield")
-        noise,             # Arguments for time-dependent noise function used during reverse step ("noise")
-        pullback   = None, # Arguments for the pullback operation ("pullback")
-        latent_inv = None, # Arguments for latent (pseudo)-inverse function ("latent_inv")
-        **kwargs,
-    ):
+class BuilderPushPullVF:
+    def __init__(self, args):
+        self.set_args(args)
 
-    if match_args_to_vectorfield( {"latent" : latent, "vectorfield": vectorfield, "noise" : noise}) != "gvf":
-         raise ValueError("Arguments do not match those for a GuidaneVectorField")
+    def set_args(self, args):
+        # convert to EasyDict
+        self.args = dnnlib.util.to_easydict(args)
 
-    return _create_gvf(latent, vectorfield, noise, pullback, latent_inv, **kwargs)
+        # insert non-serializable referenced variables
+        if hasattr(self.args, "references"):
+            self.replace_placholders(self.args.references)
 
-#----------------------------------------------------------------------------
-# Creates an object of GuidanceVF based on a nested dictionary of args
-def _create_gvf(
-        args_latent,            # Arguments for latent function ("latent")
-        args_vectorfield,       # Arguments for vectorfield in feature space ("vectorfield")
-        args_noise,             # Arguments for time-dependent noise function used during reverse step ("noise")
-        args_pullback   = None, # Arguments for the pullback operation ("pullback")
-        args_latent_inv = None, # Arguments for latent (pseudo)-inverse function ("latent_inv")
-        args_references = {},   # Arguments which are not serializable and are passed by reference
-        scale           = 1.0,  # Scale of the gvf guidance
-        device          = "cuda" if torch.cuda.is_available() else "cpu",
-        dtype           = torch.float32,
-    ):
-
-    # Insert non-serializable referenced variables
-    args_latent, args_vectorfield, args_noise, args_pullback, args_latent_inv = [
-        dnnlib.util.replace_placeholders(x, args_references, placeholder_prefix="__REF__") 
-        for x in (args_latent, args_vectorfield, args_noise, args_pullback, args_latent_inv)
-    ]
-
-    # Wrap args into EasyDict if they're plain dicts
-    args_latent, args_vectorfield, args_noise, args_pullback, args_latent_inv = [
-        dnnlib.util.to_easydict(x) for x in
-        (args_latent, args_vectorfield, args_noise, args_pullback, args_latent_inv)
-    ]
-
-    # Infer type of latent function from args and build from registry.
-    type_latent = match_args_to_latent(args_latent)
-    type_latent_inv = match_args_to_pullback(args_latent_inv) if args_latent_inv else type_latent  # Copy type from type_latent if no args for inverse passed
-    shp_templates = args_vectorfield.features_template.shape # Get template shape, necessary for initiliazation of some latents
-    latent_fn, latent_inv_fn = registry_latent[type_latent](args_latent, args_latent_inv, shp_templates, device, dtype).build()
-
-    # Infer type of pullback and build from registry
-    type_pullback = match_args_to_pullback(args_pullback)
-    if type_is_linear(type_latent) and (args_pullback) is not None:
-        raise ValueError(f"Evaluator args can only be passed when type_latent_inv is nonlinear, \n" 
-                         f"got type latent : {type_latent_inv} and args_pullback : {args_pullback} ")
-
-    pullback = registry_pullback[type_pullback](args_pullback)
-
-    # Create vectorfield 
-    type_vf = match_args_to_vectorfield(args_vectorfield)
-    if type_vf == "gvf":
-        vectorfield = create_gvf(**args_vectorfield, args_references=args_references)
-    else:
-        noise_latent, noise_dot_latent = registry_noise[match_args_to_noise(args_vectorfield.args_noise)](args_vectorfield.args_noise)  # latent noise
-        args_vectorfield.noise_gate = NoiseGate(**args_vectorfield.noise_gate) # latent noise gate
-        del args_vectorfield["args_noise"]
-        args_vectorfield.noise = noise_latent
-        args_vectorfield.noise_dot = noise_dot_latent
-        vectorfield = VectorField(**args_vectorfield)
+        # ensure maps, maps_invs and pullbacks are list of EasyDicts
+        for key in ("maps", "maps_invs", "pullbacks"):
+            if key in self.args:
+                if isinstance(self.args[key], list):
+                    self.args[key] = [dnnlib.util.to_easydict(d) for d in self.args[key]]
+                else:
+                    self.args[key] = [self.args[key]]
     
-    # Get noise function
-    noise, noise_dot = registry_noise[match_args_to_noise(args_noise)](args_noise) 
+    def replace_placeholders(self, references):
+        for key, val in self.args.items():
+            if key == "references":
+                pass
+            self.args[key] = dnnlib.util.replace_placeholders(val, references, placeholder_prefix="__REF__")
 
-    gvf = GuidanceVF(vectorfield, latent_fn, latent_inv_fn, pullback, noise, noise_dot, scale)
-    return gvf
+    def build(self):
+        maps, pullbacks = self.build_maps_and_pullbacks()
+        vector_field = self.build_vf(maps)
+        scale = self.args.scale if hasattr(self.args, "scale") else 1.0
+        ppvf = PushPullVF(vector_field, maps, pullbacks, scale)
+        return ppvf
 
+    def build_maps_and_pullbacks(self):
+        maps = [] 
+        pullbacks = []
 
+        # Merge batch and compoennt dimension
+        examples = self.args.vector_field.means
+        B, N, *shp_data = examples.shape
+        examples_encoded = examples.reshape(B*N, *shp_data)
+
+        for i, args_map in enumerate(self.args.maps):
+            # Handle possible none values in args.maps_invs or args.pullbacks
+            args_map_inv = self.args.maps_inv[i] if hasattr(self.args, "maps_inv") else None
+            args_pullback = self.args.pullbacks[i] if hasattr(self.args, "pullbacks") else None
+            # Infer type of map function from args 
+            type_map = match_args_to_map(args_map)
+            type_map_inv = match_args_to_pullback(args_map_inv) if args_map_inv else type_map  # Copy type from type_map if no args for inverse passed
+
+            # Infer type of pullack from args
+            type_pullback = match_args_to_pullback(args_pullback)
+            if type_is_linear(type_map) and (args_pullback) is not None:
+                raise ValueError(f"Evaluator args can only be passed when type_map_inv is nonlinear, \n" 
+                                 f"got type map : {type_map_inv} and args_pullback : {args_pullback} ")
+
+            # Build maps from from registry
+            map_ = registry_maps[type_map](**args_map) if isinstance(args_map, dict) else registry_maps[type_map]()
+            # build pullback from registry
+            pullback = registry_pullback[type_pullback](args_pullback)
+            # append to list 
+            maps.append(map_)
+            pullbacks.append(pullback)
+            
+        return maps, pullbacks
+        
+    def build_vf(self, maps):
+        # Pick vectorfield
+        VF = ScoreGatedDiracMixture
+        # Construct noise gate and obtain noise function
+        noise_gate = NoiseGate(**self.args.vector_field.noise_gate)
+        noise, _ = registry_noise[match_args_to_noise(self.args.vector_field.noise)](self.args.vector_field.noise) 
+        # Encode examples
+        examples = self.args.vector_field.means
+        examples_encoded = self.encode_examples(examples, maps)
+        # Determine whether channeled map is contained
+        num_channeled_maps = 0
+        for map_ in maps:
+            num_channeled_maps = map_.is_channeled
+        if num_channeled_maps > 1 : 
+            raise ValueError(f"Can only have one channeled map, but received {num_channeled_maps}")
+        has_channeled_maps = True if num_channeled_maps > 0 else False
+
+        return VF(examples_encoded, noise_gate, noise, channeled=has_channeled_maps)
+
+    def encode_examples(self, examples, maps):
+        # Flatten batch and examples rank
+        B, N, *shp_data = examples.shape
+        examples_merged = examples.reshape(B*N, *shp_data)
+        # Map examples to inner space
+        examples_encoded_merged = examples_merged
+        for map_ in maps:
+            examples_encoded_merged = map_(examples_encoded_merged, t=torch.tensor(1e-10))
+        # Reshape back to original 
+        examples_encoded = examples_encoded_merged.reshape(B, N, *examples_encoded_merged.shape[1:])
+
+        return examples_encoded
