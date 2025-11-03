@@ -553,7 +553,7 @@ class BuilderPushPullVF:
 
         # insert non-serializable referenced variables
         if hasattr(self.args, "references"):
-            self.replace_placholders(self.args.references)
+            self.replace_placeholders(self.args.references)
 
         # ensure maps, maps_invs and pullbacks are list of EasyDicts
         for key in ("maps", "maps_invs", "pullbacks"):
@@ -569,8 +569,12 @@ class BuilderPushPullVF:
                 pass
             self.args[key] = dnnlib.util.replace_placeholders(val, references, placeholder_prefix="__REF__")
 
-    def build(self):
+    def set_examples(self, examples):
+        self.args.vector_field.means = examples
+
+    def build(self, *, device=None):
         maps, pullbacks = self.build_maps_and_pullbacks()
+        if device: maps = [map_.to(device) for map_ in maps]
         vector_field = self.build_vf(maps)
         scale = self.args.scale if hasattr(self.args, "scale") else 1.0
         ppvf = PushPullVF(vector_field, maps, pullbacks, scale)
@@ -640,3 +644,4 @@ class BuilderPushPullVF:
         examples_encoded = examples_encoded_merged.reshape(B, N, *examples_encoded_merged.shape[1:])
 
         return examples_encoded
+

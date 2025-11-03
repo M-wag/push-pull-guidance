@@ -21,7 +21,7 @@ from importlib import reload
 from torch_utils import distributed as dist
 from training.networks import update_EDM
 from mylib.diffusion import EDMSampler,  load_templates_batch
-from mylib.gvf import create_gvf
+from mylib.gvf import BuilderPushPullVF
 
 #----------------------------------------------------------------------------
 # Wrapper for torch.Generator that allows specifying a different random seed
@@ -118,12 +118,11 @@ def generate_images(
         dist.print0(f'Generating {len(seeds)} images...')
 
     # Create guidance vectorfield
-    gvf = None
+    builder_ppvf = None
     if gvf_args:
         if verbose:
-            dist.print0(f'Creating Guidance Vectorfield from args ...')
-        gvf = create_gvf(**gvf_args).to(device)
-        gradient_kwargs["gvf"] = gvf
+            dist.print0(f'Creating Push-Pull Vectorfield from args ...')
+        builder_ppvf = BuilderPushPullVF(gvf_args)
 
     # Setup sampler 
     edm_sampler = EDMSampler(time_disc = "edm", gradient_kwargs=gradient_kwargs)
@@ -146,12 +145,6 @@ def generate_images(
 
             g = torch.Generator().manual_seed(seed)
             return torch.randint(low , high, (), generator=g).item()
-        
-        def _update_examples_gvf(self, gvf, paths):
-            examples = load_templates_batch(paths).unsqueeze(1).to(device)  # [B, N, C, H, W] TODO : will this mess up for N > 1
-            examples = encoder.encode_latents(examples)
-            gvf.set_features_template(examples) 
-            gvf.setup_score()
         
         def __iter__(self):
             # Loop over batches.
@@ -188,8 +181,12 @@ def generate_images(
                         r.noise += (latents_example / sampler_kwargs["sigma_max"])
 
                     # Update gvf to use examples of current batch
-                    if gradient_kwargs.get("gvf"):
-                        self._update_examples_gvf(gradient_kwargs["gvf"], r.example_paths)
+                    if builder_ppvf:
+                        examples = load_templates_batch(r.example_paths).unsqueeze(1).to(device)  # [B, N, C, H, W] TODO : will this mess up for N > 1
+                        examples_enc = encoder.encode_latents(examples)
+                        builder_ppvf.set_examples(examples_enc)
+                        ppvf = builder_ppvf.build(device=device)
+                        gradient_kwargs["gvf"] = ppvf
                     edm_sampler.init_gradient(gradient_kwargs)
 
                     # Generate images
