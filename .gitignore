@@ -177,5 +177,7 @@ cython_debug/
 *.pkl
 *.swp
 
-# Ignore contents of data input and output
+# Ignore contents of data input and output with exception of the database
 data/
+!data/db/**
+
