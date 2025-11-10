@@ -178,6 +178,4 @@ cython_debug/
 *.swp
 
 # Ignore contents of data input and output
-data/output/*
-!data/output/.gitgnore
-data/input/*
+data/

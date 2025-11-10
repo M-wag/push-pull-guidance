@@ -30,6 +30,7 @@ import urllib.parse
 import uuid
 
 from typing import Any, Callable, BinaryIO, List, Tuple, Union, Optional
+from training.networks import update_EDM
 
 # Util classes
 # ------------------------------------------------------------------------------------------
@@ -612,4 +613,17 @@ def convert_entry_to_config(entry: dict, deserialize_map: dict=None):
 
     return new_entry
 
+# Helpers for importing models 
+# ------------------------------------------------------------------------------------------
+def import_net_from_url(net: str, *, verbose=True):
+    if isinstance(net, str):
+        with open_url(net, verbose=verbose) as f:
+            data = pickle.load(f)
+        net = data['ema']
+        net = update_EDM(net)
+        encoder = data.get('encoder', None)
+        if encoder is None:
+            encoder = construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
+    assert net is not None
+    return net, encoder
 
