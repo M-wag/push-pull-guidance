@@ -28,38 +28,37 @@ sampler_kwargs = {
         "rho"               : 7, 
         "S_noise"           : 1.0,
         **determinstic_sampling,
+        "noise_seed"        : 0,
         "dtype"             : torch.float32,
         "correct_rgb"       : False,
         **second_order, 
 }
 
-
-
 gvf_kwargs = {
-        "latent" : {"autoencoder" : "kl", "id" :"stabilityai/sd-turbo" },
-        "vectorfield": {
-            "features_template" : "__REF__features_template",
-            "noise_gate"    : {
-                "type_gate" : "heaviside", 
-                "nu" : 2.0,
-                "noise_onset" : 80.0,
+        "scale"         : 1.0,
+        "maps"          : [
+                            {"autoencoder" : "kl", "name" :"stabilityai/sd-turbo" },
+                            "flatten",
+                            {"seed": 0, "dim_in" : 256, "dim_out" : 128, "n_features" : 3},
+                           ],
+        "vector_field"  : {
+            "noise_gate"    : { "type_gate" : "heaviside", "nu" : 5.5, },
+            "noise"         : "edm",
             },
-            "args_noise" : "edm",
-        },
-        "noise" : "edm",
-        "dtype" : torch.float32,
-        "scale" : 1.0, 
-        "pullback" : {"step_size_slope" : 1, "step_size_intercept": 0},
-        "args_references" : {
-            "features_template" : torch.zeros(1, 0, 0, 0),
-        },
-}
+        "pullbacks"     : [
+                            {"step_size_slope" : 1, "step_size_intercept": 0},
+                            None,
+                            None,
+                           ],
+    }
+
+gvf_kwargs = None
+
 
 generate_kwargs = {
         "ddim_inversion"        : False,
         "live_editing"          : False,
         "use_noisy_examples"    : False,
-        "example_idx_range"     : None,
 }
 
 gradient_kwargs = {
