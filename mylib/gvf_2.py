@@ -17,17 +17,7 @@ DESERIALIZATION_MAP = {
         "tensor([], size=(1, 0, 0, 0))" : torch.zeros(1, 0, 0, 0),
     }
 
-#----------------------------------------------------------------------------
-# Temporary Logger globa
 
-LOGGER = {}
-
-#----------------------------------------------------------------------------
-# Helper function to compute the entropy from a probablity mass of shape (batch, p(x_i))
-
-def entropy_from_mass(x):
-    x = x.clamp_min(1e-12).flatten(start_dim=1)
-    return -(x * torch.log2(x)).sum(dim=1)
 #----------------------------------------------------------------------------
 # Helper function to assign buffers for arguments that 'may' be torch.Tensor
 
@@ -36,15 +26,6 @@ def _maybe_register_buffer(module, name, value):
         module.register_buffer(name, torch.tensor(value))
     else:
         setattr(module, name, None)
-
-#----------------------------------------------------------------------------
-# Helper function to assign get pretty-printed attributes.
-
-def _get_obj_attribute_as_lines(obj, names):
-    lines = []
-    for name in names:
-        lines.append(f"  ({name}): {getattr(obj, name)}")
-    return "\n".join(lines)
 
 #----------------------------------------------------------------------------
 # Sigmoidal time gating function which can be either quadratic or logistic
@@ -89,9 +70,12 @@ class NoiseGate(torch.nn.Module):
     def round(self, x):
         return torch.round(x.to(torch.float32), decimals=self.decimals)
     
-    def extra_repr(self):
-        return _get_obj_attribute_as_lines(self, ["type_gate", "decimals", "nu", "noise_onset"])
-
+    @property
+    def args(self):
+        if self.type_gate == "logistic":
+            return {"type_gate" : self.type_gate, "nu" : self.nu, "decay_rate" : self.decay_rate, "noise_onset" : self.noise_onset}
+        else:
+            return {"type_gate" : self.type_gate, "nu" : self.nu, "noise_onset" : self.noise_onset}
 
 #----------------------------------------------------------------------------
 # Pullback Operation evaluated by Numerical Differentiation
@@ -99,11 +83,11 @@ class NoiseGate(torch.nn.Module):
 class PullbackNumericalDifferentiation(torch.nn.Module):
     def __init__(self, step_size_slope, step_size_intercept):
         super().__init__()
-        self.register_buffer("slope", torch.tensor(step_size_slope))
-        self.register_buffer("intercept", torch.tensor(step_size_intercept))
+        self.register_buffer("a", torch.tensor(step_size_slope))
+        self.register_buffer("b", torch.tensor(step_size_intercept))
     
     def step_size(self, noise):
-        return  noise**2 * self.slope + self.intercept
+        return  noise**2 * self.a + self.b
 
     @torch.no_grad
     def forward(self, latent_inv, x_latent, dx_latent, noise):
@@ -121,25 +105,21 @@ class PullbackNumericalDifferentiation(torch.nn.Module):
 # See equation ..
 
 class AttentionMixture(torch.nn.Module):
-    def __init__(self, means, std, T=1.0, eps=1e-8, flat_data=False, 
-                 normalize=False, pass_diff=False):
+    def __init__(self, means, std, T=1.0, eps=1e-8, flat_data=False):
         super().__init__()
         self.register_buffer("means", means)    # (B, N, D)
         self.std = std
         self.T = T
         self.eps = eps
-
         self.flat_data = flat_data
-        self.normalize = normalize
-        self.pass_diff = pass_diff
 
         self.N, self.D = self.means.shape[0], self.means.shape[1]
 
 
-    def forward(self, x):
+    def forward(self, x, *, passing_diff=False, normalize=False):
         # Option to directly pass the difference between means and x
         diff = x 
-        if not self.pass_diff:
+        if not passing_diff:
             diff = self.means - x.unsqueeze(1)  # (B, N, D) 
         assert diff.shape == self.means.shape, f"Expect diff shape : {self.means.shape}, got : {diff.shape}"
 
@@ -148,10 +128,9 @@ class AttentionMixture(torch.nn.Module):
             diff = torch.flatten(diff, start_dim=2)
 
         # Difference between x and means has variance = 1 
-        if self.normalize:
-            dim = (1,2)
-            diff = diff - diff.mean(dim=dim, keepdim=True)
-            diff = diff / (diff.std(dim=dim, keepdim=True) + self.eps)
+        if normalize:
+            std_diff = diff.std(dim=1, unbiased=False, keepdim=True).clamp(min=self.eps)
+            diff = diff / std_diff
 
         # squared Mahalanobis distance
         mahalanobis_sq = (diff.pow(2).sum(dim=-1)) / (self.std ** 2 + self.eps) # (B, N) 
@@ -170,10 +149,8 @@ class ScoreGatedDiracMixture(torch.nn.Module):
             self, 
             means, 
             noise_gate, 
-            noise, 
-            *,
-            channeled = False,
-            attention_kwargs = {},
+            noise, *,
+            channeled: bool = False
         ):
         super().__init__()
 
@@ -183,24 +160,15 @@ class ScoreGatedDiracMixture(torch.nn.Module):
         self.channeled = channeled
 
         self.n_modes = self.means.shape[1] 
-
-        if self.channeled:
-            self._score = self._score_for_mixture_channeled
-            self.attention = AttentionMixture(
-                    rearrange(self.means, "B N C ... -> B (N C) ... "), 
-                    self.noise_gate.nu, 
-                    flat_data=True,
-                    **attention_kwargs)
-        elif self.n_modes == 1:
+        if self.n_modes == 1:
             self._score = self._score_single_component
             self.attention = None
+        elif self.channeled:
+            self._score = self._score_for_mixture_channeled
+            self.attention = AttentionMixture(rearrange(self.means, "B N C ... -> B (N C) ... "), self.noise_gate.nu, flat_data=True)
         else:
             self._score = self._score_for_mixture
-            self.attention = AttentionMixture(
-                    self.means, 
-                    self.noise_gate.nu, 
-                    flat_data=True,
-                    **attention_kwargs)
+            self.attention = AttentionMixture(self.means, self.noise_gate.nu, flat_data=True)
 
     def forward(self, x, t):
         if self.should_eval(x, t):
@@ -221,48 +189,28 @@ class ScoreGatedDiracMixture(torch.nn.Module):
 
     def _score_for_mixture(self, x, t):
         dif_x_to_mu = self.means - x.unsqueeze(1)                   # (B, N, *D)
-        attn = self.attention(dif_x_to_mu)       # (B, N)
+        attn = self.attention(dif_x_to_mu, passing_diff=True)       # (B, N)
         noise = self.noise(t)
         weights = attn * self.noise_gate(noise).unsqueeze(0)        # (B, N)
         score =  torch.einsum("BN, BN... -> B...", weights, dif_x_to_mu) / noise ** 2 # (B, *D)
         return score
 
     def _score_for_mixture_channeled(self, x, t):
-        dif_x_to_mu = self.means - x.unsqueeze(1)                                   # (B, N, C, *D) = (1, N, C, *D) - (B, 1, C, *D)
+        dif_x_to_mu = self.means - x.unsqueeze(1)                           # (B, N, C, *D) = (1, N, C, *D) - (B, 1, C, *D)
         dif_x_to_mu_flat = rearrange(dif_x_to_mu, "B N C ... -> B (N C) ...")
-        attn = self.attention(dif_x_to_mu_flat)  # (B, N*C)
-        attn = rearrange(attn, "B (N C) -> B N C", N=self.n_modes)                  # (B, N, C)
-        ##################################################
-        breakpoint()
-        self.log("attn", attn)
-        self.log("entropy", entropy_from_mass(attn))
-        self.log("max_entropy", entropy_from_mass(torch.ones_like(attn) / attn[0].numel()))
-        ##################################################
+        attn = self.attention(dif_x_to_mu_flat, passing_diff=True)          # (B, N*C)
+        attn = rearrange(attn, "B (N C) -> B N C", N=self.n_modes)          # (B, N, C)
         noise = self.noise(t)
-        weights = attn * self.noise_gate(noise)                                     # (B, N, C)
+        weights = attn * self.noise_gate(noise)                             # (B, N, C)
         score =  torch.einsum("BNC, BNC... -> BC...", weights, dif_x_to_mu) / noise ** 2 # (B, C, *D)
         return score
 
     def _score_channeled(self, x, t):
         diff_x_to_mu = self.means - x.unsqueeze(1) # (B, N, C, D)
-        attn = self.attention(diff_x_to_mu) # (B, N, C)
+        attn = self.attention(diff_x_to_mu, passing_diff=True) # (B, N, C)
         weights = attn * self.noise_gate(noise).unsqueeze(0) # #(B, N, C)
         score =  torch.einsum("", weights, dif_x_to_mu) / noise ** 2 # (B, C, D)
         return score
-
-    def extra_repr(self):
-        lines = [
-            f"  (score_fn): {self._score.__name__}",
-            f"  (channeled): {self.channeled}",
-            f"  (shp_means): {list(self.means.shape)}",
-        ]
-        return "\n".join(lines)
-
-    def log(self, key, val):
-        logger = globals()["LOGGER"]
-        if key not in logger:
-            logger[key] = []
-        logger[key].append(val)
 
 
 #----------------------------------------------------------------------------
@@ -279,13 +227,13 @@ class PushPullVF(torch.nn.Module):
     ):
         super().__init__()
         self.vf_inner = vector_field
-        self.maps = torch.nn.ModuleList(maps)
+        self.maps = maps
         self.pullbacks = pullbacks
-        self.scale = scale
+        scale=1.0
 
     def forward(self, x, t):
         if self.should_eval(x, t):
-            return self.scale * self.encode_and_pull(x, t)
+            return self.encode_and_pull(x, t)
         else:
             return torch.zeros_like(x)
 
@@ -311,24 +259,10 @@ class PushPullVF(torch.nn.Module):
         return v_out 
 
     def should_eval(self, x, t):
-        if self.scale == 0:
-            return False
-
-        if hasattr(self.vf_inner, "should_eval"):
-            return self.vf_inner.should_eval(x, t)
+        if hasattr(self.vf_inner, "should_apply"):
+            return self.vf_inner.should_apply(x, t)
         else:
             return True
-
-    def extra_repr(self):
-        lines = [f"(scale): {self.scale} \n(pullbacks): "]
-        for i, pb in enumerate(self.pullbacks):
-            if hasattr(pb, "__name__"):
-                name = pb.__name__
-            else:
-                name = type(pb).__name__
-            lines.append(f"  ({i}): {name}")
-        return "\n".join(lines)
-
 
 #----------------------------------------------------------------------------
 # A Register object is defined which maps key words to specific creation
@@ -477,13 +411,6 @@ class HFLatentMap(LatentMap):
     
     def inv(self, z, *args, **kwargs):
         return self.vae.decode(z).sample
-    
-    def __repr__(self):
-        main_str = self._get_name() + "("
-        main_str += f"name : {self.vae.__class__.__name__}"
-        main_str += ")"
-        return main_str
-
 
 @registry_maps.register("flatten")
 class FlattenMap(LatentMap):
@@ -506,10 +433,10 @@ class FlattenMap(LatentMap):
 
 @registry_pullback.register("linear")
 def build_pullback_linear(*args):
-    def pullback_linear(latent_inv, __x_latent, dx_latent, t):
+    def pullback(latent_inv, __x_latent, dx_latent, t):
         dx = latent_inv(dx_latent, t)
         return dx
-    return pullback_linear
+    return pullback
 
 @registry_pullback.register("numdiff")
 def build_pullback_numdiff(kwargs):
@@ -626,7 +553,7 @@ class BuilderPushPullVF:
 
         # insert non-serializable referenced variables
         if hasattr(self.args, "references"):
-            self.replace_placeholders(self.args.references)
+            self.replace_placholders(self.args.references)
 
         # ensure maps, maps_invs and pullbacks are list of EasyDicts
         for key in ("maps", "maps_invs", "pullbacks"):
@@ -642,19 +569,15 @@ class BuilderPushPullVF:
                 pass
             self.args[key] = dnnlib.util.replace_placeholders(val, references, placeholder_prefix="__REF__")
 
-    def set_examples(self, examples):
-        self.args.vector_field.means = examples
-
-    def build(self, *, device=None):
+    def build(self):
         maps, pullbacks = self.build_maps_and_pullbacks()
-        if device: maps = [map_.to(device) for map_ in maps]
         vector_field = self.build_vf(maps)
         scale = self.args.scale if hasattr(self.args, "scale") else 1.0
         ppvf = PushPullVF(vector_field, maps, pullbacks, scale)
         return ppvf
 
     def build_maps_and_pullbacks(self):
-        maps = torch.nn.ModuleList([])
+        maps = [] 
         pullbacks = []
 
         # Merge batch and compoennt dimension
@@ -675,13 +598,10 @@ class BuilderPushPullVF:
             if type_is_linear(type_map) and (args_pullback) is not None:
                 raise ValueError(f"Evaluator args can only be passed when type_map_inv is nonlinear, \n" 
                                  f"got type map : {type_map_inv} and args_pullback : {args_pullback} ")
-            if not type_is_linear(type_map) and (args_pullback) is None:
-                raise ValueError(f"Evaluator args must passed when type_map_inv is nonlinear, \n" 
-                                 f"got type map : {type_map_inv} and args_pullback : {args_pullback} ")
 
             # Build maps from from registry
             map_ = registry_maps[type_map](**args_map) if isinstance(args_map, dict) else registry_maps[type_map]()
-            # Build pullback from registry
+            # build pullback from registry
             pullback = registry_pullback[type_pullback](args_pullback)
             # append to list 
             maps.append(map_)
@@ -706,11 +626,7 @@ class BuilderPushPullVF:
             raise ValueError(f"Can only have one channeled map, but received {num_channeled_maps}")
         has_channeled_maps = True if num_channeled_maps > 0 else False
 
-        vf_kwargs = {}
-        if hasattr(self.args.vector_field, "kwargs"):
-            vf_kwargs = self.args.vector_field.kwargs
-
-        return VF(examples_encoded, noise_gate, noise, channeled=has_channeled_maps, **vf_kwargs)
+        return VF(examples_encoded, noise_gate, noise, channeled=has_channeled_maps)
 
     def encode_examples(self, examples, maps):
         # Flatten batch and examples rank
@@ -724,4 +640,3 @@ class BuilderPushPullVF:
         examples_encoded = examples_encoded_merged.reshape(B, N, *examples_encoded_merged.shape[1:])
 
         return examples_encoded
-

@@ -33,8 +33,12 @@ class EDMSampler:
         else:
             raise ValueError(f"Unknown time step method: {time_disc}")
 
-    def init_gradient(self, gradient_kwargs):
-        self.gradient_fn = create_gradient_fn(gradient_kwargs)
+    def init_gradient(self, gradient_kwargs, *, net=None):
+        score_fn = ScoreDenoise(denoiser=net, scale=gradient_kwargs.scale_model_score)
+        if "gvf" in gradient_kwargs.keys():
+            score_fn = ScoreAdditive(score_fn, gradient_kwargs.gvf)
+
+        self.gradient_fn = GradientEDM(score_fn)
 
     @torch.no_grad()
     def __call__(
@@ -66,6 +70,7 @@ class EDMSampler:
         
         # Time step discretization.
         t_steps = self.time_step_fn(num_steps, sigma_min=sigma_min, sigma_max=sigma_max, rho=rho) # t_N=0
+        # TODO : do net.round
         t_steps = t_steps.to(device=device, dtype=dtype)
 
         xs = None 
@@ -88,12 +93,12 @@ class EDMSampler:
             x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * randn_like(x_cur, noise_generator)
 
             # Euler step
-            d_cur = self.gradient_fn(x_hat, t_hat, labels, net)
+            d_cur = self.gradient_fn(x_hat, t_hat, labels)
             x_next = x_hat + d_cur * (t_next - t_hat)
 
             # Apply 2nd order correction
             if apply_2nd_order and i < num_steps - 1:
-                d_prime = self.gradient_fn(x_next, t_next, labels, net) 
+                d_prime = self.gradient_fn(x_next, t_next, labels)
                 x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
             
             if save_all_timesteps:
@@ -160,11 +165,12 @@ class EDMSampler:
 # Time step discretization functions 
 
 def time_steps_edm(num_steps,  net=None, *, sigma_min, sigma_max, rho):
-        step_indices = torch.arange(num_steps, dtype=torch.float64)
-        t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
-        if net:
-            t_steps = net.round_sigma(t_steps)
-        t_steps = torch.cat([t_steps, torch.zeros_like(t_steps[:1])]) # t_N = 0
+        if num_steps == 1:
+            t_steps = torch.tensor([sigma_max, 0 ])
+        else:
+            step_indices = torch.arange(num_steps, dtype=torch.float64)
+            t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+            t_steps = torch.cat([t_steps, torch.zeros_like(t_steps[:1])]) # t_N = 0
         return t_steps
 
 def time_steps_ddim(num_steps, device, net=None):
@@ -174,174 +180,37 @@ def time_steps_ddim(num_steps, device, net=None):
 # Different gradients useable by the EDM sampler
 # dx/dt = gradient(x, t)
 
-class GradientMethod(ABC):
-    def __init__(self, scale_model_score):
-        self.scale_model_score = scale_model_score
+class GradientEDM(torch.nn.Module):
+    def __init__(self, score_fn):
+        super().__init__()
+        self.noise = lambda t : t
+        self.noise_dot = lambda t : 1
+        self.score_fn = score_fn
 
-    @abstractmethod
-    def __call__(self, x, t, labels, net):
-        pass
+    def forward(self, x, t, labels):
+        return -self.noise(t) * self.noise_dot(t) * self.score_fn(x, t, labels)
 
-    def _gradient_denoise(self, x, t, labels, net):
-        """Standard gradient computation that can be reused by subclasses."""
-        denoised = net(x, t, labels).to(t.dtype)
-        grad = self.scale_model_score * (x - denoised) / t
-        return grad.to(t.dtype)
+class ScoreAdditive(torch.nn.Module):
+    def __init__(self, score_a, score_b):
+        super().__init__()
+        self.score_a = score_a
+        self.score_b = score_b
 
-class DenoisingGradient(GradientMethod):
-    def __init__(self, scale_model_score):
-        self.scale_model_score = scale_model_score
+    def forward(self, x, noise, labels):
+        score = torch.zeros_like(x)
+        score += self.score_a(x, noise, labels)
+        score += self.score_b(x, noise)
+        return score.to(noise.dtype)
 
-    def __call__(self, x, t, labels, net):
-        return self._gradient_denoise(x, t, labels, net)
+class ScoreDenoise(torch.nn.Module):
+    def __init__(self, denoiser, *, scale=1.0):
+        super().__init__()
+        self.denoiser = denoiser
+        self.scale = scale
 
-class GVFGradient(GradientMethod):
-    def __init__(self, scale_model_score, gvf):
-        self.scale_model_score = scale_model_score
-        self.gvf = gvf
-
-    def __call__(self, x, t, labels, net):
-        grad = torch.zeros_like(x)
-        grad += self._gradient_denoise(x, t, labels, net)
-        grad += self.gvf(x, t)
-        return grad.to(t.dtype)
-
-class InjectFusionGradient:
-    def __init__(
-        self,
-        scale_model_score,
-        t_edit_start,
-        gamma,
-        h_exam_per_t,
-        mask=None,
-    ):
-        self.scale_model_score = scale_model_score
-        self.t_edit_start = t_edit_start
-        self.gamma = gamma
-        self.h_exam_by_t = h_exam_per_t
-        self.mask = mask if mask else 1.0 # If no mask is passed, then apply injection to all features in bottleneck
-
-    def __call__(self, x, t, labels, net):
-
-        # Compute standard denoising gradient without injectios
-        if t < self.t_edit_start:
-            return self._gradient_denoise(x, t, labels, net)
-
-        # Step 1 : Content Injection
-        skips = net.encoder(x, t, labels)
-        h_orig = skips[-1]
-        h_exam = self.h_exam_by_t[t]
-        
-        # Normalize example features to match original's norm
-        h_exam_norm = self.normalize_to_target_norm(h_exam, h_orig)
-        
-        # Apply mask and perform spherical interpolation
-        h_masked_orig = self.mask * h_orig
-        h_masked_exam = self.mask * h_exam_norm
-        h_mixed = self.slerp(h_masked_orig, h_masked_exam)
-        
-        # Combine with original features
-        h_mixed += (1 - self.mask) * h_orig
-        
-        # Get predictions with injected content
-        skips[-1] = h_mixed
-        denoised_injected = net.decode(x, skips, t, labels)
-
-        return self.scale_model_score * (x - denoised_injected)  / t
-        
-        if False:
-            epsilon_injected = ...
-            
-            # Get original prediction
-            denoised_original = net.decode(x, net.encode(x, t, labels), t, labels)
-            epsilon_original = ...
-            # Step 2: Latent calibration
-            x_calibrated = self.latent_calibration(x, t, eps_original, eps_injected)
-            denoised_calibrated = net(x_calibrated, t, labels)
-            grad_calibrated = self.scale_model_score * (x - denoised_calibrated) / t
-
-    def normalize_to_target_norm(self, source, target):
-        """Normalize source features to have the same norm as target features."""
-        source_flat = source.view(source.shape[0], -1)
-        target_flat = target.view(target.shape[0], -1)
-        
-        source_norm = torch.norm(source_flat, dim=-1, keepdim=True).clamp_min(1e-10)
-        target_norm = torch.norm(target_flat, dim=-1, keepdim=True).clamp_min(1e-10)
-        
-        # Rescale source to match target's norm
-        source_normalized = source_flat / source_norm * target_norm
-        return source_normalized.view_as(source)
-
-    def slerp(self, v0, v1):
-        """Spherical linear interpolation between two vectors."""
-        # Flatten spatial dimensions
-        v0_flat = v0.view(v0.shape[0], -1)
-        v1_flat = v1.view(v1.shape[0], -1)
-        
-        # Compute cosine of angle between vectors
-        dot = (v0_flat * v1_flat).sum(dim=-1, keepdim=True)
-        v0_norm = torch.norm(v0_flat, dim=-1, keepdim=True).clamp_min(1e-10)
-        v1_norm = torch.norm(v1_flat, dim=-1, keepdim=True).clamp_min(1e-10)
-        cos_theta = dot / (v0_norm * v1_norm)
-        
-        # Clamp to avoid numerical issues
-        cos_theta = torch.clamp(cos_theta, -1.0, 1.0)
-        theta = torch.acos(cos_theta)
-        
-        # Compute interpolation weights
-        sin_theta = torch.sin(theta)
-        w0 = torch.sin((1 - self.gamma) * theta) / sin_theta
-        w1 = torch.sin(self.gamma * theta) / sin_theta
-        
-        # Handle cases where sin_theta is close to zero (use linear interpolation)
-        linear_mask = sin_theta < 1e-7
-        w0 = torch.where(linear_mask, 1 - self.gamma, w0)
-        w1 = torch.where(linear_mask, self.gamma, w1)
-        
-        # Interpolate and reshape
-        interpolated = w0 * v0_flat + w1 * v1_flat
-        return interpolated.view_as(v0)
-
-    def latent_calibration(self, x, epsilon_injected, epsilon_original, sqrt_alpha_t, sqrt_one_minus_alpha_t):
-        """
-        Implement latent calibration as described in the InjectFusion paper.
-        """
-        # Compute Pt for both predictions
-        Pt_epsilon_injected = (x - sqrt_one_minus_alpha_t * epsilon_injected) / sqrt_alpha_t
-        Pt_epsilon_original = (x - sqrt_one_minus_alpha_t * epsilon_original) / sqrt_alpha_t
-        
-        # Regularize Pt(epsilon_injected) to have same std as Pt(epsilon_original)
-        mu_Pt_injected = torch.mean(Pt_epsilon_injected, dim=(1, 2, 3), keepdim=True)
-        mu_Pt_original = torch.mean(Pt_epsilon_original, dim=(1, 2, 3), keepdim=True)
-        std_Pt_injected = torch.std(Pt_epsilon_injected, dim=(1, 2, 3), keepdim=True)
-        std_Pt_original = torch.std(Pt_epsilon_original, dim=(1, 2, 3), keepdim=True)
-        
-        # Avoid division by zero
-        std_Pt_injected = std_Pt_injected.clamp_min(1e-10)
-        
-        # Regularize
-        P_prime_t = mu_Pt_injected + (Pt_epsilon_injected - mu_Pt_injected) * (std_Pt_original / std_Pt_injected)
-        
-        # Compute dPt and dϵ
-        dPt = P_prime_t - Pt_epsilon_original
-        d_epsilon = epsilon_injected - epsilon_original
-        
-        # Compute dx according to Eq. 10
-        dx = sqrt_alpha_t * dPt + self.omega * sqrt_one_minus_alpha_t * d_epsilon
-        
-        # Return calibrated latent
-        return x + dx
-
-
-def create_gradient_fn(grad_kwargs : dict) -> GradientMethod:
-    keys = set(grad_kwargs.keys())
-
-    if {"gvf"}.issubset(keys):
-         return GVFGradient(**grad_kwargs)
-    elif {"t_edit_start"}.issubset(keys):
-         return InjectFusionGradient(**grad_kwargs)
-    else:
-         return DenoisingGradient(**grad_kwargs)
+    def forward(self, x, noise, labels):
+        denoised = self.denoiser(x, noise, labels).to(noise.dtype)
+        return self.scale * (denoised - x) / noise ** 2
 
 #----------------------------------------------------------------------------
 # Helper functions for loading in templates from a path

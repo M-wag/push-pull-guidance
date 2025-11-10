@@ -174,7 +174,9 @@ class ExperimentRunner:
         if not torch.distributed.is_initialized():
             dist.init()
 
-        seeds = range(seed, seed + self.num_images)
+        if seed is not None:
+            seeds = range(seed, seed + self.num_images)
+
         image_iter = cm.generate.generate_images(
             net             = net,
             encoder         = encoder,

@@ -155,7 +155,6 @@ def generate_images(
                 r.example_idx = []
 
                 if len(r.seeds) > 0:
-                    # Pick noise 
                     rnd = StackedRandomGenerator(device, r.seeds)
                     r.noise = rnd.randn([len(r.seeds), net.img_channels, net.img_resolution, net.img_resolution], device=device)
 
@@ -186,8 +185,9 @@ def generate_images(
                         examples_enc = encoder.encode_latents(examples)
                         builder_ppvf.set_examples(examples_enc)
                         ppvf = builder_ppvf.build(device=device)
+                        print(ppvf)
                         gradient_kwargs["gvf"] = ppvf
-                    edm_sampler.init_gradient(gradient_kwargs)
+                    edm_sampler.init_gradient(gradient_kwargs, net=net)
 
                     # Generate images
                     xs, _ = edm_sampler(net, noise=r.noise, labels=r.labels, device=device, disable_tqdm=True, **sampler_kwargs)
