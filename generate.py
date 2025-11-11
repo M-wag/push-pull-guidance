@@ -9,19 +9,14 @@
 "Elucidating the Design Space of Diffusion-Based Generative Models"."""
 
 import os
-import re
-import click
 import tqdm
-import pickle
 import numpy as np
 import torch
 import PIL.Image
 import dnnlib
-from importlib import reload
+
 from torch_utils import distributed as dist
-from training.networks import update_EDM
-from mylib.diffusion import EDMSampler,  load_templates_batch
-from mylib.gvf import BuilderPushPullVF
+from typing import Iterable
 
 #----------------------------------------------------------------------------
 # Wrapper for torch.Generator that allows specifying a different random seed
@@ -44,164 +39,181 @@ class StackedRandomGenerator:
         return torch.stack([torch.randint(*args, size=size[1:], generator=gen, **kwargs) for gen in self.generators])
 
 #----------------------------------------------------------------------------
-# Parse a comma separated list of numbers or ranges and return a list of ints.
-# Example: '1,2,5-10' returns [1, 2, 5, 6, 7, 8, 9, 10]
+# Iterable representing initial conditions.
 
-def parse_int_list(s):
-    if isinstance(s, list): return s
-    ranges = []
-    range_re = re.compile(r'^(\d+)-(\d+)$')
-    for p in s.split(','):
-        m = range_re.match(p)
-        if m:
-            ranges.extend(range(int(m.group(1)), int(m.group(2))+1))
+class InitialConditionIterable:
+    def __init__(
+        self, 
+        rank_batches, 
+        seeds, 
+        shape,
+        label_dim,
+        class_idx=None, 
+        example_idx_range=None,
+        dir_template=None,
+        device = "cpu",
+    ):
+
+        self.rank_batches = rank_batches
+        self.seeds = seeds
+        self.shape = shape
+        self.label_dim = label_dim
+        self.dir_template = dir_template
+        self.class_idx = class_idx
+        self.example_idx_range = example_idx_range
+        self.device = device
+    
+    def __iter__(self):
+        for batch_idx, indices in enumerate(self.rank_batches):
+            batch_seeds = [self.seeds[idx] for idx in indices]
+            r = dnnlib.EasyDict(
+                seeds=batch_seeds,
+                indices=indices,
+                batch_idx=batch_idx,
+                num_batches=len(self.rank_batches),
+                labels=None,
+                noise=None,
+                example_paths=[],
+                example_idx=[],
+                examples=None,
+            )
+            
+            if len(batch_seeds) > 0:
+                rnd = StackedRandomGenerator(self.device, batch_seeds)
+                r.noise = rnd.randn([len(batch_seeds), *self.shape], device=self.device)
+                if self.label_dim:
+                    r.labels = torch.eye(self.label_dim, device=self.device)[
+                        rnd.randint(self.label_dim, size=[len(batch_seeds)], device=self.device)
+                    ]
+                    if self.class_idx is not None:
+                        r.labels[:, :] = 0
+                        r.labels[:, self.class_idx] = 1
+                    
+                    if self.dir_template is not None:
+                        for seed, label in zip(batch_seeds, torch.argmax(r.labels, axis=1)):
+                            example_idx = self._sample_example_idx(self.dir_template, seed, label, idx_range=self.example_idx_range)
+                            example_path = os.path.join(self.dir_template, str(int(label)), f"{example_idx}.png")
+                            r.example_idx.append(example_idx)
+                            r.example_paths.append(example_path)
+                            r.examples = load_templates_batch(r.example_paths)
+            yield r
+
+    def __len__(self):
+        return len(self.rank_batches)
+    
+    def _sample_example_idx(self, template_dir, seed, class_, idx_range=None):
+        class_dir = os.path.join(template_dir, str(int(class_)))
+        if idx_range:
+            low, high = idx_range
         else:
-            ranges.append(int(p))
-    return ranges
+            low = 0
+            high = len(os.listdir(class_dir))
+        g = torch.Generator().manual_seed(seed)
+        return torch.randint(low, high, (), generator=g).item()
+    
+
+#----------------------------------------------------------------------------
+# Iterable which applies diffusion processt to initial condition iterable.
+
+class ImageIterable:
+    def __init__(self, solver, dynamics, verbose=False):
+        self.solver = solver
+        self.dynamics = dynamics
+        self.verbose = verbose
+
+    def __call__(self, iter_state: InitialConditionIterable) -> Iterable:
+        for state in iter_state:
+            yield self._process_batch(state)
+
+    def _process_batch(self, state):
+        if len(state.seeds) > 0:
+            # Update dynamics
+            self.dynamics.update(state)
+            # Generate images
+            xs, _ = self.solver(self.dynamics, state.noise, state.labels)
+            state.images = self.dynamics.encoder.decode(xs[-1])
+            # Yield results.
+            torch.distributed.barrier() # keep the ranks in sync
+            return r
+
+
+#----------------------------------------------------------------------------
+# Wrapper around iterables save intermediate results for ImageIterable.
+
+class SavingIterable:
+    def __init__(self, dir_save, subdirs=False):
+        self.dir_save = save_dir
+        self.subdirs = subdirs
+    
+    def __call__(self):
+        for batch in self.iterable:
+            if dir_save is not None:
+                self._save_batch_images(batch)
+                # TODO : save to database
+            yield batch
+
+    def _save_batch(self, batch):
+        for seed, image in zip(batch.seeds, batch.images.permute(0, 2, 3, 1).cpu().numpy()):
+            dir_image = os.path.join(self.dir_save, f'{seed//1000*1000:06d}') if self.subdirs else self.dir_save
+            os.makedirs(dir_image, exist_ok=True)
+            PIL.Image.fromarray(image, 'RGB').save(os.path.join(dir_image, f'{seed:06d}.png'))
 
 #----------------------------------------------------------------------------
 # Generate images for the given seeds in a distributed fashion.
 # Returns an iterable that yields
-# dnnlib.EasyDict(images, labels, noise, batch_idx, num_batches, indices, seeds)
+# dnnlib.EasyDict(images, labels, noise, examples, batch_idx, num_batches, indices, seeds)
 
 def generate_images(
-    net,                                        # Main network. Path, URL, or torch.nn.Module.
-    gvf_args            = None,                 # Arguments to initialize GuidanceVectorfield. None = lambda x : 0
-    encoder             = None,                 # Instance of training.encoders.Encoder. None = load from network pickle.
-    outdir              = None,                 # Where to save the output images. None = do not save.
-    subdirs             = False,                # Create subdirectory for every 1000 seeds?
-    seeds               = range(16, 24),        # List of random seeds.
+    solver,
+    dynamics,
+    shape,
+    label_dim,
+
     class_idx           = None,                 # Class label. None = select randomly.
-    max_batch_size      = 32,                   # Maximum batch size for the diffusion model.
-    encoder_batch_size  = 4,                    # Maximum batch size for the encoder. None = default.
-    verbose             = True,                 # Enable status prints?
-    device              = torch.device('cuda'), # Which compute device to use.
-    template_dir        = None,                 # Where templates are stored
-    sampler_kwargs      = None,                 # Additional arguments for the sampler function.
-    gradient_kwargs     = None,                 # Arguments defining the type of gradient used in sampler
-    live_editing        = False,                # Allow live-editing of the code 
-    ddim_inversion      = False,                # Whether to use DDIM inversion to generate initial noise 
-    use_noisy_examples  = False,                 # Whether to use noisy version of latents of examples for x_T
+    use_noisy_examples  = False,                # Whether to use noisy version of latents of examples for x_T
     example_idx_range   = None,                 # Indicates a range (low, high) of the example indices you want to sample
-):
+    seeds               = range(16, 24),        # List of random seeds.
+
+    max_batch_size      = 32,                   # Maximum batch size for the diffusion model.
+    dir_template        = None,                 # Where templates are stored.
+    dir_out             = None,                 # If passed, where images are stored.
+    subdirs             = False,                # Create subdirectory for every 1000 seeds?
+    verbose             = False,                # Enable status prints?
+    device              = torch.device("cuda")  # Which compute device to use.
+) -> Iterable:
     
-    import mylib.diffusion
-    if live_editing:
-        reload(mylib.diffusion)
-    from mylib.diffusion import EDMSampler
+    # Initialize torch distributed
+    if not torch.distributed.is_initialized():
+        dist.init()
 
     # Rank 0 goes first.
     if dist.get_rank() != 0:
         torch.distributed.barrier()
 
-    # Load main network.
-    if isinstance(net, str):
-        dist.print0(f'Loading network from {net} ...')
-        with dnnlib.util.open_url(net, verbose=(verbose and dist.get_rank() == 0)) as f:
-            data = pickle.load(f)
-        net = data['ema']
-        net = update_EDM(net).to(device) # Update EDM code
-        encoder = data.get('encoder', None)
-        if encoder is None:
-            encoder = dnnlib.util.construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
-    assert net is not None
-
 
     # Other ranks follow.
     if dist.get_rank() == 0:
         torch.distributed.barrier()
-
-    # Divide seeds into batches.
     num_batches = max((len(seeds) - 1) // (max_batch_size * dist.get_world_size()) + 1, 1) * dist.get_world_size()
     rank_batches = np.array_split(np.arange(len(seeds)), num_batches)[dist.get_rank() :: dist.get_world_size()]
-    if verbose:
-        dist.print0(f'Generating {len(seeds)} images...')
 
-    # Create guidance vectorfield
-    builder_ppvf = None
-    if gvf_args:
-        if verbose:
-            dist.print0(f'Creating Push-Pull Vectorfield from args ...')
-        builder_ppvf = BuilderPushPullVF(gvf_args)
+    # Setup intial states
+    states = InitialConditionIterable(
+            rank_batches=rank_batches,
+            seeds=seeds,
+            shape=shape,
+            label_dim=label_dim,
+            dir_template=dir_template,
+            device=device,
+    )
 
-    # Setup sampler 
-    edm_sampler = EDMSampler(time_disc = "edm", gradient_kwargs=gradient_kwargs)
+    # Map to image transformation
+    image_iter = ImageIterable(solver, dynamics, verbose)(states)
 
-    # Return an iterable over the batches.
-    class ImageIterable:
-        def __len__(self):
-            return len(rank_batches)
-        
-        def _sample_example_idx(self, template_dir, seed, class_, idx_range=None):
-            # Determien directory for specific class
-            class_dir = os.path.join(template_dir, str(int(class_)))
+    # SavingIterable
+    if dir_out:
+       image_iter = SavingIterable(dir_out, subdirs)(image_iter)
 
-            # If no custom range, sample from all files in class directory
-            if idx_range:
-                low, high = idx_range
-            else:
-                low = 0
-                high = len(os.listdir(class_dir))
+    return image_iter
 
-            g = torch.Generator().manual_seed(seed)
-            return torch.randint(low , high, (), generator=g).item()
-        
-        def __iter__(self):
-            # Loop over batches.
-            for batch_idx, indices in enumerate(rank_batches):
-                r = dnnlib.EasyDict(images=None, labels=None, noise=None, examples=None, batch_idx=batch_idx, num_batches=len(rank_batches), indices=indices)
-                r.seeds = [seeds[idx] for idx in indices]
-                r.example_paths = []
-                r.example_idx = []
 
-                if len(r.seeds) > 0:
-                    rnd = StackedRandomGenerator(device, r.seeds)
-                    r.noise = rnd.randn([len(r.seeds), net.img_channels, net.img_resolution, net.img_resolution], device=device)
-
-                    r.labels = None
-                    if net.label_dim > 0:
-                        # Pick labels
-                        r.labels = torch.eye(net.label_dim, device=device)[rnd.randint(net.label_dim, size=[len(r.seeds)], device=device)]
-                        if class_idx is not None:
-                            r.labels[:, :] = 0
-                            r.labels[:, class_idx] = 1
-
-                        # Pick example, for each label
-                        for seed, label in zip(r.seeds, torch.argmax(r.labels, axis=1)): 
-                            example_idx = self._sample_example_idx(template_dir, seed, label, idx_range=example_idx_range)
-                            example_path = os.path.join(template_dir, str(int(label)), f"{example_idx}.png")
-                            r.example_idx.append(example_idx)
-                            r.example_paths.append(example_path)
-
-                    # Initialize SDEdit
-                    if use_noisy_examples:
-                        examples = load_templates_batch(r.example_paths)
-                        latents_example = encoder.encode_latents(examples).to(device)
-                        r.noise += (latents_example / sampler_kwargs["sigma_max"])
-
-                    # Update gvf to use examples of current batch
-                    if builder_ppvf:
-                        examples = load_templates_batch(r.example_paths).unsqueeze(1).to(device)  # [B, N, C, H, W] TODO : will this mess up for N > 1
-                        examples_enc = encoder.encode_latents(examples)
-                        builder_ppvf.set_examples(examples_enc)
-                        ppvf = builder_ppvf.build(device=device)
-                        print(ppvf)
-                        gradient_kwargs["gvf"] = ppvf
-                    edm_sampler.init_gradient(gradient_kwargs, net=net)
-
-                    # Generate images
-                    xs, _ = edm_sampler(net, noise=r.noise, labels=r.labels, device=device, disable_tqdm=True, **sampler_kwargs)
-                    r.images = encoder.decode(xs[-1])
-
-                    # Save images.
-                    if outdir is not None:
-                        for seed, image in zip(r.seeds, r.images.permute(0, 2, 3, 1).cpu().numpy()):
-                            image_dir = os.path.join(outdir, f'{seed//1000*1000:06d}') if subdirs else outdir
-                            os.makedirs(image_dir, exist_ok=True)
-                            PIL.Image.fromarray(image, 'RGB').save(os.path.join(image_dir, f'{seed:06d}.png'))
-
-                # Yield results.
-                torch.distributed.barrier() # keep the ranks in sync
-                yield r
-
-    return ImageIterable()
