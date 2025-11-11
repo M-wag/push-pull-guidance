@@ -144,10 +144,10 @@ class SavingIterable:
         self.dir_save = dir_save
         self.subdirs = subdirs
     
-    def __call__(self):
-        for batch in self.iterable:
+    def __call__(self, iterable):
+        for batch in iterable:
             if self.dir_save is not None:
-                self._save_batch_images(batch)
+                self._save_batch(batch)
                 # TODO : save to database
             yield batch
 
