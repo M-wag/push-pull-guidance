@@ -27,7 +27,6 @@ class ParameterSet:
 @dataclass(frozen=True)
 class Experiment:
     id: Optional[int]
-    time_created : datetime
     lib_version : str
     experiment_name : str
     result_path : str
@@ -52,11 +51,6 @@ class Experiment:
             rows_per_table[table_name] = getattr(self, table).to_storage()
         return rows_per_table
 
-
-
-
-
-    
 
 #----------------------------------------------------------------------------
 # Functions for handling the Experiment, Parameter and ParameterSet
@@ -97,7 +91,6 @@ def create_experiment(
 ):
     return Experiment(
             id=None,
-            time_created=datetime.now(),
             lib_version=lib_version,
             experiment_name=experiment_name,
             result_path=result_path,
@@ -130,8 +123,8 @@ def intialize_database(cursor: sqlite3.Cursor):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 time_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 lib_version TEXT NOT NULL,
-                experiment_name TEXT NOT NULL,
-                result_path TEXT NOT NULL,
+                experiment_name TEXT,
+                result_path TEXT,
                 notes TEXT
             )
             '''
@@ -154,4 +147,3 @@ def intialize_database(cursor: sqlite3.Cursor):
     for statement in schema:
         cursor.execute(statement)
 
-    
