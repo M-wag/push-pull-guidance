@@ -85,7 +85,7 @@ class EDMSampler:
             xs = torch.empty((num_steps, noise.shape[0], dynamics.img_channels, dynamics.img_resolution, dynamics.img_resolution))
 
         rng_generator_dynamics = self.seed_dynamics
-        if self.noise_seed is not None:
+        if self.seed_dynamics is not None:
             rng_generator_dynamics = torch.Generator(device=self.device).manual_seed(self.noise_seed)
 
         # Main sampling loop.
@@ -95,16 +95,16 @@ class EDMSampler:
 
             # Increase noise temporarily.
             gamma = min(S_churn / num_steps, np.sqrt(2) - 1) if (S_min <= t_cur <= S_max) else 0
-            t_hat = dynamics(t_cur + gamma * t_cur)
+            t_hat = t_cur + gamma * t_cur
             x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * randn_like(x_cur, rng_generator_dynamics)
 
             # Euler step
-            d_cur = self.gradient_fn(x_hat, t_hat, labels)
+            d_cur = dynamics(x_hat, t_hat, labels)
             x_next = x_hat + d_cur * (t_next - t_hat)
 
             # Apply 2nd order correction
             if self.apply_2nd_order and i < num_steps - 1:
-                d_prime = self.gradient_fn(x_next, t_next, labels)
+                d_prime = dynamics(x_next, t_next, labels)
                 x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
             
             if self.save_all_timesteps:
@@ -136,34 +136,50 @@ def time_steps_ddim(num_steps, device, net=None):
 # dx/dt = gradient(x, t)
 
 class GradientEDM(torch.nn.Module):
-    def __init__(self, score_fn):
+    def __init__(self, score_fn, encoder):
         super().__init__()
         self.noise = lambda t : t
         self.noise_dot = lambda t : 1
         self.score_fn = score_fn
+        self.encoder = encoder
 
     def forward(self, x, t, labels):
         return -self.noise(t) * self.noise_dot(t) * self.score_fn(x, t, labels)
 
-class ScoreAdditive(torch.nn.Module):
-    def __init__(self, score_a, score_b):
-        super().__init__()
-        self.score_a = score_a
-        self.score_b = score_b
+    def update(self, state):
+        self.score_fn.update(state)
 
-    def forward(self, x, noise, labels):
-        score = torch.zeros_like(x)
-        score += self.score_a(x, noise, labels)
-        score += self.score_b(x, noise)
-        return score.to(noise.dtype)
+    def __getattr__(self, name):
+        # try PyTorch's normal attribute resolution 
+        try:
+            return super().__getattr__(name)  # preserves all nn.Module magic
+        except AttributeError:
+            pass  # Not found → continue with your own logic
+        # Check if network has propert
+        if hasattr(self.score_fn, 'denoiser') and hasattr(self.score_fn.denoiser, name):
+            return getattr(self.score_fn.denoiser, name)
+        # Raise usual error
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
 class ScoreDenoise(torch.nn.Module):
-    def __init__(self, denoiser, *, scale=1.0):
+    def __init__(self, denoiser, *, scale=1.0, score_add=None):
         super().__init__()
         self.denoiser = denoiser
         self.scale = scale
+        self.score_add = score_add
 
     def forward(self, x, noise, labels):
         denoised = self.denoiser(x, noise, labels).to(noise.dtype)
-        return self.scale * (denoised - x) / noise ** 2
+        score = self.scale * (denoised - x) / noise ** 2
+        if self.score_add:
+            score += self.score_add(x, noise)
+        return score
 
+    def update(self, state):
+        pass
+
+
+def create_dynamics(net, encoder, *, scale=1.0, gvf_kwargs=None):
+    score_fn = ScoreDenoise(net,scale=scale)
+    return GradientEDM(score_fn, encoder)
+    
