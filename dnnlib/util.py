@@ -615,7 +615,7 @@ def convert_entry_to_config(entry: dict, deserialize_map: dict=None):
 
 # Helpers for importing models 
 # ------------------------------------------------------------------------------------------
-def import_net_from_url(net: str, *, verbose=True):
+def import_net_from_url(net: str, *, verbose=True, device="cpu"):
     if isinstance(net, str):
         with open_url(net, verbose=verbose) as f:
             data = pickle.load(f)
@@ -625,5 +625,5 @@ def import_net_from_url(net: str, *, verbose=True):
         if encoder is None:
             encoder = construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
     assert net is not None
-    return net, encoder
+    return net.to(device), encoder.to(device)
 
