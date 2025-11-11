@@ -9,7 +9,6 @@
 "Elucidating the Design Space of Diffusion-Based Generative Models"."""
 
 import os
-import tqdm
 import numpy as np
 import torch
 import PIL.Image
@@ -95,7 +94,7 @@ class InitialConditionIterable:
                             example_path = os.path.join(self.dir_template, str(int(label)), f"{example_idx}.png")
                             r.example_idx.append(example_idx)
                             r.example_paths.append(example_path)
-                            r.examples = load_templates_batch(r.example_paths)
+                            r.examples = dnnlib.util.load_templates_batch(r.example_paths)
             yield r
 
     def __len__(self):
@@ -134,7 +133,7 @@ class ImageIterable:
             state.images = self.dynamics.encoder.decode(xs[-1])
             # Yield results.
             torch.distributed.barrier() # keep the ranks in sync
-            return r
+            return state
 
 
 #----------------------------------------------------------------------------
@@ -142,12 +141,12 @@ class ImageIterable:
 
 class SavingIterable:
     def __init__(self, dir_save, subdirs=False):
-        self.dir_save = save_dir
+        self.dir_save = dir_save
         self.subdirs = subdirs
     
     def __call__(self):
         for batch in self.iterable:
-            if dir_save is not None:
+            if self.dir_save is not None:
                 self._save_batch_images(batch)
                 # TODO : save to database
             yield batch

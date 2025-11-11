@@ -1,9 +1,6 @@
 import tqdm
 import numpy as np
 import torch 
-import os
-from collections import defaultdict
-from torchvision.io import read_image, ImageReadMode
 
 DISABLE_TQDM = False
 
@@ -80,20 +77,20 @@ class EDMSampler:
         
         # Time step discretization.
         t_steps = self.time_step_fn(num_steps, sigma_min=sigma_min, sigma_max=sigma_max, rho=rho) # t_N=0
-        t_steps = t_steps.to(device=device, dtype=dtype)
+        t_steps = t_steps.to(device=self.device, dtype=self.dtype)
 
         xs = None 
         # Intialize empty array to save intermediate timesteps
         if self.save_all_timesteps:
             xs = torch.empty((num_steps, noise.shape[0], dynamics.img_channels, dynamics.img_resolution, dynamics.img_resolution))
 
-        rng_generator_dynamics = seed_dynamics
+        rng_generator_dynamics = self.seed_dynamics
         if self.noise_seed is not None:
-            rng_generator_dynamics = torch.Generator(device=device).manual_seed(self.noise_seed)
+            rng_generator_dynamics = torch.Generator(device=self.device).manual_seed(self.noise_seed)
 
         # Main sampling loop.
-        x_next = noise.to(dtype) * t_steps[0]
-        for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1, disable=disable_tqdm): # 0, ..., N-1
+        x_next = noise.to(self.dtype) * t_steps[0]
+        for i, (t_cur, t_next) in tqdm.tqdm(list(enumerate(zip(t_steps[:-1], t_steps[1:]))), unit='step', position=1, disable=self.disable_tqdm): # 0, ..., N-1
             x_cur = x_next
 
             # Increase noise temporarily.
