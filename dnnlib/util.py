@@ -627,3 +627,53 @@ def import_net_from_url(net: str, *, verbose=True, device="cpu"):
     assert net is not None
     return net.to(device), encoder.to(device)
 
+#----------------------------------------------------------------------------
+# Helper functions for loading in templates from a path
+
+def load_templates(path, device=None, dtype=None, for_torch=True, rescale=False):
+    # Load templates data
+    if isinstance(path, type(None)):
+        return torch.tensor([0])
+    elif os.path.isfile(path):
+        templates = torch.unsqueeze(read_image(path, mode=ImageReadMode.RGB), 0)
+
+    elif os.path.isdir(path):
+        imgs = []
+        for fname in sorted(os.listdir(path)): # iterate through each file in directory
+            fpath = os.path.join(path, fname)
+            if not os.path.isfile(fpath): 
+                continue
+            imgs.append(read_image(fpath))
+        templates = torch.stack(imgs) if imgs else None
+
+    else:
+        raise ValueError(
+            f"Template path must be an existing file, directory, or None; "
+            f"got {path!r} (type {type(path).__name__})"
+    )
+
+    if device:
+        templates = templates.to(device=device)
+    if dtype:
+        templates = templates.to(dtype=dtype)
+    if rescale:
+        templates = (templates - 128) / 127.5 
+    return templates
+
+def load_templates_batch(batch_template_info, device=None, dtype=None, for_torch=True, rescale=False):
+    """
+    batch_template_info: list of either paths, or list of filenames/indices to load from `template_dir`
+    template_dir: if `batch_template_info` contains filenames or indices
+    """
+
+    batch_templates = []
+    for entry in batch_template_info:
+        batch_templates.append(load_templates(entry, device, dtype, for_torch))
+    if for_torch:
+        batch_templates = torch.concat(batch_templates) 
+
+    if batch_templates == [] : 
+        batch_templates = None
+
+    return batch_templates
+
