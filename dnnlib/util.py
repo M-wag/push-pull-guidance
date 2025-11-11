@@ -625,7 +625,7 @@ def import_net_from_url(net: str, *, verbose=True, device="cpu"):
         if encoder is None:
             encoder = construct_class_by_name(class_name='training.encoders.StandardRGBEncoder')
     assert net is not None
-    return net.to(device), encoder.to(device)
+    return net.to(device), encoder
 
 #----------------------------------------------------------------------------
 # Helper functions for loading in templates from a path
