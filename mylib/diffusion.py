@@ -1,6 +1,7 @@
 import tqdm
 import numpy as np
 import torch 
+from mylib.gvf import BuilderPushPullVF
 
 DISABLE_TQDM = False
 
@@ -147,7 +148,8 @@ class GradientEDM(torch.nn.Module):
         return -self.noise(t) * self.noise_dot(t) * self.score_fn(x, t, labels)
 
     def update(self, state):
-        self.score_fn.update(state)
+        examples_encoded = self.encoder.encode_latents(state.examples)
+        self.score_fn.update(examples_encoded)
 
     def __getattr__(self, name):
         # try PyTorch's normal attribute resolution 
@@ -162,11 +164,12 @@ class GradientEDM(torch.nn.Module):
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
 class ScoreDenoise(torch.nn.Module):
-    def __init__(self, denoiser, *, scale=1.0, score_add=None):
+    def __init__(self, denoiser, *, scale=1.0, score_add=None, updater=None):
         super().__init__()
         self.denoiser = denoiser
         self.scale = scale
         self.score_add = score_add
+        self._updater = updater
 
     def forward(self, x, noise, labels):
         denoised = self.denoiser(x, noise, labels).to(noise.dtype)
@@ -175,11 +178,21 @@ class ScoreDenoise(torch.nn.Module):
             score += self.score_add(x, noise)
         return score
 
-    def update(self, state):
-        pass
+    def update(self, examples):
+        if callable(self._updater):
+            self.score_add = self._updater(examples)
 
+def create_dynamics(net, encoder, *, scale=1.0, ppvf_kwargs=None, device="cuda"):
+    updater = None
+    if ppvf_kwargs:
+        builder_ppvf = BuilderPushPullVF(ppvf_kwargs)
 
-def create_dynamics(net, encoder, *, scale=1.0, gvf_kwargs=None):
-    score_fn = ScoreDenoise(net,scale=scale)
+        def _updater(examples):
+            builder_ppvf.set_examples(examples.unsqueeze(1).to(device=device, dtype=torch.float32)) # should change automatically and shape should match N examples 
+            return builder_ppvf.build(device=device)
+
+        updater = _updater
+
+    score_fn = ScoreDenoise(net, scale=scale, updater=updater)
     return GradientEDM(score_fn, encoder)
     

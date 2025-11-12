@@ -28,8 +28,10 @@ import tempfile
 import urllib
 import urllib.parse
 import uuid
+import torch
 
 from typing import Any, Callable, BinaryIO, List, Tuple, Union, Optional
+from torchvision.io import read_image, ImageReadMode
 from training.networks import update_EDM
 
 # Util classes
@@ -635,7 +637,7 @@ def load_templates(path, device=None, dtype=None, for_torch=True, rescale=False)
     if isinstance(path, type(None)):
         return torch.tensor([0])
     elif os.path.isfile(path):
-        templates = torch.unsqueeze(read_image(path, mode=ImageReadMode.RGB), 0)
+        templates = read_image(path, mode=ImageReadMode.RGB).unsqueeze(0)
 
     elif os.path.isdir(path):
         imgs = []
