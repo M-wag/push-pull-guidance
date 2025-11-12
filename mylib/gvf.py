@@ -18,11 +18,6 @@ DESERIALIZATION_MAP = {
     }
 
 #----------------------------------------------------------------------------
-# Temporary Logger globa
-
-LOGGER = {}
-
-#----------------------------------------------------------------------------
 # Helper function to compute the entropy from a probablity mass of shape (batch, p(x_i))
 
 def entropy_from_mass(x):
@@ -234,12 +229,6 @@ class ScoreGatedDiracMixture(torch.nn.Module):
         dif_x_to_mu_flat = rearrange(dif_x_to_mu, "B N C ... -> B (N C) ...")
         attn = self.attention(dif_x_to_mu_flat)  # (B, N*C)
         attn = rearrange(attn, "B (N C) -> B N C", N=self.n_modes)                  # (B, N, C)
-        ##################################################
-        breakpoint()
-        self.log("attn", attn)
-        self.log("entropy", entropy_from_mass(attn))
-        self.log("max_entropy", entropy_from_mass(torch.ones_like(attn) / attn[0].numel()))
-        ##################################################
         noise = self.noise(t)
         weights = attn * self.noise_gate(noise)                                     # (B, N, C)
         score =  torch.einsum("BNC, BNC... -> BC...", weights, dif_x_to_mu) / noise ** 2 # (B, C, *D)
@@ -259,13 +248,6 @@ class ScoreGatedDiracMixture(torch.nn.Module):
             f"  (shp_means): {list(self.means.shape)}",
         ]
         return "\n".join(lines)
-
-    def log(self, key, val):
-        logger = globals()["LOGGER"]
-        if key not in logger:
-            logger[key] = []
-        logger[key].append(val)
-
 
 #----------------------------------------------------------------------------
 # Push-Pullback Vector Field
