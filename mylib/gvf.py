@@ -190,6 +190,7 @@ class ScoreGatedDiracMixture(torch.nn.Module):
                     rearrange(self.means, "B N C ... -> B (N C) ... "), 
                     self.noise_gate.nu, 
                     flat_data=True,
+                    pass_diff=True,
                     **attention_kwargs)
         elif self.n_modes == 1:
             self._score = self._score_single_component
@@ -200,6 +201,7 @@ class ScoreGatedDiracMixture(torch.nn.Module):
                     self.means, 
                     self.noise_gate.nu, 
                     flat_data=True,
+                    pass_diff=True,
                     **attention_kwargs)
 
     def forward(self, x, t):
