@@ -1,6 +1,7 @@
 import tqdm
 import numpy as np
 import torch 
+import dnnlib
 from mylib.gvf import BuilderPushPullVF
 
 DISABLE_TQDM = False
@@ -20,6 +21,7 @@ def randn_like(tensor, generator=None):
 # Modular options for gradient and time step discretization.
 
 class EDMSampler:
+    @dnnlib.util.capture_init
     def __init__(
         self,
         device              ,
@@ -87,7 +89,7 @@ class EDMSampler:
 
         rng_generator_dynamics = self.seed_dynamics
         if self.seed_dynamics is not None:
-            rng_generator_dynamics = torch.Generator(device=self.device).manual_seed(self.noise_seed)
+            rng_generator_dynamics = torch.Generator(device=self.device).manual_seed(self.seed_dynamics)
 
         # Main sampling loop.
         x_next = noise.to(self.dtype) * t_steps[0]
@@ -116,11 +118,11 @@ class EDMSampler:
             x_0 = (x_0 * 127.5 + 128) / 255
 
         return x_0, (t_steps.cpu().numpy(), )
-
+    
 #----------------------------------------------------------------------------
 # Time step discretization functions 
 
-def time_steps_edm(num_steps,  net=None, *, sigma_min, sigma_max, rho):
+def time_steps_edm(num_steps, *, sigma_min, sigma_max, rho):
         if num_steps == 1:
             t_steps = torch.tensor([sigma_max, 0 ])
         else:
