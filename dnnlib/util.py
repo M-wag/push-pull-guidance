@@ -19,6 +19,7 @@ import sys
 import types
 import io
 import pickle
+import functools
 import re
 import requests
 import html
@@ -679,3 +680,15 @@ def load_templates_batch(batch_template_info, device=None, dtype=None, for_torch
 
     return batch_templates
 
+#----------------------------------------------------------------------------
+# Track 
+def capture_init(fn):
+    sig = inspect.signature(fn)
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        bound = sig.bind_partial(self, *args, **kwargs)
+        bound.apply_defaults()
+        cfg = {k: v for k, v in bound.arguments.items() if k != "self"}
+        self._init_config = cfg
+        return fn(self, *args, **kwargs)
+    return wrapper
