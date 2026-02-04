@@ -113,6 +113,24 @@ class InitialConditionIterable:
     
 
 #----------------------------------------------------------------------------
+# Iterable which adds encoded template latents to the noise.
+
+class NoisyExamplesIterable:
+    """Wraps an iterable and adds encoded template latents to the noise."""
+
+    def __init__(self, encoder, sigma_max):
+        self.encoder = encoder
+        self.sigma_max = sigma_max
+
+    def __call__(self, iterable):
+        for state in iterable:
+            if state.examples is not None:
+                latents_example = self.encoder.encode(state.examples).to(state.noise.device)
+                state.noise += (latents_example / self.sigma_max)
+            yield state
+
+
+#----------------------------------------------------------------------------
 # Iterable which applies diffusion process to initial condition iterable.
 
 class ImageIterable:
@@ -255,10 +273,14 @@ def generate_images(
             label_dim=label_dim,
             dir_template=dir_template,
             device=device,
-            ## 
+            ##
             class_idx=class_idx,
             example_idx_range=example_idx_range,
     )
+
+    # Optionally add noisy examples
+    if use_noisy_examples:
+        states = NoisyExamplesIterable(dynamics.encoder, solver.sigma_max)(states)
 
     # Map to image transformation
     image_iter = ImageIterable(solver, dynamics, verbose)(states)
