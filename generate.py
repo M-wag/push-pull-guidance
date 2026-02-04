@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import PIL.Image
 import dnnlib
+import dblib
 
 from torch_utils import distributed as dist
 from typing import Iterable
@@ -112,7 +113,7 @@ class InitialConditionIterable:
     
 
 #----------------------------------------------------------------------------
-# Iterable which applies diffusion processt to initial condition iterable.
+# Iterable which applies diffusion process to initial condition iterable.
 
 class ImageIterable:
     def __init__(self, solver, dynamics, verbose=False):
@@ -137,25 +138,77 @@ class ImageIterable:
 
 
 #----------------------------------------------------------------------------
-# Wrapper around iterables save intermediate results for ImageIterable.
+# Logs experiment metadata to a SQLite database.
+
+class ExperimentLogger:
+    def __init__(self, db, experiment_factory):
+        """
+        Args:
+            db: SQLite database connection
+            experiment_factory: Callable (state_prms, result_path) -> Experiment
+        """
+        self.db = db
+        self.experiment_factory = experiment_factory
+
+    def log(self, state_prms, result_path):
+        experiment = self.experiment_factory(state_prms, result_path)
+        with self.db:
+            dblib.util.save_experiment(self.db.cursor(), experiment)
+
+    def get_last_id(self):
+        cursor = self.db.cursor()
+        cursor.execute("SELECT id FROM experiments ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+
+
+#----------------------------------------------------------------------------
+# Wrapper around iterables that saves images to disk.
 
 class SavingIterable:
-    def __init__(self, dir_save, subdirs=False):
+    def __init__(self, dir_save, start_id=0, logger=None, use_subdirs=True, filename_fn=None):
         self.dir_save = dir_save
-        self.subdirs = subdirs
-    
-    def __call__(self, iterable):
-        for batch in iterable:
-            if self.dir_save is not None:
-                self._save_batch(batch)
-                # TODO : save to database
-            yield batch
+        self.logger = logger
+        self.use_subdirs = use_subdirs
+        self.filename_fn = filename_fn
+        self._current_id = start_id if logger is None else logger.get_last_id()
 
-    def _save_batch(self, batch):
-        for seed, image in zip(batch.seeds, batch.images.permute(0, 2, 3, 1).cpu().numpy()):
-            dir_image = os.path.join(self.dir_save, f'{seed//1000*1000:06d}') if self.subdirs else self.dir_save
+    def __call__(self, iterable):
+        for states in iterable:
+            if self.dir_save is not None:
+                self.save(states)
+            yield states
+
+    def save(self, states):
+        images = states.images.permute(0, 2, 3, 1).detach().cpu().numpy()
+        ids_example = [int(path.split("/")[-1].split(".")[0]) for path in states.example_paths]
+        ids_class = [int(path.split("/")[-2]) for path in states.example_paths]
+
+        for (image, id_example, id_class) in zip(images, ids_example, ids_class):
+            self._current_id += 1
+
+            if self.filename_fn is not None:
+                filename = self.filename_fn(id_class, id_example, self._current_id)
+                result_path = os.path.join(self.dir_save, filename)
+                dir_image = self.dir_save
+            elif self.use_subdirs:
+                dir_image = os.path.join(self.dir_save, f'{self._current_id // 1000 * 1000:06d}')
+                result_path = os.path.join(dir_image, f"{self._current_id:06d}.png")
+            else:
+                dir_image = self.dir_save
+                result_path = os.path.join(dir_image, f"{self._current_id:06d}.png")
+
+            # Log to database if logger is configured
+            if self.logger is not None:
+                state_prms = {
+                    "id_example": id_example,
+                    "id_class": id_class,
+                }
+                self.logger.log(state_prms, result_path)
+
+            # Save image
             os.makedirs(dir_image, exist_ok=True)
-            PIL.Image.fromarray(image, 'RGB').save(os.path.join(dir_image, f'{seed:06d}.png'))
+            PIL.Image.fromarray(image, 'RGB').save(result_path)
 
 #----------------------------------------------------------------------------
 # Generate images for the given seeds in a distributed fashion.
@@ -165,8 +218,6 @@ class SavingIterable:
 def generate_images(
     solver,
     dynamics,
-    shape,
-    label_dim,
 
     class_idx           = None,                 # Class label. None = select randomly.
     use_noisy_examples  = False,                # Whether to use noisy version of latents of examples for x_T
@@ -174,9 +225,7 @@ def generate_images(
     seeds               = range(16, 24),        # List of random seeds.
 
     max_batch_size      = 32,                   # Maximum batch size for the diffusion model.
-    dir_template        = None,                 # Where templates are stored.
     dir_out             = None,                 # If passed, where images are stored.
-    subdirs             = False,                # Create subdirectory for every 1000 seeds?
     verbose             = False,                # Enable status prints?
     device              = torch.device("cuda")  # Which compute device to use.
 ) -> Iterable:
@@ -189,7 +238,6 @@ def generate_images(
     if dist.get_rank() != 0:
         torch.distributed.barrier()
 
-
     # Other ranks follow.
     if dist.get_rank() == 0:
         torch.distributed.barrier()
@@ -197,6 +245,9 @@ def generate_images(
     rank_batches = np.array_split(np.arange(len(seeds)), num_batches)[dist.get_rank() :: dist.get_world_size()]
 
     # Setup intial states
+    shape = (dynamics.img_channels, dynamics.img_resolution, dynamics.img_resolution)
+    label_dim = dynamics.label_dim
+    dir_template="data/images/examples"
     states = InitialConditionIterable(
             rank_batches=rank_batches,
             seeds=seeds,
@@ -204,6 +255,9 @@ def generate_images(
             label_dim=label_dim,
             dir_template=dir_template,
             device=device,
+            ## 
+            class_idx=class_idx,
+            example_idx_range=example_idx_range,
     )
 
     # Map to image transformation
@@ -211,7 +265,7 @@ def generate_images(
 
     # SavingIterable
     if dir_out:
-       image_iter = SavingIterable(dir_out, subdirs)(image_iter)
+       image_iter = SavingIterable(dir_out)(image_iter)
 
     return image_iter
 
