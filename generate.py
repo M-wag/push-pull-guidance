@@ -231,17 +231,14 @@ class TextConditionedInputsIterable(InputsIterable):
 class StableDiffusionDynamics(Dynamics):
     """ Dynamics for Stable Diffusion: UNet forward pass with classifier-free guidance. """
 
-    def __init__(self, unet, vae, guidance_scale: float = 7.5, controller=None):
+    def __init__(self, unet, vae, guidance_scale: float = 7.5):
         self.unet             = unet
         self.encoder          = VAEEncoder(vae)  
         self.guidance_scale   = guidance_scale
-        self.controller       = controller
         self._text_embeddings = None
 
     def update(self, state) -> None:
         self._text_embeddings = state.text_embeddings  # (2B, 77, D)
-        if self.controller is not None:
-            self.controller.reset()
 
     def __call__(self, latents: torch.Tensor, t: int) -> torch.Tensor:
         """CFG noise prediction."""
