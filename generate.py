@@ -231,14 +231,18 @@ class TextConditionedInputsIterable(InputsIterable):
 class StableDiffusionDynamics(Dynamics):
     """ Dynamics for Stable Diffusion: UNet forward pass with classifier-free guidance. """
 
-    def __init__(self, unet, vae, guidance_scale: float = 7.5):
-        self.unet             = unet
-        self.encoder          = VAEEncoder(vae)  
-        self.guidance_scale   = guidance_scale
-        self._text_embeddings = None
+    def __init__(self, unet, vae, scheduler, guidance_scale: float = 7.5, ppg = None):
+        self.unet               = unet
+        self.encoder            = VAEEncoder(vae)
+        self.scheduler          = scheduler
+        self.guidance_scale     = guidance_scale
+        self.ppg                = ppg
+        self._text_embeddings   = None
 
     def update(self, state) -> None:
         self._text_embeddings = state.text_embeddings  # (2B, 77, D)
+        if self.ppg:
+            self.ppg.update(state)
 
     def __call__(self, latents: torch.Tensor, t: int) -> torch.Tensor:
         """CFG noise prediction."""
@@ -248,7 +252,13 @@ class StableDiffusionDynamics(Dynamics):
             encoder_hidden_states=self._text_embeddings,
         ).sample
         uncond, cond = noise_pred.chunk(2)
-        return uncond + self.guidance_scale * (cond - uncond)
+        noise_pred = uncond + self.guidance_scale * (cond - uncond)
+        if self.ppg:
+            score = self.ppg(latents, t) # ∇log p(c | x)
+            alpha_t = self.scheduler.alphas_cumprod[t]
+            noise_t = ((1 - alpha_t) / alpha_t).sqrt()
+            noise_pred += -noise_t * score
+        return noise_pred
 
 
 class DDIMSolver(Solver):
