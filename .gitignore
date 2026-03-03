@@ -180,4 +180,5 @@ cython_debug/
 # Ignore contents of data input and output with exception of the database
 data/
 !data/db/**
+outputs/
 
