@@ -1,10 +1,26 @@
+import os
 import torch
+import yaml
 from diffusers import StableDiffusionPipeline, DDIMScheduler
-
+from ppg.ppg import create_sgdm, create_ppg
 from generate import StableDiffusionDynamics, TextConditionedInputsIterable, DDIMSolver, generate_images
 
+
+def load_wildti2i(path_dir, n_entries=None):
+    with open(os.path.join(path_dir, "wild-ti2i-real.yaml")) as f:
+        data = yaml.safe_load(f)
+    if n_entries is not None:
+        data = data[:n_entries]
+    path_imgs = [os.path.join(path_dir, "data", os.path.basename(entry["init_img"])) for entry in data]
+    target_prompts = [entry["target_prompts"][0] for entry in data]
+    return path_imgs, target_prompts
+    
 @torch.no_grad()
 def main():
+    # Setup push pull guidance
+    sgdm = create_sgdm(type_gate="quadratic", nu=15.0)
+    ppg = create_ppg(vf_inner=sgdm)
+
     # Setup hf diffusers pipeline
     pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float32).to("cuda")
     pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
@@ -26,4 +42,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
