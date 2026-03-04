@@ -88,6 +88,7 @@ class ImageIterable:
         self.verbose = verbose
 
     def __call__(self, iter_state: InputsIterable) -> Iterable:
+        self.solver.verbose = self.verbose
         for state in iter_state:
             yield self._process_batch(state)
 
@@ -261,12 +262,13 @@ class CombinedInputs(InputsIterable):
 class StableDiffusionDynamics(Dynamics):
     """ Dynamics for Stable Diffusion: UNet forward pass with classifier-free guidance. """
 
-    def __init__(self, unet, vae, scheduler, guidance_scale: float = 7.5, ppg = None):
+    def __init__(self, unet, vae, scheduler, guidance_scale: float = 7.5, ppg=None, use_unet: bool = True):
         self.unet               = unet
         self.encoder            = VAEEncoder(vae)
         self.scheduler          = scheduler
         self.guidance_scale     = guidance_scale
         self.ppg                = ppg
+        self.use_unet           = use_unet
         self._text_embeddings   = None
 
     def update(self, state) -> None:
@@ -276,18 +278,23 @@ class StableDiffusionDynamics(Dynamics):
 
     def __call__(self, latents: torch.Tensor, t: int) -> torch.Tensor:
         """CFG noise prediction."""
-        latents_input = torch.cat([latents] * 2)
-        noise_pred = self.unet(
-            latents_input, t,
-            encoder_hidden_states=self._text_embeddings,
-        ).sample
-        uncond, cond = noise_pred.chunk(2)
-        noise_pred = uncond + self.guidance_scale * (cond - uncond)
+        if self.use_unet:
+            latents_input = torch.cat([latents] * 2)
+            noise_pred = self.unet(
+                latents_input, t,
+                encoder_hidden_states=self._text_embeddings,
+            ).sample
+            uncond, cond = noise_pred.chunk(2)
+            noise_pred = uncond + self.guidance_scale * (cond - uncond)
+        else:
+            noise_pred = torch.zeros_like(latents)
+
         if self.ppg:
-            score = self.ppg(latents, t) # ∇log p(c | x)
+            score = self.ppg(latents, t) # ∇log p(c | x) 
             alpha_t = self.scheduler.alphas_cumprod[t]
             noise_t = ((1 - alpha_t) / alpha_t).sqrt()
             noise_pred += -noise_t * score
+
         return noise_pred
 
 
