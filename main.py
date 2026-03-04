@@ -20,7 +20,7 @@ def load_wildti2i(path_dir, n_entries=None):
 @torch.no_grad()
 def main():
     # Setup push pull guidance
-    sgdm = create_sgdm(type_gate="quadratic", nu=15.0)
+    sgdm = create_sgdm(type_gate="quadratic", nu=0.5)
     ppg = create_ppg(vf_inner=sgdm)
 
     # Setup hf diffusers pipeline
@@ -32,7 +32,7 @@ def main():
 
     # Setup solver and dynamics
     solver   = DDIMSolver(scheduler=pipe.scheduler, num_inference_steps=50)
-    dynamics = StableDiffusionDynamics(unet=pipe.unet, vae=pipe.vae, guidance_scale=7.5, scheduler=pipe.scheduler)
+    dynamics = StableDiffusionDynamics(unet=pipe.unet, vae=pipe.vae, guidance_scale=7.5, scheduler=pipe.scheduler, ppg=ppg)
     # Setup input iterables
     inputs = CombinedInputs(
         NoiseIterable(seeds=range(0, len(prompts)), shape=(4, 64, 64), device="cuda"),
