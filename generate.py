@@ -4,27 +4,11 @@ import torch
 import PIL.Image
 
 from abc import ABC, abstractmethod
+from typing import Any, Iterable, List, Optional, Tuple
+from tqdm import tqdm
 from diffusers import DDIMScheduler
 from torch_utils import distributed as dist
-from tqdm import tqdm
-from typing import Any, Iterable, List, Optional, Tuple
-
-#----------------------------------------------------------------------------
-# Convenience class that behaves like a dict but allows access with the attribute syntax. x = d.key
-
-class EasyDict(dict):
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        self[name] = value
-
-    def __delattr__(self, name: str) -> None:
-        del self[name]
+from util import EasyDict, load_images
 
 #----------------------------------------------------------------------------
 # Wrapper for torch.Generator that allows specifying a different random seed
