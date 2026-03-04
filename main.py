@@ -1,16 +1,19 @@
 import torch
 from diffusers import StableDiffusionPipeline, DDIMScheduler
+
 from generate import StableDiffusionDynamics, TextConditionedInputsIterable, DDIMSolver, generate_images
 
 @torch.no_grad()
 def main():
+    # Setup hf diffusers pipeline
     pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float32).to("cuda")
     pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
 
-    dynamics = StableDiffusionDynamics(unet=pipe.unet, vae=pipe.vae, guidance_scale=7.5)
+    # Setup generation iterables
     solver   = DDIMSolver(scheduler=pipe.scheduler, num_inference_steps=50)
+    dynamics = StableDiffusionDynamics(unet=pipe.unet, vae=pipe.vae, guidance_scale=7.5, scheduler=pipe.scheduler)
     inputs = TextConditionedInputsIterable(
-        seeds           = [42, 42],
+        seeds           = [42, 18],
         shape           = (4, 64, 64),
         prompts         = ["a cat wearing a hat", "man made of milk"],
         tokenizer       = pipe.tokenizer,
