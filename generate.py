@@ -158,6 +158,7 @@ class TextConditionedInputsIterable(InputsIterable):
         text_encoder,
         negative_prompt: str = "",
         device: str = "cuda",
+        paths_example: Optional[List[str]] = None,
     ):
         self.rank_batches    = None  # injected by generate_images
         self.seeds           = seeds
@@ -167,6 +168,7 @@ class TextConditionedInputsIterable(InputsIterable):
         self.text_encoder    = text_encoder
         self.negative_prompt = negative_prompt
         self.device          = device
+        self.paths_example   = paths_example
 
     def __iter__(self):
         for batch_idx, indices in enumerate(self.rank_batches):
@@ -176,7 +178,7 @@ class TextConditionedInputsIterable(InputsIterable):
             rnd   = StackedRandomGenerator(self.device, batch_seeds)
             noise = rnd.randn([len(batch_seeds), *self.shape], device=self.device)
 
-            yield EasyDict(
+            state = EasyDict(
                 seeds           = batch_seeds,
                 indices         = list(indices),
                 batch_idx       = batch_idx,
@@ -185,6 +187,14 @@ class TextConditionedInputsIterable(InputsIterable):
                 text_embeddings = self._encode(batch_prompts),  # (2B, 77, D)
                 prompts         = batch_prompts,
             )
+
+            if self.paths_example is not None:
+                batch_paths = [self.paths_example[i] for i in indices]
+                examples = load_images(batch_paths, device=self.device)
+                if examples is not None:
+                    state.examples = examples
+
+            yield state
 
     def __len__(self) -> int:
         return len(self.rank_batches)
