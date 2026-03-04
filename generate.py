@@ -143,84 +143,120 @@ class VAEEncoder(Encoder):
         return (images / 2 + 0.5).clamp(0, 1)
 
 
-class TextConditionedInputsIterable(InputsIterable):
-    """ 
-    Yields per-batch initial conditions for text-to-image diffusion. 
-    Text encoding is performed here as it is part of the initial condition, not the dynamics.
-    """
+#----------------------------------------------------------------------------
+# Composable input iterables
 
-    def __init__(
-        self,
-        seeds: List[int],
-        shape: Tuple[int, ...],     # e.g. (4, 64, 64) for 512px SD — set explicitly by caller
-        prompts: List[str],         # one per seed
-        tokenizer,
-        text_encoder,
-        negative_prompt: str = "",
-        device: str = "cuda",
-        paths_example: Optional[List[str]] = None,
-    ):
-        self.rank_batches    = None  # injected by generate_images
-        self.seeds           = seeds
-        self.shape           = shape
+class NoiseIterable(InputsIterable):
+    """Base iterable that generates seeded noise. Owns seeds and rank_batches."""
+
+    def __init__(self, seeds: List[int], shape: Tuple[int, ...], device: str = "cuda"):
+        self.rank_batches = None  # injected by generate_images
+        self.seeds  = seeds
+        self.shape  = shape
+        self.device = device
+
+    def __iter__(self):
+        for batch_idx, indices in enumerate(self.rank_batches):
+            batch_seeds = [self.seeds[i] for i in indices]
+            rnd   = StackedRandomGenerator(self.device, batch_seeds)
+            noise = rnd.randn([len(batch_seeds), *self.shape], device=self.device)
+            yield EasyDict(
+                seeds       = batch_seeds,
+                indices     = list(indices),
+                batch_idx   = batch_idx,
+                num_batches = len(self.rank_batches),
+                noise       = noise,
+            )
+
+    def __len__(self) -> int:
+        return len(self.rank_batches)
+
+
+class TextEmbeddingIterable:
+    """Extension that adds text_embeddings and prompts to each batch state."""
+
+    def __init__(self, prompts: List[str], tokenizer, text_encoder,
+                 negative_prompt: str = "", device: str = "cuda"):
         self.prompts         = prompts
         self.tokenizer       = tokenizer
         self.text_encoder    = text_encoder
         self.negative_prompt = negative_prompt
         self.device          = device
-        self.paths_example   = paths_example
 
-    def __iter__(self):
-        for batch_idx, indices in enumerate(self.rank_batches):
-            batch_seeds   = [self.seeds[i]  for i in indices]
-            batch_prompts = [self.prompts[i] for i in indices]
-
-            rnd   = StackedRandomGenerator(self.device, batch_seeds)
-            noise = rnd.randn([len(batch_seeds), *self.shape], device=self.device)
-
-            state = EasyDict(
-                seeds           = batch_seeds,
-                indices         = list(indices),
-                batch_idx       = batch_idx,
-                num_batches     = len(self.rank_batches),
-                noise           = noise,
-                text_embeddings = self._encode(batch_prompts),  # (2B, 77, D)
-                prompts         = batch_prompts,
-            )
-
-            if self.paths_example is not None:
-                batch_paths = [self.paths_example[i] for i in indices]
-                examples = load_images(batch_paths, device=self.device)
-                if examples is not None:
-                    state.examples = examples
-
-            yield state
-
-    def __len__(self) -> int:
-        return len(self.rank_batches)
+    def enrich(self, state: EasyDict, indices: list) -> None:
+        batch_prompts = [self.prompts[i] for i in indices]
+        state.prompts         = batch_prompts
+        state.text_embeddings = self._encode(batch_prompts)
 
     @torch.no_grad()
     def _encode(self, prompts: List[str]) -> torch.Tensor:
         tok = self.tokenizer
         cond = self.text_encoder(
-            tok(prompts, 
-                padding="max_length", 
+            tok(prompts,
+                padding="max_length",
                 max_length=tok.model_max_length,
                 truncation=True,
                 return_tensors="pt"
             ).input_ids.to(self.device)
         )[0]
-
         uncond = self.text_encoder(
             tok([self.negative_prompt] * len(prompts),
                 padding="max_length",
-                max_length=tok.model_max_length, 
+                max_length=tok.model_max_length,
                 return_tensors="pt"
             ).input_ids.to(self.device)
         )[0]
-
         return torch.cat([uncond, cond])
 
+
+class ExampleImagesIterable:
+    """Extension that adds example images to each batch state."""
+
+    def __init__(self, paths_example: List[str], encoder: Optional[Encoder] = None, device: str = "cuda"):
+        self.paths_example  = paths_example
+        self.device         = device
+        self.encoder        = encoder
+
+    def enrich(self, state: EasyDict, indices: list) -> None:
+        batch_paths = [self.paths_example[i] for i in indices]
+        examples = load_images(batch_paths, device=self.device, rescale=True)
+        if examples is not None:
+            if self.encoder:
+                examples = self.encoder.encode(examples)
+            state.examples = examples
+
+
+class CombinedInputs(InputsIterable):
+    """Combines a base NoiseIterable with extensions that enrich each batch state."""
+
+    def __init__(self, base: NoiseIterable, *extensions):
+        self.base       = base
+        self.extensions = extensions
+
+    @property
+    def seeds(self):
+        return self.base.seeds
+
+    @property
+    def rank_batches(self):
+        return self.base.rank_batches
+
+    @rank_batches.setter
+    def rank_batches(self, value):
+        self.base.rank_batches = value
+
+    def __iter__(self):
+        for state in self.base:
+            for ext in self.extensions:
+                ext.enrich(state, state.indices)
+            yield state
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+
+#----------------------------------------------------------------------------
+# HuggingFace Diffusers implementations
 
 class StableDiffusionDynamics(Dynamics):
     """ Dynamics for Stable Diffusion: UNet forward pass with classifier-free guidance. """

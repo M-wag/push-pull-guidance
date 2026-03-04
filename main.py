@@ -4,7 +4,8 @@ import yaml
 
 from diffusers import StableDiffusionPipeline, DDIMScheduler
 from ppg.ppg import create_sgdm, create_ppg
-from generate import StableDiffusionDynamics, TextConditionedInputsIterable, DDIMSolver, generate_images
+from generate import (StableDiffusionDynamics, DDIMSolver, generate_images,
+                       NoiseIterable, TextEmbeddingIterable, ExampleImagesIterable, CombinedInputs)
 
 
 def load_wildti2i(path_dir, n_entries=None):
@@ -29,19 +30,17 @@ def main():
     # Load prompts and images for Wild-TI2I dataset
     paths_example, prompts = load_wildti2i("data/wild-ti2i", n_entries=3)
 
-    # Setup generation iterables
+    # Setup solver and dynamics
     solver   = DDIMSolver(scheduler=pipe.scheduler, num_inference_steps=50)
-    dynamics = StableDiffusionDynamics(unet=pipe.unet, vae=pipe.vae, guidance_scale=7.5, scheduler=pipe.scheduler, ppg=ppg)
-    inputs = TextConditionedInputsIterable(
-        seeds           = range(0, len(prompts)),
-        shape           = (4, 64, 64),
-        prompts         = prompts,
-        tokenizer       = pipe.tokenizer,
-        text_encoder    = pipe.text_encoder,
-        paths_example   = paths_example, 
-        device          = "cuda",
+    dynamics = StableDiffusionDynamics(unet=pipe.unet, vae=pipe.vae, guidance_scale=7.5, scheduler=pipe.scheduler)
+    # Setup input iterables
+    inputs = CombinedInputs(
+        NoiseIterable(seeds=range(0, len(prompts)), shape=(4, 64, 64), device="cuda"),
+        TextEmbeddingIterable(prompts, pipe.tokenizer, pipe.text_encoder, device="cuda"),
+        ExampleImagesIterable(paths_example, dynamics.encoder, device="cuda"),
     )
 
+    # Generate
     for state in generate_images(solver, dynamics, inputs, verbose=True, dir_out="outputs/"):
         print(state.seeds, state.images.shape)
 
