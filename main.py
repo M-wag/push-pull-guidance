@@ -1,6 +1,7 @@
 import os
 import torch
 import yaml
+
 from diffusers import StableDiffusionPipeline, DDIMScheduler
 from ppg.ppg import create_sgdm, create_ppg
 from generate import StableDiffusionDynamics, TextConditionedInputsIterable, DDIMSolver, generate_images
@@ -25,15 +26,19 @@ def main():
     pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float32).to("cuda")
     pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
 
+    # Load prompts and images for Wild-TI2I dataset
+    paths_example, prompts = load_wildti2i("data/wild-ti2i", n_entries=3)
+
     # Setup generation iterables
     solver   = DDIMSolver(scheduler=pipe.scheduler, num_inference_steps=50)
-    dynamics = StableDiffusionDynamics(unet=pipe.unet, vae=pipe.vae, guidance_scale=7.5, scheduler=pipe.scheduler)
+    dynamics = StableDiffusionDynamics(unet=pipe.unet, vae=pipe.vae, guidance_scale=7.5, scheduler=pipe.scheduler, ppg=ppg)
     inputs = TextConditionedInputsIterable(
-        seeds           = [42, 18],
+        seeds           = range(0, len(prompts)),
         shape           = (4, 64, 64),
-        prompts         = ["a cat wearing a hat", "man made of milk"],
+        prompts         = prompts,
         tokenizer       = pipe.tokenizer,
         text_encoder    = pipe.text_encoder,
+        paths_example   = paths_example, 
         device          = "cuda",
     )
 
