@@ -3,6 +3,9 @@ import torch
 import yaml
 
 from diffusers import StableDiffusionPipeline, DDIMScheduler
+
+from diagnostics import DiagnosticsReport
+from util import load_images
 from ppg.ppg import create_sgdm, create_ppg
 from generate import (StableDiffusionDynamics, DDIMSolver, generate_images,
                        NoiseIterable, TextEmbeddingIterable, ExampleImagesIterable, CombinedInputs)
@@ -16,33 +19,72 @@ def load_wildti2i(path_dir, n_entries=None):
     path_imgs = [os.path.join(path_dir, "data", os.path.basename(entry["init_img"])) for entry in data]
     target_prompts = [entry["target_prompts"][0] for entry in data]
     return path_imgs, target_prompts
+
+def reconstruct_images(encoder, images):
+    images = images.to(torch.float32) / 127.5 - 1
+    latents = encoder.encode(images).latent_dist.sample()
+    recons = encoder.decode(latents).sample
+    return (recons.to(torch.float32) * 127.5 + 128).clip(0, 255).to(torch.uint8)
     
-@torch.no_grad()
-def main():
-    # Setup push pull guidance
-    sgdm = create_sgdm(type_gate="quadratic", nu=0.5)
-    ppg = create_ppg(vf_inner=sgdm)
-
-    # Setup hf diffusers pipeline
-    pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float32).to("cuda")
-    pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-
-    # Load prompts and images for Wild-TI2I dataset
-    paths_example, prompts = load_wildti2i("data/wild-ti2i", n_entries=3)
-
-    # Setup solver and dynamics
-    solver   = DDIMSolver(scheduler=pipe.scheduler, num_inference_steps=50)
-    dynamics = StableDiffusionDynamics(unet=pipe.unet, vae=pipe.vae, guidance_scale=7.5, scheduler=pipe.scheduler, ppg=ppg)
-    # Setup input iterables
-    inputs = CombinedInputs(
-        NoiseIterable(seeds=range(0, len(prompts)), shape=(4, 64, 64), device="cuda"),
-        TextEmbeddingIterable(prompts, pipe.tokenizer, pipe.text_encoder, device="cuda"),
-        ExampleImagesIterable(paths_example, dynamics.encoder, device="cuda"),
-    )
-
-    # Generate
-    for state in generate_images(solver, dynamics, inputs, verbose=True, dir_out="outputs/"):
-        print(state.seeds, state.images.shape)
-
 if __name__ == "__main__":
-    main()
+    with torch.no_grad():
+        # Setup hf diffusers pipeline
+        pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float32).to("cuda")
+        pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
+
+        # Init report 
+        report = DiagnosticsReport("SD 1.5 Guidance in Pixel Space")
+
+        # Show inputs of path 
+        report.add_header("Inputs")
+        paths_example, prompts = load_wildti2i("data/wild-ti2i", n_entries=3)
+        examples = load_images(paths_example, rescale=False, dtype=torch.uint8, device="cuda")
+        report.add_image_row(paths_example, captions=prompts)
+
+        # Loaded Examples 
+        report.add_header("Loaded  Examples")
+        report.add_image_row(examples.cpu().detach().numpy())
+
+        #  reconstructed
+        report.add_header("Reconstructed Examples")
+        reconstructed_examples = reconstruct_images(pipe.vae, examples).cpu().detach().numpy()
+        report.add_image_row(reconstructed_examples)
+
+        solver = DDIMSolver(scheduler=pipe.scheduler, num_inference_steps=50)
+        dynamics = StableDiffusionDynamics(unet=pipe.unet, vae=pipe.vae, guidance_scale=7.5, scheduler=pipe.scheduler)
+
+        def make_inputs():
+            return CombinedInputs(
+                NoiseIterable(seeds=range(0, len(prompts)), shape=(4, 64, 64), device="cuda"),
+                TextEmbeddingIterable(prompts, pipe.tokenizer, pipe.text_encoder, device="cuda"),
+                ExampleImagesIterable(paths_example, dynamics.encoder, device="cuda"),
+            )
+
+        def run_and_report(header):
+            report.add_header(header)
+            for state in generate_images(solver, dynamics, make_inputs(), verbose=True):
+                pass
+            report.add_image_row(state.images.detach().cpu().numpy(), captions=prompts)
+            return state.images
+
+        # No dynamics at all
+        dynamics.use_unet = False
+        images_no_dyn = run_and_report("No Dynamics")
+
+        # ppg + no-unet
+        dynamics.use_unet = False
+        dynamics.ppg = create_ppg(vf_inner=create_sgdm(type_gate="quadratic", nu=0.0), scale=1)
+        images_ppg_only = run_and_report("PPG without U-Net")
+
+        # no ppg
+        dynamics.use_unet = True
+        dynamics.ppg = None
+        run_and_report("No PPG")
+
+        # # with ppg
+        for nu in (20, 10, 5, 2, 1, 0.5, 0.2, 0.1, 0.01):
+            dynamics.ppg = create_ppg(vf_inner=create_sgdm(type_gate="quadratic", nu=nu), scale=1)
+            run_and_report(f"With PPG $\\nu = {nu}$")
+
+        # Save report
+        report.save("diagnostics_2.html")
