@@ -276,12 +276,12 @@ class StableDiffusionDynamics(Dynamics):
         if self.ppg:
             self.ppg.update(state)
 
-    def __call__(self, latents: torch.Tensor, t: int) -> torch.Tensor:
+    def __call__(self, latents: torch.Tensor, t_idx: int) -> torch.Tensor:
         """CFG noise prediction."""
         if self.use_unet:
             latents_input = torch.cat([latents] * 2)
             noise_pred = self.unet(
-                latents_input, t,
+                latents_input, t_idx,
                 encoder_hidden_states=self._text_embeddings,
             ).sample
             uncond, cond = noise_pred.chunk(2)
@@ -290,10 +290,10 @@ class StableDiffusionDynamics(Dynamics):
             noise_pred = torch.zeros_like(latents)
 
         if self.ppg:
-            score = self.ppg(latents, t) # ∇log p(c | x) 
-            alpha_t = self.scheduler.alphas_cumprod[t]
-            noise_t = ((1 - alpha_t) / alpha_t).sqrt()
-            noise_pred += -noise_t * score
+            alpha = self.scheduler.alphas_cumprod[t_idx]
+            noise = ((1 - alpha) / alpha).sqrt()
+            score = self.ppg(latents, noise) # ∇log p(c | x)
+            noise_pred += -noise * score
 
         return noise_pred
 
@@ -301,7 +301,6 @@ class StableDiffusionDynamics(Dynamics):
 class DDIMSolver(Solver):
     """
     Integrates StableDiffusionDynamics from t=T to t=0 using a DDIM scheduler.
-    Satisfies the Solver interface required by ImageIterable.
     """
 
     def __init__(self, scheduler: DDIMScheduler, num_inference_steps: int = 50, verbose: bool = False):
@@ -318,9 +317,9 @@ class DDIMSolver(Solver):
 
         latents = noise
         xs = []
-        for t in tqdm(self.scheduler.timesteps, disable=not self.verbose):
-            noise_pred = dynamics(latents, t)
-            latents = self.scheduler.step(noise_pred, t, latents).prev_sample
+        for t_idx in tqdm(self.scheduler.timesteps, disable=not self.verbose):
+            noise_pred = dynamics(latents, t_idx)
+            latents = self.scheduler.step(noise_pred, t_idx, latents).prev_sample
             xs.append(latents)
         return xs, None
 
