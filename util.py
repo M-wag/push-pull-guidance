@@ -51,7 +51,7 @@ def _load_images(path, device=None, dtype=None, for_torch=True, rescale=False):
     if dtype:
         templates = templates.to(dtype=dtype)
     if rescale:
-        templates = (templates - 128) / 127.5
+        templates = templates.to(torch.float32) / 127.5 - 1
     return templates
 
 def load_images(batch_template_info, device=None, dtype=None, for_torch=True, rescale=False):
