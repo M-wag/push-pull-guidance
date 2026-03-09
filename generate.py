@@ -291,7 +291,7 @@ class StableDiffusionDynamics(Dynamics):
 
         if self.ppg:
             alpha = self.scheduler.alphas_cumprod[t_idx]
-            noise = ((1 - alpha) / alpha).sqrt()
+            noise = (1 - alpha).sqrt()
             score = self.ppg(latents, noise) # ∇log p(c | x)
             noise_pred += -noise * score
 
