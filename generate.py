@@ -43,15 +43,28 @@ class Encoder(ABC):
         """latents (B, Z, H', W') -> images (B, C, H, W) in [0, 1]"""
 
 
-class InputsIterable(ABC):
-    seeds: List[int]    # required attribute; used by generate_images for rank splitting
-    rank_batches = None # set to None at construction; injected by generate_images
+class InputsIterable:
+    """Base iterable that owns seeds and rank_batches. Yields one EasyDict per batch.
 
-    @abstractmethod
+    Extensions (NoiseIterable, TextEmbeddingIterable, etc.) add data to each
+    batch via their enrich(state, indices) method. Compose them with CombinedInputs.
+    """
+
+    def __init__(self, seeds: List[int], device: str = "cuda"):
+        self.rank_batches = None  # injected by generate_images
+        self.seeds  = seeds
+        self.device = device
+
     def __iter__(self):
-        """Yield one EasyDict per batch, driven by self.rank_batches."""
+        for batch_idx, indices in enumerate(self.rank_batches):
+            batch_seeds = [self.seeds[i] for i in indices]
+            yield EasyDict(
+                seeds       = batch_seeds,
+                indices     = list(indices),
+                batch_idx   = batch_idx,
+                num_batches = len(self.rank_batches),
+            )
 
-    @abstractmethod
     def __len__(self) -> int:
         return len(self.rank_batches)
 
@@ -147,30 +160,16 @@ class VAEEncoder(Encoder):
 #----------------------------------------------------------------------------
 # Composable input iterables
 
-class NoiseIterable(InputsIterable):
-    """Base iterable that generates seeded noise. Owns seeds and rank_batches."""
+class NoiseIterable:
+    """Extension that adds seeded random noise to each batch state."""
 
-    def __init__(self, seeds: List[int], shape: Tuple[int, ...], device: str = "cuda"):
-        self.rank_batches = None  # injected by generate_images
-        self.seeds  = seeds
+    def __init__(self, shape: Tuple[int, ...], device: str = "cuda"):
         self.shape  = shape
         self.device = device
 
-    def __iter__(self):
-        for batch_idx, indices in enumerate(self.rank_batches):
-            batch_seeds = [self.seeds[i] for i in indices]
-            rnd   = StackedRandomGenerator(self.device, batch_seeds)
-            noise = rnd.randn([len(batch_seeds), *self.shape], device=self.device)
-            yield EasyDict(
-                seeds       = batch_seeds,
-                indices     = list(indices),
-                batch_idx   = batch_idx,
-                num_batches = len(self.rank_batches),
-                noise       = noise,
-            )
-
-    def __len__(self) -> int:
-        return len(self.rank_batches)
+    def enrich(self, state: EasyDict) -> None:
+        rnd = StackedRandomGenerator(self.device, state.seeds)
+        state.noise = rnd.randn([len(state.seeds), *self.shape], device=self.device)
 
 
 class TextEmbeddingIterable:
@@ -184,8 +183,8 @@ class TextEmbeddingIterable:
         self.negative_prompt = negative_prompt
         self.device          = device
 
-    def enrich(self, state: EasyDict, indices: list) -> None:
-        batch_prompts = [self.prompts[i] for i in indices]
+    def enrich(self, state: EasyDict) -> None:
+        batch_prompts = [self.prompts[i] for i in state.indices]
         state.prompts         = batch_prompts
         state.text_embeddings = self._encode(batch_prompts)
 
@@ -218,8 +217,8 @@ class ExampleImagesIterable:
         self.device         = device
         self.encoder        = encoder
 
-    def enrich(self, state: EasyDict, indices: list) -> None:
-        batch_paths = [self.paths_example[i] for i in indices]
+    def enrich(self, state: EasyDict) -> None:
+        batch_paths = [self.paths_example[i] for i in state.indices]
         examples = load_images(batch_paths, device=self.device, rescale=True)
         if examples is not None:
             if self.encoder:
@@ -227,10 +226,34 @@ class ExampleImagesIterable:
             state.examples = examples
 
 
-class CombinedInputs(InputsIterable):
-    """Combines a base NoiseIterable with extensions that enrich each batch state."""
+class DDIMInversionIterable:
+    """Extension that produces noise via DDIM inversion of example images.
 
-    def __init__(self, base: NoiseIterable, *extensions):
+    Requires examples to already be in state (add ExampleImagesIterable before this).
+    """
+
+    def __init__(self, solver, scheduler, device: str = "cuda"):
+        self.solver    = solver
+        self.scheduler = scheduler
+        self.device    = device
+
+    def enrich(self, state: EasyDict) -> None:
+        state.noise = self._invert(state.examples)
+
+    def _invert(self, latents: torch.Tensor) -> torch.Tensor:
+        """DDIM inversion: run the diffusion process forward to recover noise."""
+        raise NotImplementedError("DDIM inversion not yet implemented")
+
+
+class CombinedInputs(InputsIterable):
+    """Combines a base InputsIterable with extensions that enrich each batch state.
+
+    Extensions are applied in order, so dependencies are resolved by ordering:
+      CombinedInputs(base, NoiseIterable(...), TextEmbeddingIterable(...), ...)
+      CombinedInputs(base, ExampleImagesIterable(...), DDIMInversionIterable(...), ...)
+    """
+
+    def __init__(self, base: InputsIterable, *extensions):
         self.base       = base
         self.extensions = extensions
 
@@ -249,7 +272,7 @@ class CombinedInputs(InputsIterable):
     def __iter__(self):
         for state in self.base:
             for ext in self.extensions:
-                ext.enrich(state, state.indices)
+                ext.enrich(state)
             yield state
 
     def __len__(self) -> int:
