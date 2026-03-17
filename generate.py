@@ -31,6 +31,47 @@ class StackedRandomGenerator:
         return torch.stack([torch.randint(*args, size=size[1:], generator=gen, **kwargs) for gen in self.generators])
 
 #----------------------------------------------------------------------------
+# DDIM inversion from clean latent to noise by reversing the DDIM step.
+
+@torch.no_grad()
+def ddim_invert(latents, unet, scheduler, text_embeddings=None, guidance_scale=0.0,
+                num_inference_steps=None):
+
+    sched = DDIMScheduler.from_config(scheduler.config)
+    sched.set_timesteps(num_inference_steps or scheduler.num_inference_steps)
+    alphas_cumprod = sched.alphas_cumprod
+    timesteps_rev = list(reversed(sched.timesteps))
+
+    # Precompute (t, alpha_cur, alpha_noisier) pairs
+    # alpha_cur: where we are (cleaner), alpha_noisier: where we're stepping to
+    alpha_pairs = []
+    for i, t in enumerate(timesteps_rev):
+        alpha_cur = alphas_cumprod[timesteps_rev[i - 1]] if i > 0 else sched.final_alpha_cumprod
+        alpha_noisier = alphas_cumprod[t]
+        alpha_pairs.append((t, alpha_cur, alpha_noisier))
+
+    for t, alpha_cur, alpha_noisier in tqdm(alpha_pairs, desc="DDIM Inversion"):
+
+        # Predict noise
+        if text_embeddings is not None and guidance_scale > 0:
+            latents_input = torch.cat([latents] * 2)
+            noise_pred = unet(latents_input, t, encoder_hidden_states=text_embeddings).sample
+            uncond, cond = noise_pred.chunk(2)
+            eps = uncond + guidance_scale * (cond - uncond)
+        else:
+            if text_embeddings is not None:
+                cond_emb = text_embeddings.chunk(2)[1]  # (B, 77, D)
+            else:
+                cond_emb = None
+            eps = unet(latents, t, encoder_hidden_states=cond_emb).sample
+
+        # DDIM inversion step: estimate x0 from current (cleaner) alpha, step to noisier alpha
+        pred_x0 = (latents - (1 - alpha_cur).sqrt() * eps) / alpha_cur.sqrt()
+        latents = alpha_noisier.sqrt() * pred_x0 + (1 - alpha_noisier).sqrt() * eps
+
+    return latents
+
+#----------------------------------------------------------------------------
 # Abstract base classes
 
 class Encoder(ABC):
@@ -229,20 +270,33 @@ class ExampleImagesIterable:
 class DDIMInversionIterable:
     """Extension that produces noise via DDIM inversion of example images.
 
-    Requires examples to already be in state (add ExampleImagesIterable before this).
+    Requires state.examples (encoded latents) and state.text_embeddings.
+    Order extensions: ExampleImagesIterable, TextEmbeddingIterable, DDIMInversionIterable.
     """
 
-    def __init__(self, solver, scheduler, device: str = "cuda"):
-        self.solver    = solver
-        self.scheduler = scheduler
-        self.device    = device
+    def __init__(self, unet, scheduler, guidance_scale: float = 0.0,
+                 num_inference_steps: Optional[int] = None):
+        self.unet                = unet
+        self.scheduler           = scheduler
+        self.guidance_scale      = guidance_scale
+        self.num_inference_steps = num_inference_steps
 
     def enrich(self, state: EasyDict) -> None:
-        state.noise = self._invert(state.examples)
+        state.noise = ddim_invert(
+            state.examples, self.unet, self.scheduler,
+            text_embeddings=state.text_embeddings,
+            guidance_scale=self.guidance_scale,
+            num_inference_steps=self.num_inference_steps,
+        )
 
-    def _invert(self, latents: torch.Tensor) -> torch.Tensor:
-        """DDIM inversion: run the diffusion process forward to recover noise."""
-        raise NotImplementedError("DDIM inversion not yet implemented")
+class PrecomputedNoiseIterable:
+    """Extension that injects a precomputed noise tensor into each batch state."""
+
+    def __init__(self, noise: torch.Tensor):
+        self.noise = noise
+
+    def enrich(self, state: EasyDict) -> None:
+        state.noise = self.noise[state.indices]
 
 
 class CombinedInputs(InputsIterable):
