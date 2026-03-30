@@ -35,7 +35,7 @@ class StackedRandomGenerator:
 
 @torch.no_grad()
 def ddim_invert(latents, unet, scheduler, text_embeddings=None, guidance_scale=0.0,
-                num_inference_steps=None):
+                num_inference_steps=None, batch_size=None):
 
     sched = DDIMScheduler.from_config(scheduler.config)
     sched.set_timesteps(num_inference_steps or scheduler.num_inference_steps)
@@ -49,6 +49,37 @@ def ddim_invert(latents, unet, scheduler, text_embeddings=None, guidance_scale=0
         alpha_cur = alphas_cumprod[timesteps_rev[i - 1]] if i > 0 else sched.final_alpha_cumprod
         alpha_noisier = alphas_cumprod[t]
         alpha_pairs.append((t, alpha_cur, alpha_noisier))
+
+    # Process in chunks if batch_size is specified
+    if batch_size is not None and latents.shape[0] > batch_size:
+        chunks = latents.split(batch_size)
+        if text_embeddings is not None:
+            # text_embeddings is (2B, 77, D) for CFG or (B, 77, D) without
+            if guidance_scale > 0:
+                uncond_emb, cond_emb = text_embeddings.chunk(2)
+                emb_chunks = [(torch.cat([u, c]) )
+                              for u, c in zip(uncond_emb.split(batch_size),
+                                              cond_emb.split(batch_size))]
+            else:
+                cond_emb = text_embeddings.chunk(2)[1]
+                emb_chunks = cond_emb.split(batch_size)
+        else:
+            emb_chunks = [None] * len(chunks)
+
+        results = []
+        for chunk, emb in zip(chunks, emb_chunks):
+            if emb is not None and guidance_scale > 0:
+                full_emb = emb  # already (2*bs, 77, D)
+            elif emb is not None:
+                full_emb = torch.cat([torch.zeros_like(emb), emb])  # rebuild for chunk
+            else:
+                full_emb = None
+            results.append(ddim_invert(chunk, unet, scheduler,
+                                       text_embeddings=full_emb,
+                                       guidance_scale=guidance_scale,
+                                       num_inference_steps=num_inference_steps,
+                                       batch_size=None))
+        return torch.cat(results)
 
     for t, alpha_cur, alpha_noisier in tqdm(alpha_pairs, desc="DDIM Inversion"):
 
