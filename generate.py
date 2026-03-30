@@ -185,7 +185,8 @@ class ImageIterable:
             xs, _ = self.solver(self.dynamics, state.noise)
             state.images = self.dynamics.encoder.decode(xs[-1])
             # Yield results.
-            torch.distributed.barrier() # keep the ranks in sync
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier() # keep the ranks in sync
             return state
 
 #----------------------------------------------------------------------------
