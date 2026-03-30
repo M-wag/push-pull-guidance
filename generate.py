@@ -471,3 +471,22 @@ def generate_images(
 
     return image_iter
 
+
+#----------------------------------------------------------------------------
+# Single-process image generation. No distributed logic.
+
+def generate_images_local(
+    solver:         Solver,
+    dynamics:       Dynamics,
+    inputs:         InputsIterable,
+
+    max_batch_size: int          = 32,
+    verbose:        bool          = False,
+) -> Iterable:
+
+    num_batches = max((len(inputs.seeds) - 1) // max_batch_size + 1, 1)
+    inputs.rank_batches = np.array_split(np.arange(len(inputs.seeds)), num_batches)
+
+    image_iter = ImageIterable(solver, dynamics, verbose)(inputs)
+    return image_iter
+
