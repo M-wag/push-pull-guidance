@@ -387,45 +387,161 @@ class CombinedInputs(InputsIterable):
 
 
 #----------------------------------------------------------------------------
+# Abstract base for EDM / SD dynamics with shared PPG and logging logic.
+
+class DiffusionDynamics(Dynamics):
+    """Shared infrastructure for all diffusion dynamics.
+
+    Subclasses must implement:
+      sigma(t)              -- convert solver-native time to noise level
+      score_net(latents, t) -- neural network score estimate
+
+    Solver-native time conventions:
+      EDMSolver  passes sigma (float scalar)  → sigma(t) = t
+      DDIMSolver passes t_idx (int)           → sigma(t_idx) = sqrt(1 - ᾱ_{t_idx})
+    """
+
+    def __init__(self, net, encoder: Encoder, ppg=None, use_net: bool = True,
+                 rescale_combined: bool = True, logger=None):
+        self.net              = net
+        self.encoder          = encoder
+        self.ppg              = ppg
+        self.use_net          = use_net
+        self.rescale_combined = rescale_combined
+        self.logger           = logger
+        self._text_embeddings = None
+
+    @abstractmethod
+    def sigma(self, t) -> torch.Tensor:
+        """Convert the solver's time representation to noise level sigma."""
+
+    @abstractmethod
+    def score_net(self, latents: torch.Tensor, t) -> torch.Tensor:
+        """Neural network score estimate. t is solver-native time."""
+
+    @abstractmethod
+    def update(self, state) -> None:
+        """Capture per-batch context from state before the solver runs."""
+
+    @staticmethod
+    def noise_pred_to_score(noise_pred: torch.Tensor, sigma: torch.Tensor) -> torch.Tensor:
+        """ε → score:  s = -ε / σ"""
+        return -noise_pred / sigma
+
+    @staticmethod
+    def score_to_noise_pred(score: torch.Tensor, sigma: torch.Tensor) -> torch.Tensor:
+        """score → ε:  ε = -σ · s"""
+        return -sigma * score
+
+    def rescale_ppg_combined_score(self, score_from_net: torch.Tensor,
+                                   score_ppg: torch.Tensor, sigma: torch.Tensor) -> torch.Tensor:
+        """Variance-corrected rescaling for product of Gaussians.
+
+        Combined precision is 1/σ² + 1/(σ²+ν²), giving effective variance
+        σ_eff² = σ²(σ²+ν²) / (2σ²+ν²). Rescale to restore original noise level.
+        When PPG uses a projection only the projected subspace has altered
+        precision; the orthogonal complement is untouched.
+        """
+        w = 1 / (1 + self.ppg.noise_gate_inner(sigma))
+        if self.ppg.is_projection and not self.ppg.is_ambient:
+            score_proj = self.ppg.project(score_from_net)
+            score_orth = score_from_net - score_proj
+            return score_orth + w * (score_proj + score_ppg)
+        else:
+            return w * (score_from_net + score_ppg)
+
+    def __call__(self, latents: torch.Tensor, t) -> torch.Tensor:
+        sigma = self.sigma(t)
+        score_from_net = self.score_net(latents, t)
+        score_combined = score_from_net
+
+        if self.ppg:
+            score_ppg = self.ppg(latents, sigma)
+            if self.rescale_combined and self.use_net: # rescale only if ppg and net are used
+                score_combined = self.rescale_ppg_combined_score(score_from_net, score_ppg, sigma)
+            else:
+                score_combined = score_from_net + score_ppg
+
+        if self.logger:
+            score_ppg_log = score_ppg if self.ppg else torch.zeros_like(score_from_net)
+            self.logger.record_scores(score_combined, score_from_net, score_ppg_log)
+
+        return score_combined
+
+
+#----------------------------------------------------------------------------
 # HuggingFace Diffusers implementations
 
-class StableDiffusionDynamics(Dynamics):
-    """ Dynamics for Stable Diffusion: UNet forward pass with classifier-free guidance. """
 
-    def __init__(self, unet, vae, scheduler, guidance_scale: float = 7.5, ppg=None, use_unet: bool = True):
-        self.unet               = unet
-        self.encoder            = VAEEncoder(vae)
-        self.scheduler          = scheduler
-        self.guidance_scale     = guidance_scale
-        self.ppg                = ppg
-        self.use_unet           = use_unet
-        self._text_embeddings   = None
+class StableDiffusionDynamics(DiffusionDynamics):
+    """VP / DDPM dynamics (HuggingFace UNet). Solver-native time is integer DDPM timestep.
+
+    For use with EDMSolver, wrap with VEDynamicsWrapper.
+    """
+
+    def __init__(self, net, encoder: Encoder, scheduler, guidance_scale: float = 7.5,
+                 ppg=None, use_net: bool = True, rescale_combined: bool = True, logger=None):
+        super().__init__(net, encoder, ppg, use_net, rescale_combined, logger)
+        self.scheduler      = scheduler
+        self.guidance_scale = guidance_scale
+        self._text_embeddings = None
+
+    def sigma(self, t_idx) -> torch.Tensor:
+        """VP noise level: σ_vp = √(1-ᾱ_t)."""
+        alpha = self.scheduler.alphas_cumprod[t_idx]
+        return (1 - alpha).sqrt()
+
+    def score_net(self, latents: torch.Tensor, t_idx) -> torch.Tensor:
+        if not self.use_net:
+            return torch.zeros_like(latents)
+        latents_input = torch.cat([latents] * 2)
+        noise_pred = self.net(
+            latents_input, t_idx,
+            encoder_hidden_states=self._text_embeddings,
+        ).sample
+        uncond, cond = noise_pred.chunk(2)
+        eps = uncond + self.guidance_scale * (cond - uncond)
+        return self.noise_pred_to_score(eps, self.sigma(t_idx))
 
     def update(self, state) -> None:
         self._text_embeddings = state.text_embeddings  # (2B, 77, D)
         if self.ppg:
             self.ppg.update(state)
 
-    def __call__(self, latents: torch.Tensor, t_idx: int) -> torch.Tensor:
-        """CFG noise prediction."""
-        if self.use_unet:
-            latents_input = torch.cat([latents] * 2)
-            noise_pred = self.unet(
-                latents_input, t_idx,
-                encoder_hidden_states=self._text_embeddings,
-            ).sample
-            uncond, cond = noise_pred.chunk(2)
-            noise_pred = uncond + self.guidance_scale * (cond - uncond)
-        else:
-            noise_pred = torch.zeros_like(latents)
+class EDMDynamics(DiffusionDynamics):
+    """VE / EDM dynamics. Solver-native time is sigma (noise level) directly.
 
+    The EDM denoiser D(x; σ) is called as net(x, sigma) and returns the
+    denoised image. Score: s = (D(x;σ) - x) / σ².
+    """
+
+    def __init__(self, net, encoder: Encoder, ppg=None, use_net: bool = True,
+                 rescale_combined: bool = True, logger=None):
+        super().__init__(net, encoder, ppg, use_net, rescale_combined, logger)
+        self._class_labels = None
+
+    @property
+    def sigma_min(self) -> Optional[float]:
+        return getattr(self.net, 'sigma_min', None)
+
+    @property
+    def sigma_max(self) -> Optional[float]:
+        return getattr(self.net, 'sigma_max', None)
+
+    def sigma(self, t) -> torch.Tensor:
+        return t  # EDMSolver passes sigma directly
+
+    def score_net(self, latents: torch.Tensor, sigma) -> torch.Tensor:
+        if not self.use_net:
+            return torch.zeros_like(latents)
+        denoised = self.net(latents, sigma, self._class_labels)
+        return (denoised - latents) / sigma ** 2
+
+    def update(self, state) -> None:
+        self._class_labels = getattr(state, 'labels', None)
         if self.ppg:
-            alpha = self.scheduler.alphas_cumprod[t_idx]
-            noise = (1 - alpha).sqrt()
-            score = self.ppg(latents, noise) # ∇log p(c | x)
-            noise_pred += -noise * score
+            self.ppg.update(state)
 
-        return noise_pred
 
 
 class DDIMSolver(Solver):
