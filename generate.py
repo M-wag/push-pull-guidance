@@ -674,13 +674,18 @@ class EDMSolver(Solver):
 
 
 class DDIMSolver(Solver):
-    """
-    Integrates StableDiffusionDynamics from t=T to t=0 using a DDIM scheduler.
+    """Integrates dynamics from t=T to t=0 using a DDIM scheduler.
+
+    Expects dynamics to return the score ∇_x log p(x_t).
+    Converts to noise prediction internally for scheduler.step().
     """
 
-    def __init__(self, scheduler: DDIMScheduler, num_inference_steps: int = 50, verbose: bool = False):
+    def __init__(self, scheduler: DDIMScheduler, num_inference_steps: int = 50,
+                 eta: float = 0.0, eta_seed: int = 0, verbose: bool = False):
         self.scheduler           = scheduler
         self.num_inference_steps = num_inference_steps
+        self.eta                 = eta
+        self.eta_seed            = eta_seed
         self.verbose             = verbose
         self.scheduler.set_timesteps(num_inference_steps)
 
@@ -690,11 +695,20 @@ class DDIMSolver(Solver):
         noise: torch.Tensor,
     ) -> Tuple[List[torch.Tensor], None]:
 
+        self.scheduler.set_timesteps(self.num_inference_steps)
+
+        step_kwargs = {}
+        if self.eta > 0:
+            step_kwargs['eta'] = self.eta
+            step_kwargs['generator'] = torch.Generator(device=noise.device).manual_seed(self.eta_seed)
+
         latents = noise
         xs = []
         for t_idx in tqdm(self.scheduler.timesteps, disable=not self.verbose):
-            noise_pred = dynamics(latents, t_idx)
-            latents = self.scheduler.step(noise_pred, t_idx, latents).prev_sample
+            score = dynamics(latents, t_idx)
+            sigma = dynamics.sigma(t_idx)
+            noise_pred = -sigma * score
+            latents = self.scheduler.step(noise_pred, t_idx, latents, **step_kwargs).prev_sample
             xs.append(latents)
         return xs, None
 
