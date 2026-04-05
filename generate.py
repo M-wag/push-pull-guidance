@@ -760,13 +760,14 @@ def generate_images_local(
     dynamics:       Dynamics,
     inputs:         InputsIterable,
 
-    max_batch_size: int          = 32,
-    verbose:        bool          = False,
+    max_batch_size:  int                   = 32,
+    verbose:         bool                  = False,
+    snapshot_steps:  Optional[List[int]]   = None,
 ) -> Iterable:
 
     num_batches = max((len(inputs.seeds) - 1) // max_batch_size + 1, 1)
     inputs.rank_batches = np.array_split(np.arange(len(inputs.seeds)), num_batches)
 
-    image_iter = ImageIterable(solver, dynamics, verbose)(inputs)
+    image_iter = ImageIterable(solver, dynamics, verbose, snapshot_steps=snapshot_steps)(inputs)
     return image_iter
 
