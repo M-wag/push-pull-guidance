@@ -7,7 +7,8 @@ from diffusers import StableDiffusionPipeline, DDIMScheduler
 from diagnostics import DiagnosticsReport
 from util import load_images
 from ppg.ppg import create_sgdm, create_ppg
-from generate import (StableDiffusionDynamics, DDIMSolver, generate_images, ddim_invert,
+from generate import (StableDiffusionDynamics, DDIMSolver, EDMSolver, NoiseScheduleMap,
+                       VEDynamicsWrapper, generate_images, ddim_invert,
                        InputsIterable, NoiseIterable, PrecomputedNoiseIterable,
                        TextEmbeddingIterable, ExampleImagesIterable, CombinedInputs)
 
@@ -54,13 +55,6 @@ if __name__ == "__main__":
         solver = DDIMSolver(scheduler=pipe.scheduler, num_inference_steps=50)
         dynamics = StableDiffusionDynamics(unet=pipe.unet, vae=pipe.vae, guidance_scale=7.5, scheduler=pipe.scheduler)
 
-        # Precompute DDIM-inverted noise
-        example_latents = dynamics.encoder.encode(
-            load_images(paths_example, device="cuda", rescale=True))
-        text_emb_ext = TextEmbeddingIterable(prompts, pipe.tokenizer, pipe.text_encoder, device="cuda")
-        text_embeddings = text_emb_ext._encode(prompts)
-        inverted_noise = ddim_invert(example_latents, pipe.unet, pipe.scheduler,
-                                     text_embeddings=text_embeddings)
 
         base = InputsIterable(seeds=range(0, len(prompts)), device="cuda")
 
@@ -70,14 +64,7 @@ if __name__ == "__main__":
                 NoiseIterable(shape=(4, 64, 64), device="cuda"),
                 TextEmbeddingIterable(prompts, pipe.tokenizer, pipe.text_encoder, device="cuda"),
                 ExampleImagesIterable(paths_example, dynamics.encoder, device="cuda"),
-            )
 
-        def make_inputs_ddim_inv():
-            return CombinedInputs(
-                base,
-                PrecomputedNoiseIterable(inverted_noise),
-                TextEmbeddingIterable(prompts, pipe.tokenizer, pipe.text_encoder, device="cuda"),
-                ExampleImagesIterable(paths_example, dynamics.encoder, device="cuda"),
             )
 
         def run_and_report(header, inputs_fn=make_inputs):
@@ -87,10 +74,28 @@ if __name__ == "__main__":
             report.add_image_row(state.images.detach().cpu().numpy(), captions=prompts)
             return state.images
 
+
+            # Precompute DDIM-inverted noise
+        example_latents = dynamics.encoder.encode(
+            load_images(paths_example, device="cuda", rescale=True))
+        text_emb_ext = TextEmbeddingIterable(prompts, pipe.tokenizer, pipe.text_encoder, device="cuda")
+        text_embeddings = text_emb_ext._encode(prompts)
+        inverted_noise = ddim_invert(example_latents, pipe.unet, pipe.scheduler,
+                                     text_embeddings=text_embeddings)
+
+        def make_inputs_ddim_inv():
+            return CombinedInputs(
+                base,
+                PrecomputedNoiseIterable(inverted_noise),
+                TextEmbeddingIterable(prompts, pipe.tokenizer, pipe.text_encoder, device="cuda"),
+                ExampleImagesIterable(paths_example, dynamics.encoder, device="cuda"),
+            )
+
         # Show DDIM-inverted noise (decoded back to pixel space)
         report.add_header("DDIM-Inverted Noise (decoded)")
         decoded_noise = dynamics.encoder.decode(inverted_noise)
         report.add_image_row(decoded_noise.detach().cpu().numpy(), captions=prompts)
+
 
         # No dynamics at all
         dynamics.use_unet = False
@@ -105,6 +110,13 @@ if __name__ == "__main__":
         dynamics.use_unet = True
         dynamics.ppg = None
         images_sd = run_and_report("SD with No PPG")
+
+        # no ppg (with noise)
+        dynamics.use_unet = True
+        dynamics.ppg = None
+        solver.eta = 1.0
+        images_sd = run_and_report("SD with No PPG eta=1.0")
+        solver.eta = 0.0
 
         # SD with DDIM-inverted noise + CFG (should approximately reconstruct)
         dynamics.use_unet = True

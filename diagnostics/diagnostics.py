@@ -38,6 +38,17 @@ def _to_base64(img: ImageLike, fmt: str = "png") -> str:
     if isinstance(img, (str, Path)):
         img = Image.open(img)
 
+    # Matplotlib Figure -> render to PNG bytes directly
+    try:
+        from matplotlib.figure import Figure
+        if isinstance(img, Figure):
+            buf = io.BytesIO()
+            img.savefig(buf, format=fmt, bbox_inches="tight", dpi=150)
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            return f"data:image/{fmt};base64,{b64}"
+    except ImportError:
+        pass
+
     if HAS_NUMPY and isinstance(img, np.ndarray):
         if img.dtype == np.float32 or img.dtype == np.float64:
             img = (img.clip(0, 1) * 255).astype(np.uint8)
@@ -111,6 +122,73 @@ class DiagnosticsReport:
                 html += f'<td><img src="{uri}"></td>'
             html += "</tr>"
         html += "</tbody></table>"
+        self._blocks.append(html)
+
+    _slider_count = 0  # class-level counter for unique IDs
+
+    def add_image_slider(self, images: list[list[ImageLike]],
+                         row_labels: list[str] | None = None,
+                         step_labels: list[str] | None = None):
+        """Add a slider that scrubs through columns of images.
+
+        images: list of rows, each row is a list of images (one per step).
+                All rows must have the same number of steps.
+        row_labels: label for each row (displayed to the left).
+        step_labels: label for each step (shown above the slider).
+        """
+        n_steps = len(images[0])
+        assert all(len(row) == n_steps for row in images), "All rows must have the same number of steps"
+        step_labels = step_labels or [str(i) for i in range(n_steps)]
+        row_labels = row_labels or [f"Row {i}" for i in range(len(images))]
+
+        uid = f"slider_{DiagnosticsReport._slider_count}"
+        DiagnosticsReport._slider_count += 1
+
+        # Encode all images
+        uris = [[_to_base64(img) for img in row] for row in images]
+
+        # Build HTML: one visible image per row, a slider, and JS to swap src
+        rows_html = ""
+        for r, (label, row_uris) in enumerate(zip(row_labels, uris)):
+            rows_html += (
+                f'<div style="display:flex;align-items:center;gap:1rem;margin-bottom:0.5rem;">'
+                f'<span class="row-label" style="min-width:80px;text-align:right;">{label}</span>'
+                f'<img id="{uid}_r{r}" src="{row_uris[0]}" '
+                f'style="max-width:256px;border-radius:4px;border:1px solid var(--border);">'
+                f'</div>'
+            )
+
+        # JSON array of URI arrays for JS
+        import json
+        uris_json = json.dumps(uris)
+
+        labels_json = json.dumps(step_labels)
+
+        html = f"""
+<div class="image-slider-widget" style="margin:1rem 0;">
+{rows_html}
+<div style="display:flex;align-items:center;gap:1rem;margin-top:0.8rem;">
+  <input type="range" id="{uid}_range" min="0" max="{n_steps - 1}" value="0"
+         style="flex:1;accent-color:var(--accent);">
+  <span id="{uid}_label" style="min-width:80px;font-size:0.9rem;">{step_labels[0]}</span>
+</div>
+<script>
+(function() {{
+  var uris = {uris_json};
+  var labels = {labels_json};
+  var slider = document.getElementById("{uid}_range");
+  var labelEl = document.getElementById("{uid}_label");
+  slider.addEventListener("input", function() {{
+    var idx = parseInt(this.value);
+    labelEl.textContent = labels[idx];
+    for (var r = 0; r < uris.length; r++) {{
+      document.getElementById("{uid}_r" + r).src = uris[r][idx];
+    }}
+  }});
+}})();
+</script>
+</div>
+"""
         self._blocks.append(html)
 
     def add_table(self, headers: list[str], rows: list[list[str]]):
