@@ -472,6 +472,50 @@ class DiffusionDynamics(Dynamics):
 #----------------------------------------------------------------------------
 # HuggingFace Diffusers implementations
 
+class NoiseScheduleMap:
+    """Precomputed bidirectional mapping between EDM sigma and DDPM t_idx / ᾱ.
+
+    VP forward process:  x_t = √ᾱ_t · x₀ + √(1-ᾱ_t) · ε
+    VE forward process:  x_σ = x₀ + σ · ε
+
+    The EDM-equivalent sigma for a DDPM timestep t is: σ_edm(t) = √((1-ᾱ_t) / ᾱ_t)
+    """
+
+    def __init__(self, alphas_cumprod: torch.Tensor):
+        self._alphas = alphas_cumprod.float()
+        self._edm_sigmas = ((1 - self._alphas) / self._alphas).sqrt()
+
+    @property
+    def sigma_max(self) -> float:
+        return self._edm_sigmas[-1].item()
+
+    @property
+    def sigma_min(self) -> float:
+        return self._edm_sigmas[0].item()
+
+    def to(self, device):
+        self._alphas = self._alphas.to(device)
+        self._edm_sigmas = self._edm_sigmas.to(device)
+        return self
+
+    def sigma_to_t(self, sigma: torch.Tensor) -> torch.Tensor:
+        """EDM sigma → continuous DDPM float timestep in [0, T-1]."""
+        edm_sigmas = self._edm_sigmas.to(sigma.device)
+        above = (edm_sigmas <= sigma)
+        i = (above.long().sum() - 1).clamp(0, len(edm_sigmas) - 2)
+        lo, hi = edm_sigmas[i], edm_sigmas[i + 1]
+        frac = ((sigma - lo) / (hi - lo)).clamp(0, 1)
+        return (i.float() + frac).clamp(0, len(edm_sigmas) - 1)
+
+    def sigma_to_alpha(self, sigma: torch.Tensor) -> torch.Tensor:
+        """EDM sigma → ᾱ (cumulative alpha).  ᾱ = 1 / (1 + σ²)."""
+        return 1.0 / (1.0 + sigma ** 2)
+
+    def t_to_sigma(self, t_idx) -> torch.Tensor:
+        """DDPM integer timestep → VP sigma √(1-ᾱ_t)."""
+        alpha = self._alphas.to(t_idx.device)[t_idx]
+        return (1 - alpha).sqrt()
+
 
 class StableDiffusionDynamics(DiffusionDynamics):
     """VP / DDPM dynamics (HuggingFace UNet). Solver-native time is integer DDPM timestep.
