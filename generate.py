@@ -167,10 +167,12 @@ class Solver(ABC):
 # Iterable which applies diffusion process to an InputsIterable.
 
 class ImageIterable:
-    def __init__(self, solver: Solver, dynamics: Dynamics, verbose=False):
+    def __init__(self, solver: Solver, dynamics: Dynamics, verbose=False,
+                 snapshot_steps: Optional[List[int]] = None):
         self.solver = solver
         self.dynamics = dynamics
         self.verbose = verbose
+        self.snapshot_steps = snapshot_steps
 
     def __call__(self, iter_state: InputsIterable) -> Iterable:
         self.solver.verbose = self.verbose
@@ -179,14 +181,16 @@ class ImageIterable:
 
     def _process_batch(self, state):
         if len(state.seeds) > 0:
-            # Update dynamics
             self.dynamics.update(state)
-            # Generate images
             xs, _ = self.solver(self.dynamics, state.noise)
             state.images = self.dynamics.encoder.decode(xs[-1])
-            # Yield results.
+            if self.snapshot_steps is not None:
+                state.snapshots = [
+                    self.dynamics.encoder.decode(xs[s])
+                    for s in self.snapshot_steps if s < len(xs)
+                ]
             if torch.distributed.is_initialized():
-                torch.distributed.barrier() # keep the ranks in sync
+                torch.distributed.barrier()
             return state
 
 #----------------------------------------------------------------------------
