@@ -586,6 +586,91 @@ class EDMDynamics(DiffusionDynamics):
         if self.ppg:
             self.ppg.update(state)
 
+#----------------------------------------------------------------------------
+# EDM Solver (Heun's method)
+#
+# Dynamics returns the score ∇_x log p(x; σ) where σ is the noise level.
+# PF ODE : d = (x - D(x;σ))/σ = -σ · score.
+
+class EDMSolver(Solver):
+
+    def __init__(
+        self,
+        num_steps:        int   = 50,
+        sigma_min:        float = 0.002,
+        sigma_max:        float = 80.0,
+        rho:              float = 7,
+        S_churn:          float = 0,
+        S_min:            float = 0,
+        S_max:            float = float('inf'),
+        S_noise:          float = 1,
+        apply_2nd_order:  bool  = True,
+        verbose:          bool  = False,
+    ):
+        self.num_steps       = num_steps
+        self.sigma_min       = sigma_min
+        self.sigma_max       = sigma_max
+        self.rho             = rho
+        self.S_churn         = S_churn
+        self.S_min           = S_min
+        self.S_max           = S_max
+        self.S_noise         = S_noise
+        self.apply_2nd_order = apply_2nd_order
+        self.verbose         = verbose
+
+    @torch.no_grad()
+    def __call__(
+        self,
+        dynamics: Dynamics,
+        noise: torch.Tensor,
+    ) -> Tuple[List[torch.Tensor], Any]:
+
+        num_steps = self.num_steps
+        sigma_min, sigma_max, rho = self.sigma_min, self.sigma_max, self.rho
+
+        # Clamp to the range the network actually supports
+        if getattr(dynamics, 'sigma_min', None) is not None:
+            sigma_min = max(sigma_min, dynamics.sigma_min)
+        if getattr(dynamics, 'sigma_max', None) is not None:
+            sigma_max = min(sigma_max, dynamics.sigma_max)
+
+        # EDM sigma schedule (float64 for numerical precision)
+        step_indices = torch.arange(num_steps, device=noise.device, dtype=torch.float64)
+        t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) *
+                   (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+        t_steps = torch.cat([t_steps, t_steps.new_zeros(1)])
+
+        # Initialize: x = σ_max · ε
+        x_next = noise.to(torch.float64) * t_steps[0]
+
+        xs = []
+        for i, (sigma_cur, sigma_next) in tqdm(
+            list(enumerate(zip(t_steps[:-1], t_steps[1:]))),
+            disable=not self.verbose,
+        ):
+            x_cur = x_next
+
+            # Stochastic churn: temporarily increase noise
+            gamma = min(self.S_churn / num_steps, np.sqrt(2) - 1) if (self.S_min <= sigma_cur <= self.S_max) else 0
+            sigma_hat = sigma_cur + gamma * sigma_cur
+            x_hat = x_cur + (sigma_hat ** 2 - sigma_cur ** 2).sqrt() * self.S_noise * torch.randn_like(x_cur)
+
+            # PF ODE d = -σ · score
+            score = dynamics(x_hat, sigma_hat)
+            d_cur = -sigma_hat * score
+
+            # Euler step
+            x_next = x_hat + d_cur * (sigma_next - sigma_hat)
+
+            # Heun's 2nd-order correction
+            if self.apply_2nd_order and i < num_steps - 1:
+                score_next = dynamics(x_next, sigma_next)
+                d_prime = -sigma_next * score_next
+                x_next = x_hat + (sigma_next - sigma_hat) * (0.5 * d_cur + 0.5 * d_prime)
+
+            xs.append(x_next)
+
+        return xs, None
 
 
 class DDIMSolver(Solver):
