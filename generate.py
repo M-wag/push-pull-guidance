@@ -325,6 +325,23 @@ class DDIMInversionIterable:
             num_inference_steps=self.num_inference_steps,
         )
 
+class LabelsIterable:
+    """Extension that adds one-hot class label tensors to each batch state.
+
+    Converts integer class indices to one-hot vectors of shape (B, num_classes),
+    matching the conditioning format expected by EDM class-conditional networks.
+    """
+
+    def __init__(self, labels: List[int], num_classes: int, device: str = "cuda"):
+        self.labels      = labels
+        self.num_classes = num_classes
+        self.device      = device
+
+    def enrich(self, state: EasyDict) -> None:
+        batch_labels = torch.tensor([self.labels[i] for i in state.indices], device=self.device)
+        state.labels = torch.nn.functional.one_hot(batch_labels, self.num_classes).float()
+
+
 class PrecomputedNoiseIterable:
     """Extension that injects a precomputed noise tensor into each batch state."""
 
