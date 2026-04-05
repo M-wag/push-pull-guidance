@@ -1,0 +1,29 @@
+title: "SD 1.5 — PPG Sweep"
+output_dir: sweeps/no_neg_guide
+
+examples:
+  dataset: data/wild-ti2i
+  indices: [5]
+
+fixed:
+  num_inference_steps: 50
+  guidance_scale: 3.75
+
+axes:
+  noise_source:
+    values: [random]
+
+  projection:
+    values: [orthonormal]
+
+  dim_out:
+    linspace: [1000, 12000, 6]
+
+  eta:
+    values: [0.0, 0.5, 1.0]
+
+  nu:
+    values: [1.0,  0.9816,  0.9166,  0.7597,  0.4979,  0.0413, 0.0]
+
+  gate_type:
+    values: [quadratic]
