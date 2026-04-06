@@ -278,13 +278,15 @@ class Gallery:
                 logs_data = json.load(f)
             plot_fn(logs_data, os.path.dirname(logs_path))
 
-    def build_html(self, output_path=None, example_paths=None, prompts=None, plot_fn=None):
+    def build_html(self, output_path=None, example_paths=None, prompts=None,
+                    plot_fn=None, baseline_paths=None):
         """
         Build HTML viewer from manifest.
 
         example_paths: list of paths to example images (shown alongside outputs).
         prompts: list of prompt strings (shown as captions).
         plot_fn: optional callable(logs_data, cell_dir) that generates and saves plot images.
+        baseline_paths: list of absolute paths to baseline (no PPG) images.
         """
         if output_path is None:
             output_path = os.path.join(self.output_dir, "viewer.html")
@@ -292,11 +294,18 @@ class Gallery:
         manifest = self.load_manifest(self.manifest_path)
         if plot_fn is not None:
             self._generate_plots(manifest, plot_fn)
+
+        # Convert baseline absolute paths to relative paths from output_dir
+        baseline_rel = None
+        if baseline_paths:
+            baseline_rel = [os.path.relpath(p, self.output_dir) for p in baseline_paths]
+
         html = build_viewer_html(
             manifest,
             base_dir=self.output_dir,
             example_paths=example_paths,
             prompts=prompts,
+            baseline_paths=baseline_rel,
             title=self.config.get("title", "Sweep Viewer"),
         )
         Path(output_path).write_text(html)

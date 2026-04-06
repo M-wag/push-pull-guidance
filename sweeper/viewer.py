@@ -12,7 +12,8 @@ import shutil
 from pathlib import Path
 
 
-def build_viewer_html(manifest, base_dir, example_paths=None, prompts=None, title="Sweep Viewer"):
+def build_viewer_html(manifest, base_dir, example_paths=None, prompts=None,
+                      baseline_paths=None, title="Sweep Viewer"):
     """
     Build an HTML viewer that references images by relative path.
 
@@ -53,6 +54,7 @@ def build_viewer_html(manifest, base_dir, example_paths=None, prompts=None, titl
         "axes":           axes,
         "entries":        data_entries,
         "examples":       example_rel_paths,
+        "baselines":      baseline_paths or [],
         "prompts":        prompts or [],
         "fixed":          manifest.get("fixed", {}),
         "snapshot_steps": manifest.get("snapshot_steps", []),
@@ -196,8 +198,10 @@ h2 {
     white-space: nowrap;
 }
 #grid-view td img {
-    max-width: 200px;
+    width: 12vw;
+    min-width: 80px;
     border-radius: 3px;
+    image-rendering: pixelated;
 }
 .row-label {
     font-weight: 600;
@@ -219,9 +223,11 @@ h2 {
     text-align: center;
 }
 .single-card img {
-    max-width: 400px;
+    width: 25vw;
+    min-width: 120px;
     border-radius: 4px;
     border: 1px solid var(--border);
+    image-rendering: pixelated;
 }
 .single-card .caption {
     color: var(--text-muted);
@@ -311,6 +317,7 @@ const axisNames = Object.keys(DATA.axes);
 const axisValues = DATA.axes;
 const entries = DATA.entries;
 const examples = DATA.examples;
+const baselines = DATA.baselines || [];
 const prompts = DATA.prompts;
 const snapshotSteps = DATA.snapshot_steps || [];   // e.g. [0, 10, 25, 49]
 const hasSnapshots = snapshotSteps.length > 0;
@@ -323,6 +330,7 @@ let currentStepIdx = snapshotSteps.length > 0 ? snapshotSteps.length - 1 : -1; /
 // Which panels are visible in single mode
 const panels = {
     example:     { label: "Example",     on: true },
+    baseline:    { label: "Baseline",    on: baselines.length > 0 },
     generated:   { label: "Generated",   on: true },
     diagnostics: { label: "Diagnostics", on: true },
     timeline:    { label: "Timeline",    on: true },
@@ -545,6 +553,14 @@ function renderSingle() {
         </div>`;
     }
 
+    // Baseline (no PPG)
+    if (panels.baseline.on && baselines[currentSample]) {
+        html += `<div class="single-card">
+            <div class="label">Baseline (no PPG)</div>
+            <img src="${baselines[currentSample]}">
+        </div>`;
+    }
+
     // Final generated image
     if (panels.generated.on) {
         html += `<div class="single-card"><div class="label">Generated</div>`;
@@ -574,7 +590,7 @@ function renderSingle() {
         const initIdx = 0;
         html += `<div class="single-card" style="min-width:300px;">
             <div class="label">Denoising Timeline</div>
-            <img id="snap-img" src="${snapSrc(initIdx)}" style="max-width:400px;border:1px solid var(--border);border-radius:4px;">
+            <img id="snap-img" src="${snapSrc(initIdx)}" style="width:25vw;min-width:120px;border:1px solid var(--border);border-radius:4px;image-rendering:pixelated;">
             <div style="margin-top:0.6rem;">
                 <input type="range" min="0" max="${snapshotSteps.length - 1}" value="${initIdx}"
                     style="width:100%;accent-color:var(--accent);"
