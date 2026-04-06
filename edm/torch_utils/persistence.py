@@ -19,7 +19,7 @@ import inspect
 import copy
 import uuid
 import types
-import dnnlib
+from .. import dnnlib
 
 #----------------------------------------------------------------------------
 
@@ -186,8 +186,8 @@ def _reconstruct_persistent_obj(meta):
     r"""Hook that is called internally by the `pickle` module to unpickle
     a persistent object.
     """
-    meta = dnnlib.EasyDict(meta)
-    meta.state = dnnlib.EasyDict(meta.state)
+    meta = dnnlib.util.EasyDict(meta)
+    meta.state = dnnlib.util.EasyDict(meta.state)
     for hook in _import_hooks:
         meta = hook(meta)
         assert meta is not None
