@@ -189,8 +189,6 @@ class ImageIterable:
                     self.dynamics.encoder.decode(xs[s])
                     for s in self.snapshot_steps if s < len(xs)
                 ]
-            if torch.distributed.is_initialized():
-                torch.distributed.barrier()
             return state
 
 #----------------------------------------------------------------------------
@@ -442,9 +440,9 @@ class DiffusionDynamics(Dynamics):
         When PPG uses a projection only the projected subspace has altered
         precision; the orthogonal complement is untouched.
         """
-        w = 1 / (1 + self.ppg.noise_gate_inner(sigma))
+        w = 1 / (1 + self.ppg.noise_gate_inner(sigma.float()))
         if self.ppg.is_projection and not self.ppg.is_ambient:
-            score_proj = self.ppg.project(score_from_net)
+            score_proj = self.ppg.project(score_from_net.float()).to(score_from_net.dtype)
             score_orth = score_from_net - score_proj
             return score_orth + w * (score_proj + score_ppg)
         else:
@@ -456,7 +454,7 @@ class DiffusionDynamics(Dynamics):
         score_combined = score_from_net
 
         if self.ppg:
-            score_ppg = self.ppg(latents, sigma)
+            score_ppg = self.ppg(latents.float(), sigma.float()).to(latents.dtype)
             if self.rescale_combined and self.use_net: # rescale only if ppg and net are used
                 score_combined = self.rescale_ppg_combined_score(score_from_net, score_ppg, sigma)
             else:
