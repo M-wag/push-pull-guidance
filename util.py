@@ -188,6 +188,15 @@ class Logger:
 
 #----------------------------------------------------------------------------
 
+def edm_sigmas(num_steps=32, sigma_min=0.002, sigma_max=80.0, rho=7):
+    """Return the EDM sigma schedule as a (num_steps+1,) float64 tensor (last entry is 0)."""
+    step_indices = torch.arange(num_steps, dtype=torch.float64)
+    t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) *
+               (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+    return torch.cat([t_steps, t_steps.new_zeros(1)])
+
+#----------------------------------------------------------------------------
+
 def load_images(batch_template_info, device=None, dtype=None, for_torch=True, rescale=False):
     """
     batch_template_info: list of either paths, or list of filenames/indices to load from `template_dir`
