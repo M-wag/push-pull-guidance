@@ -119,7 +119,7 @@ def make_timeline_report(save_path="timeline.html"):
         indices = torch.randperm(16384, generator=g)[:0].tolist()
         ppg_module = create_ppg_linear(
             vf_inner=create_sgdm(type_gate="quadratic", nu=nu, mean_scale=mean_scale),
-            scale=1.0, indices=None)
+            scale=1.0)
 
         dynamics.rescale_combined = rescale_combined
 
