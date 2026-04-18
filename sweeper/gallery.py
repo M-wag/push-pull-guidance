@@ -2,11 +2,13 @@
 Sweeper — generate images across parameter grids and build HTML viewers.
 
 Usage:
-    gallery = Gallery("sweeper/configs/my_sweep.yaml")
+    config  = load_sweep_config("sweeper/configs/my_sweep.yaml")
+    gallery = Gallery(config)
     gallery.generate(build_fn, run_fn)
     gallery.build_html()
 """
 
+import copy
 import itertools
 import json
 import os
@@ -15,77 +17,104 @@ from pathlib import Path
 import numpy as np
 import yaml
 from PIL import Image
+from pydantic import BaseModel
 
-from typing import Optional
+from .schema import SweepConfig, ListAxis, LinspaceAxis
 
-from .viewer import build_viewer_html
+
+def _resolve_axis(axis) -> list:
+    if isinstance(axis, ListAxis):
+        return list(axis.values)
+    start, stop, n = axis.linspace
+    vals = np.linspace(start, stop, int(n))
+    if axis.round_int:
+        vals = np.round(vals).astype(int)
+    return vals.tolist()
+
+
+def _extract_axes(node, prefix="") -> dict:
+    """Recursively find all Axis fields in a Pydantic model tree."""
+    axes = {}
+    if isinstance(node, BaseModel):
+        for name in node.model_fields:
+            value = getattr(node, name)
+            path  = f"{prefix}.{name}" if prefix else name
+            if isinstance(value, (ListAxis, LinspaceAxis)):
+                axes[path] = _resolve_axis(value)
+            else:
+                axes.update(_extract_axes(value, path))
+    elif isinstance(node, list):
+        for i, item in enumerate(node):
+            axes.update(_extract_axes(item, f"{prefix}[{i}]"))
+    return axes
+
+
+def _set_path(obj, path: str, value):
+    """Set a dotted/indexed path on a nested structure of dicts and lists."""
+    parts = _split_path(path)
+    for part in parts[:-1]:
+        if isinstance(part, int):
+            obj = obj[part]
+        else:
+            obj = obj[part]
+    last = parts[-1]
+    if isinstance(last, int):
+        obj[last] = value
+    else:
+        obj[last] = value
+
+
+def _split_path(path: str) -> list:
+    """Split 'ppg.gate.n' or 'maps[1].dim_out' into a list of str/int keys."""
+    parts = []
+    for segment in path.replace("]", "").split("."):
+        if "[" in segment:
+            name, idx = segment.split("[")
+            if name:
+                parts.append(name)
+            parts.append(int(idx))
+        else:
+            parts.append(segment)
+    return parts
+
+
+def _unflatten(flat_cell: dict, base: SweepConfig) -> SweepConfig:
+    """Return a new SweepConfig with all axis paths replaced by their cell values."""
+    raw = base.model_dump()
+    for path, value in flat_cell.items():
+        # Axis values that are Pydantic models (e.g. MapConfig) need model_dump too
+        if isinstance(value, BaseModel):
+            value = value.model_dump()
+        _set_path(raw, path, value)
+    return SweepConfig.model_validate(raw)
 
 
 class Gallery:
     """Manages a sweep directory: generation + HTML building."""
 
-    def __init__(self, config_path: str):
-        with open(config_path) as f:
-            self.config = yaml.safe_load(f)
-        self.output_dir = self.config["output_dir"]
-        self.images_dir = os.path.join(self.output_dir, "images")
+    def __init__(self, config: SweepConfig):
+        self.config      = config
+        self.output_dir  = config.output_dir
+        self.images_dir  = os.path.join(self.output_dir, "images")
         self.manifest_path = os.path.join(self.output_dir, "manifest.json")
-        self._axes = self._parse_axes()
-
-    def _parse_axes(self):
-        """Parse axis definitions into {name: [values]} dict."""
-        axes = {}
-        for name, spec in self.config.get("axes", {}).items():
-            if "values" in spec:
-                axes[name] = list(spec["values"])
-            elif "linspace" in spec:
-                start, stop, num = spec["linspace"]
-                vals = np.linspace(start, stop, int(num))
-                if spec.get("round_int"):
-                    vals = np.round(vals).astype(int)
-                axes[name] = vals.tolist()
-            else:
-                raise ValueError(f"Axis '{name}' must have 'values' or 'linspace'")
-        return axes
-
-    def _validate_manifest(self, manifest):
-        """Check that manifest axes match current config. Discard stale entries."""
-        manifest_axes = manifest.get("axes", {})
-        if manifest_axes != self._axes:
-            # Build set of valid param combos from current config
-            valid_keys = {tuple(sorted(p.items())) for _, p in self._grid()}
-            old_count = len(manifest["entries"])
-            manifest["entries"] = [
-                e for e in manifest["entries"]
-                if tuple(sorted(e["params"].items())) in valid_keys
-            ]
-            kept = len(manifest["entries"])
-            print(f"Config changed: kept {kept}/{old_count} entries, discarded {old_count - kept} stale.")
-            manifest["axes"] = {name: vals for name, vals in self._axes.items()}
-        return manifest
+        self._axes       = _extract_axes(config)
 
     def _grid(self):
-        """Cartesian product of all axes. Yields (index, params_dict)."""
+        """Cartesian product of all axes. Yields (index, flat_cell dict)."""
         names = list(self._axes.keys())
         value_lists = [self._axes[n] for n in names]
         for idx, combo in enumerate(itertools.product(*value_lists)):
             yield idx, dict(zip(names, combo))
 
-    def _cell_dir(self, idx, params):
-        """Directory name for a single grid cell."""
-        parts = [f"{idx:04d}"]
-        for v in params.values():
-            parts.append(str(v))
+    def _cell_dir(self, idx, flat_cell):
+        parts = [f"{idx:04d}"] + [str(v) for v in flat_cell.values()]
         return os.path.join(self.images_dir, "_".join(parts))
 
     def _cell_complete(self, cell_dir, n_images):
-        """Check if a cell directory has all expected images."""
         if not os.path.isdir(cell_dir):
             return False
-        for i in range(n_images):
-            if not os.path.exists(os.path.join(cell_dir, f"img_{i}.png")):
-                return False
-        return True
+        return all(os.path.exists(os.path.join(cell_dir, f"img_{i}.png"))
+                   for i in range(n_images))
 
     @staticmethod
     def _arr_to_pil(img):
@@ -98,13 +127,11 @@ class Gallery:
         return Image.fromarray(img)
 
     def _save_images(self, images, cell_dir):
-        """Save final images as img_{i}.png."""
         os.makedirs(cell_dir, exist_ok=True)
         for i, img in enumerate(images):
             self._arr_to_pil(img).save(os.path.join(cell_dir, f"img_{i}.png"))
 
     def _save_snapshots(self, snapshots, cell_dir):
-        """Save snapshots[i][s] as snapshots/img_{i}_step_{s}.png."""
         snap_dir = os.path.join(cell_dir, "snapshots")
         os.makedirs(snap_dir, exist_ok=True)
         for i, steps in enumerate(snapshots):
@@ -112,7 +139,6 @@ class Gallery:
                 self._arr_to_pil(img).save(os.path.join(snap_dir, f"img_{i}_step_{s}.png"))
 
     def _save_logs(self, result, cell_dir):
-        """Save RunResult logs as logs.json."""
         os.makedirs(cell_dir, exist_ok=True)
         data = {}
         if result.logs_batch is not None:
@@ -124,54 +150,81 @@ class Gallery:
                 json.dump(data, f)
 
     def _manifest_path_for_rank(self, rank):
-        """Per-rank manifest path for multi-GPU runs."""
         return os.path.join(self.output_dir, f"manifest_rank{rank}.json")
 
-    def generate(self, build_fn, run_fn, n_images=None, rank=0, world_size=1):
+    def _load_or_create_manifest(self, path=None):
+        path = path or self.manifest_path
+        if os.path.exists(path):
+            with open(path) as f:
+                return json.load(f)
+        snap_cfg = self.config.snapshots
+        snapshot_steps = (snap_cfg.get("steps") or []
+                          if snap_cfg and snap_cfg.get("enabled", True) else [])
+        return {
+            "axes":           self._axes,
+            "snapshot_steps": snapshot_steps,
+            "entries":        [],
+        }
+
+    def _save_manifest(self, manifest, path=None):
+        path = path or self.manifest_path
+        os.makedirs(self.output_dir, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(manifest, f, indent=2)
+
+    def _validate_manifest(self, manifest):
+        """Discard stale entries when axes have changed."""
+        if manifest.get("axes") != self._axes:
+            valid_keys = {tuple(sorted(fc.items())) for _, fc in self._grid()}
+            old_count = len(manifest["entries"])
+            manifest["entries"] = [
+                e for e in manifest["entries"]
+                if tuple(sorted(e["flat_cell"].items())) in valid_keys
+            ]
+            kept = len(manifest["entries"])
+            print(f"Config changed: kept {kept}/{old_count} entries, discarded {old_count - kept} stale.")
+            manifest["axes"] = self._axes
+        return manifest
+
+    def generate(self, build_fn, run_fn, n_images=None, rank=0, world_size=1, raise_errors=False):
         """
         Run the full sweep.
 
-        build_fn(params: dict) — configure model for these params.
-        run_fn() -> list[np.ndarray] — run inference, return list of images.
-        n_images: expected number of images per cell (for crash recovery check).
-                  If None, determined from first run.
-        rank: current process rank (0 for single-GPU).
-        world_size: total number of processes (1 for single-GPU).
+        build_fn(cell: SweepConfig) — configure model for this cell.
+        run_fn() -> (images, snapshots, result) or just images.
         """
         os.makedirs(self.images_dir, exist_ok=True)
-
-        grid = list(self._grid())
+        grid  = list(self._grid())
         total = len(grid)
 
-        # Each rank handles a slice of the grid
         my_cells = grid[rank::world_size]
 
-        # Load existing manifest for crash recovery (per-rank if multi-GPU)
-        if world_size > 1:
-            manifest_path = self._manifest_path_for_rank(rank)
-        else:
-            manifest_path = self.manifest_path
+        manifest_path = (self._manifest_path_for_rank(rank)
+                         if world_size > 1 else self.manifest_path)
         manifest = self._load_or_create_manifest(manifest_path)
-
-        # Validate manifest axes match current config — discard stale entries
         manifest = self._validate_manifest(manifest)
 
-        existing = {tuple(sorted(e["params"].items())) for e in manifest["entries"]}
+        existing = {tuple(sorted(e["flat_cell"].items())) for e in manifest["entries"]}
 
-        for idx, params in my_cells:
-            cell_dir = self._cell_dir(idx, params)
-            params_key = tuple(sorted(params.items()))
+        for idx, flat_cell in my_cells:
+            cell_dir  = self._cell_dir(idx, flat_cell)
+            cell_key  = tuple(sorted(flat_cell.items()))
 
-            # Skip if already completed
-            if params_key in existing and (n_images is None or self._cell_complete(cell_dir, n_images)):
-                print(f"[rank {rank}] [{idx+1}/{total}] skip  {params}")
+            if cell_key in existing and (n_images is None or self._cell_complete(cell_dir, n_images)):
+                print(f"[rank {rank}] [{idx+1}/{total}] skip  {flat_cell}")
                 continue
 
-            print(f"[rank {rank}] [{idx+1}/{total}] run   {params}")
-            build_fn(params)
-            output = run_fn()
+            print(f"[rank {rank}] [{idx+1}/{total}] run   {flat_cell}")
+            try:
+                cell = _unflatten(flat_cell, self.config)
+                build_fn(cell)
+                output = run_fn()
+            except Exception as e:
+                if raise_errors:
+                    raise
+                print(f"[rank {rank}] [{idx+1}/{total}] FAILED: {e}")
+                continue
 
-            # run_fn may return (images, snapshots, RunResult) or just images
             if isinstance(output, tuple):
                 images, snapshots, result = output
             else:
@@ -186,23 +239,20 @@ class Gallery:
             if result is not None:
                 self._save_logs(result, cell_dir)
 
-            # Record in manifest
             rel_paths = [os.path.relpath(os.path.join(cell_dir, f"img_{i}.png"), self.output_dir)
                          for i in range(len(images))]
             entry = {
-                "params":    params,
+                "flat_cell": flat_cell,
                 "images":    rel_paths,
                 "snapshots": os.path.relpath(os.path.join(cell_dir, "snapshots"), self.output_dir) if snapshots is not None else None,
                 "logs":      os.path.relpath(os.path.join(cell_dir, "logs.json"), self.output_dir) if result is not None else None,
             }
 
-            if params_key in existing:
+            if cell_key in existing:
                 manifest["entries"] = [e for e in manifest["entries"]
-                                       if tuple(sorted(e["params"].items())) != params_key]
+                                        if tuple(sorted(e["flat_cell"].items())) != cell_key]
             manifest["entries"].append(entry)
-            existing.add(params_key)
-
-            # Write manifest after each cell for crash recovery
+            existing.add(cell_key)
             self._save_manifest(manifest, manifest_path)
 
         print(f"[rank {rank}] Done. {len(my_cells)}/{total} cells.")
@@ -210,7 +260,7 @@ class Gallery:
     def merge_manifests(self, world_size):
         """Merge per-rank manifests into the final manifest. Call from rank 0 only."""
         merged = self._load_or_create_manifest()
-        seen = set()
+        seen   = set()
 
         for r in range(world_size):
             rank_path = self._manifest_path_for_rank(r)
@@ -219,54 +269,23 @@ class Gallery:
             with open(rank_path) as f:
                 rank_manifest = json.load(f)
             for entry in rank_manifest["entries"]:
-                key = tuple(sorted(entry["params"].items()))
+                key = tuple(sorted(entry["flat_cell"].items()))
                 if key not in seen:
                     merged["entries"].append(entry)
                     seen.add(key)
 
-        # Sort entries by grid index for consistent ordering
-        grid_order = {tuple(sorted(p.items())): idx for idx, p in self._grid()}
-        merged["entries"].sort(key=lambda e: grid_order.get(tuple(sorted(e["params"].items())), 0))
+        grid_order = {tuple(sorted(fc.items())): idx for idx, fc in self._grid()}
+        merged["entries"].sort(key=lambda e: grid_order.get(
+            tuple(sorted(e["flat_cell"].items())), 0))
 
         self._save_manifest(merged)
-
-        # Clean up per-rank manifests
         for r in range(world_size):
             rank_path = self._manifest_path_for_rank(r)
             if os.path.exists(rank_path):
                 os.remove(rank_path)
-
         print(f"Merged {len(merged['entries'])} entries from {world_size} ranks.")
 
-    def _load_or_create_manifest(self, path=None):
-        """Load existing manifest or create a new one."""
-        path = path or self.manifest_path
-        if os.path.exists(path):
-            with open(path) as f:
-                return json.load(f)
-
-        snap_cfg = self.config.get("snapshots", {})
-        snapshot_steps = (snap_cfg.get("steps") or []
-                          if snap_cfg and snap_cfg.get("enabled", True) else [])
-
-        examples_cfg = self.config.get("examples", {})
-        return {
-            "examples":       examples_cfg,
-            "axes":           {name: vals for name, vals in self._axes.items()},
-            "fixed":          self.config.get("fixed", {}),
-            "snapshot_steps": snapshot_steps,
-            "entries":        [],
-        }
-
-    def _save_manifest(self, manifest, path=None):
-        """Write manifest to disk."""
-        path = path or self.manifest_path
-        os.makedirs(self.output_dir, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(manifest, f, indent=2)
-
     def _generate_plots(self, manifest, plot_fn):
-        """Call plot_fn(logs_data, cell_dir) for each entry that has a logs.json."""
         for entry in manifest["entries"]:
             logs_rel = entry.get("logs")
             if not logs_rel:
@@ -279,15 +298,7 @@ class Gallery:
             plot_fn(logs_data, os.path.dirname(logs_path))
 
     def build_html(self, output_path=None, example_paths=None, prompts=None,
-                    plot_fn=None, baseline_paths=None):
-        """
-        Build HTML viewer from manifest.
-
-        example_paths: list of paths to example images (shown alongside outputs).
-        prompts: list of prompt strings (shown as captions).
-        plot_fn: optional callable(logs_data, cell_dir) that generates and saves plot images.
-        baseline_paths: list of absolute paths to baseline (no PPG) images.
-        """
+                   plot_fn=None, baseline_paths=None):
         if output_path is None:
             output_path = os.path.join(self.output_dir, "viewer.html")
 
@@ -295,24 +306,23 @@ class Gallery:
         if plot_fn is not None:
             self._generate_plots(manifest, plot_fn)
 
-        # Convert baseline absolute paths to relative paths from output_dir
         baseline_rel = None
         if baseline_paths:
             baseline_rel = [os.path.relpath(p, self.output_dir) for p in baseline_paths]
 
+        from .viewer import build_viewer_html
         html = build_viewer_html(
             manifest,
             base_dir=self.output_dir,
             example_paths=example_paths,
             prompts=prompts,
             baseline_paths=baseline_rel,
-            title=self.config.get("title", "Sweep Viewer"),
+            title=self.config.title,
         )
         Path(output_path).write_text(html)
         print(f"Viewer saved to {output_path}")
 
     @staticmethod
     def load_manifest(manifest_path):
-        """Load an existing manifest."""
         with open(manifest_path) as f:
             return json.load(f)

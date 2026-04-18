@@ -31,7 +31,7 @@ def build_viewer_html(manifest, base_dir, example_paths=None, prompts=None,
         logs_rel = entry.get("logs")
         logs_plot = logs_rel.replace("logs.json", "logs_plot.png") if logs_rel else None
         data_entries.append({
-            "params":        entry["params"],
+            "params":        entry.get("flat_cell", entry.get("params", {})),
             "images":        entry["images"],
             "snapshots_dir": entry.get("snapshots"),
             "logs_plot":     logs_plot,
@@ -506,6 +506,14 @@ function render() {
 
 function renderGrid() {
     const container = document.getElementById("grid-view");
+
+    if (axisNames.length === 0) {
+        const entry = entries[0];
+        const src = imageForStep(entry, currentSample, currentStepIdx);
+        container.innerHTML = src ? `<img src="${src}" style="width:25vw;min-width:120px;border-radius:4px;image-rendering:pixelated;">` : "";
+        return;
+    }
+
     const rowVals = axisValues[gridRowAxis];
     const colVals = axisValues[gridColAxis];
 
