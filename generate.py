@@ -168,11 +168,13 @@ class Solver(ABC):
 
 class ImageIterable:
     def __init__(self, solver: Solver, dynamics: Dynamics, verbose=False,
-                 snapshot_steps: Optional[List[int]] = None):
+                 snapshot_steps: Optional[List[int]] = None,
+                 snapshot_as_x0: bool = True):
         self.solver = solver
         self.dynamics = dynamics
         self.verbose = verbose
         self.snapshot_steps = snapshot_steps
+        self.snapshot_as_x0 = snapshot_as_x0
 
     def __call__(self, iter_state: InputsIterable) -> Iterable:
         self.solver.verbose = self.verbose
@@ -182,12 +184,13 @@ class ImageIterable:
     def _process_batch(self, state):
         if len(state.seeds) > 0:
             self.dynamics.update(state)
-            xs, _ = self.solver(self.dynamics, state.noise)
+            xs, x0s = self.solver(self.dynamics, state.noise)
             state.images = self.dynamics.encoder.decode(xs[-1])
             if self.snapshot_steps is not None:
+                snap_src = (x0s if (self.snapshot_as_x0 and x0s) else xs)
                 state.snapshots = [
-                    self.dynamics.encoder.decode(xs[s])
-                    for s in self.snapshot_steps if s < len(xs)
+                    self.dynamics.encoder.decode(snap_src[s])
+                    for s in self.snapshot_steps if s < len(snap_src)
                 ]
             return state
 
@@ -222,7 +225,8 @@ class VAEEncoder(Encoder):
 
     @torch.no_grad()
     def encode(self, images: torch.Tensor) -> torch.Tensor:
-        """images in [-1, 1] -> scaled latents"""
+        """images in [0, 255] -> scaled latents"""
+        images = images.to(torch.float32) / 127.5 - 1
         return self.vae.encode(images).latent_dist.mean * self.scale
 
     @torch.no_grad()
@@ -287,18 +291,26 @@ class TextEmbeddingIterable:
 class ExampleImagesIterable:
     """Extension that adds example images to each batch state."""
 
-    def __init__(self, paths_example: List[str], encoder: Optional[Encoder] = None, device: str = "cuda"):
+    def __init__(self, paths_example: List[str], encoder: Optional[Encoder] = None,
+                 device: str = "cuda", precomputed: Optional[torch.Tensor] = None):
         self.paths_example  = paths_example
         self.device         = device
         self.encoder        = encoder
+        self.precomputed    = precomputed  # (N, ...) tensor; skips load+encode if set
 
     def enrich(self, state: EasyDict) -> None:
+        if self.precomputed is not None:
+            state.examples = self.precomputed[list(state.indices)]
+            return
         batch_paths = [self.paths_example[i] for i in state.indices]
-        examples = load_images(batch_paths, device=self.device, rescale=True)
-        if examples is not None:
-            if self.encoder:
-                examples = self.encoder.encode(examples)
-            state.examples = examples
+        if self.encoder is not None:
+            examples = load_images(batch_paths, device=self.device, rescale=False)
+            if examples is not None:
+                state.examples = self.encoder.encode(examples)
+        else:
+            examples = load_images(batch_paths, device=self.device, rescale=True)
+            if examples is not None:
+                state.examples = examples
 
 
 class DDIMInversionIterable:
@@ -399,19 +411,23 @@ class DiffusionDynamics(Dynamics):
       DDIMSolver passes t_idx (int)           → sigma(t_idx) = sqrt(1 - ᾱ_{t_idx})
     """
 
-    def __init__(self, net, encoder: Encoder, ppg=None, use_net: bool = True,
-                 rescale_combined: bool = True, logger=None):
-        self.net              = net
-        self.encoder          = encoder
-        self.ppg              = ppg
-        self.use_net          = use_net
-        self.rescale_combined = rescale_combined
-        self.logger           = logger
-        self._text_embeddings = None
+    def __init__(self, net, encoder: Encoder, ppg=None, use_net=True,
+                 normalize_variance: str = "decomposed", logger=None):
+        self.net                = net
+        self.encoder            = encoder
+        self.ppg                = ppg
+        self.use_net            = use_net       # bool or callable(sigma) -> bool
+        self.normalize_variance = normalize_variance  # None, "split", "global", or "decomposed"
+        self.logger             = logger
+        self._text_embeddings   = None
 
     @abstractmethod
     def sigma(self, t) -> torch.Tensor:
         """Convert the solver's time representation to noise level sigma."""
+
+    @abstractmethod
+    def signal_scale(self, t) -> torch.Tensor:
+        """Signal scaling factor s(t) where x(t) = s(t)·x₀ + σ(t)·ε."""
 
     @abstractmethod
     def score_net(self, latents: torch.Tensor, t) -> torch.Tensor:
@@ -431,34 +447,83 @@ class DiffusionDynamics(Dynamics):
         """score → ε:  ε = -σ · s"""
         return -sigma * score
 
-    def rescale_ppg_combined_score(self, score_from_net: torch.Tensor,
-                                   score_ppg: torch.Tensor, sigma: torch.Tensor) -> torch.Tensor:
+    def score_to_x0(self, score: torch.Tensor, x: torch.Tensor, t) -> torch.Tensor:
+        """score → x₀:  x₀ = (x + σ²·score) / s(t)"""
+        sigma = self.sigma(t)
+        return (x + sigma ** 2 * score) / self.signal_scale(t)
+
+    def normalize_variance_score(self, score_from_net: torch.Tensor,
+                                  score_ppg: torch.Tensor, sigma: torch.Tensor) -> torch.Tensor:
         """Variance-corrected rescaling for product of Gaussians.
 
         Combined precision is 1/σ² + 1/(σ²+ν²), giving effective variance
-        σ_eff² = σ²(σ²+ν²) / (2σ²+ν²). Rescale to restore original noise level.
-        When PPG uses a projection only the projected subspace has altered
-        precision; the orthogonal complement is untouched.
+        σ_c² = σ²(σ²+ν²) / (2σ²+ν²). Rescale to restore original noise level.
+
+        "split":  rescale only the guided subspace; leave P⊥ untouched.
+        "global": single scalar rescaling via the determinant of the
+                  anisotropic covariance: w_τ(α) = (σ_c²/σ_t²)^α
+                  where α = r/d is the fraction of guided dimensions.
         """
-        w = 1 / (1 + self.ppg.noise_gate_inner(sigma.float()))
+        # w = σ_c² / σ_t² (per-dimension weight for the guided subspace)
+        score_ppg = score_ppg.to(score_from_net.dtype)
+        w = (1 / (1 + self.ppg.noise_gate_inner(sigma.float()))).to(score_from_net.dtype)
+        score_sum = score_from_net + score_ppg
+
+        if self.normalize_variance == "global":
+            alpha = self._guided_fraction()
+            return w ** alpha * score_sum
+
+        # "split": block-diagonal rescaling
         if self.ppg.is_projection and not self.ppg.is_ambient:
             score_proj = self.ppg.project(score_from_net.float()).to(score_from_net.dtype)
             score_orth = score_from_net - score_proj
             return score_orth + w * (score_proj + score_ppg)
         else:
-            return w * (score_from_net + score_ppg)
+            return w * score_sum
+
+    def _guided_fraction(self) -> float:
+        """Return α = r/d, the fraction of guided dimensions. 1.0 for ambient (full-rank)."""
+        if self.ppg.is_ambient or not self.ppg.is_projection:
+            return 1.0
+        for map_ in self.ppg.maps:
+            if hasattr(map_, 'projection_ratio') and map_.projection_ratio is not None:
+                return 1.0 / map_.projection_ratio
+        return 1.0
+
+    def decomposed_score(self, score_from_net: torch.Tensor,
+                         latents: torch.Tensor, t) -> torch.Tensor:
+        """Variance-preserving combination via orthogonal decomposition.
+
+        Evaluates PPG at s(t)·x̂₀ instead of the noisy x, giving:
+          s_c = score_net + G_t · P(s(t)·μ_ex − s(t)·x̂₀) / σ²
+        which preserves the total precision τ_t·I.
+        """
+        sigma = self.sigma(t)
+        x0 = self.score_to_x0(score_from_net, latents, t)
+        scaled_x0 = self.signal_scale(t) * x0
+        score_ppg = self.ppg(scaled_x0.float(), sigma.float()).to(score_from_net.dtype)
+        return score_from_net + score_ppg
 
     def __call__(self, latents: torch.Tensor, t) -> torch.Tensor:
         sigma = self.sigma(t)
-        score_from_net = self.score_net(latents, t)
+        use_net = self.use_net(sigma) if callable(self.use_net) else self.use_net
+
+        if use_net:
+            score_from_net = self.score_net(latents, t)
+        else:
+            score_from_net = torch.zeros_like(latents)
         score_combined = score_from_net
 
         if self.ppg:
-            score_ppg = self.ppg(latents.float(), sigma.float()).to(latents.dtype)
-            if self.rescale_combined and self.use_net: # rescale only if ppg and net are used
-                score_combined = self.rescale_ppg_combined_score(score_from_net, score_ppg, sigma)
+            if self.normalize_variance == "decomposed" and use_net:
+                score_combined = self.decomposed_score(score_from_net, latents, t)
+                score_ppg = score_combined - score_from_net  # for logging
             else:
-                score_combined = score_from_net + score_ppg
+                score_ppg = self.ppg(latents.float(), sigma.float()).to(score_from_net.dtype)
+                if self.normalize_variance not in (None, "none") and use_net:
+                    score_combined = self.normalize_variance_score(score_from_net, score_ppg, sigma)
+                else:
+                    score_combined = score_from_net + score_ppg
 
         if self.logger:
             score_ppg_log = score_ppg if self.ppg else torch.zeros_like(score_from_net)
@@ -522,8 +587,8 @@ class StableDiffusionDynamics(DiffusionDynamics):
     """
 
     def __init__(self, net, encoder: Encoder, scheduler, guidance_scale: float = 7.5,
-                 ppg=None, use_net: bool = True, rescale_combined: bool = True, logger=None):
-        super().__init__(net, encoder, ppg, use_net, rescale_combined, logger)
+                 ppg=None, use_net: bool = True, normalize_variance: str = "split", logger=None):
+        super().__init__(net, encoder, ppg, use_net, normalize_variance, logger)
         self.scheduler      = scheduler
         self.guidance_scale = guidance_scale
         self._text_embeddings = None
@@ -533,9 +598,12 @@ class StableDiffusionDynamics(DiffusionDynamics):
         alpha = self.scheduler.alphas_cumprod[t_idx]
         return (1 - alpha).sqrt()
 
+    def signal_scale(self, t_idx) -> torch.Tensor:
+        """VP signal scale: s(t) = √ᾱ_t."""
+        alpha = self.scheduler.alphas_cumprod[t_idx]
+        return alpha.sqrt()
+
     def score_net(self, latents: torch.Tensor, t_idx) -> torch.Tensor:
-        if not self.use_net:
-            return torch.zeros_like(latents)
         latents_input = torch.cat([latents] * 2)
         noise_pred = self.net(
             latents_input, t_idx,
@@ -558,8 +626,8 @@ class EDMDynamics(DiffusionDynamics):
     """
 
     def __init__(self, net, encoder: Encoder, ppg=None, use_net: bool = True,
-                 rescale_combined: bool = True, logger=None):
-        super().__init__(net, encoder, ppg, use_net, rescale_combined, logger)
+                 normalize_variance: str = "split", logger=None):
+        super().__init__(net, encoder, ppg, use_net, normalize_variance, logger)
         self._class_labels = None
 
     @property
@@ -573,9 +641,10 @@ class EDMDynamics(DiffusionDynamics):
     def sigma(self, t) -> torch.Tensor:
         return t  # EDMSolver passes sigma directly
 
+    def signal_scale(self, t):
+        return 1.0
+
     def score_net(self, latents: torch.Tensor, sigma) -> torch.Tensor:
-        if not self.use_net:
-            return torch.zeros_like(latents)
         denoised = self.net(latents, sigma, self._class_labels)
         return (denoised - latents) / sigma ** 2
 
@@ -642,6 +711,7 @@ class EDMSolver(Solver):
         x_next = noise.to(torch.float64) * t_steps[0]
 
         xs = []
+        x0s = []
         for i, (sigma_cur, sigma_next) in tqdm(
             list(enumerate(zip(t_steps[:-1], t_steps[1:]))),
             disable=not self.verbose,
@@ -657,6 +727,10 @@ class EDMSolver(Solver):
             score = dynamics(x_hat, sigma_hat)
             d_cur = -sigma_hat * score
 
+            # Predicted x0 at current sigma
+            if hasattr(dynamics, 'score_to_x0'):
+                x0s.append(dynamics.score_to_x0(score, x_hat, sigma_hat))
+
             # Euler step
             x_next = x_hat + d_cur * (sigma_next - sigma_hat)
 
@@ -668,7 +742,7 @@ class EDMSolver(Solver):
 
             xs.append(x_next)
 
-        return xs, None
+        return xs, (x0s if x0s else None)
 
 
 class DDIMSolver(Solver):
@@ -679,10 +753,10 @@ class DDIMSolver(Solver):
     """
 
     def __init__(self, scheduler: DDIMScheduler, num_inference_steps: int = 50,
-                 eta: float = 0.0, eta_seed: int = 0, verbose: bool = False):
+                 ddim_eta: float = 0.0, eta_seed: int = 0, verbose: bool = False):
         self.scheduler           = scheduler
         self.num_inference_steps = num_inference_steps
-        self.eta                 = eta
+        self.ddim_eta            = ddim_eta
         self.eta_seed            = eta_seed
         self.verbose             = verbose
         self.scheduler.set_timesteps(num_inference_steps)
@@ -696,19 +770,22 @@ class DDIMSolver(Solver):
         self.scheduler.set_timesteps(self.num_inference_steps)
 
         step_kwargs = {}
-        if self.eta > 0:
-            step_kwargs['eta'] = self.eta
+        if self.ddim_eta > 0:
+            step_kwargs['eta'] = self.ddim_eta
             step_kwargs['generator'] = torch.Generator(device=noise.device).manual_seed(self.eta_seed)
 
         latents = noise
         xs = []
+        x0s = []
         for t_idx in tqdm(self.scheduler.timesteps, disable=not self.verbose):
             score = dynamics(latents, t_idx)
             sigma = dynamics.sigma(t_idx)
             noise_pred = -sigma * score
+            if hasattr(dynamics, 'score_to_x0'):
+                x0s.append(dynamics.score_to_x0(score, latents, t_idx))
             latents = self.scheduler.step(noise_pred, t_idx, latents, **step_kwargs).prev_sample
             xs.append(latents)
-        return xs, None
+        return xs, (x0s if x0s else None)
 
 #----------------------------------------------------------------------------
 # Generate images for the given seeds in a distributed fashion.
@@ -761,11 +838,14 @@ def generate_images_local(
     max_batch_size:  int                   = 32,
     verbose:         bool                  = False,
     snapshot_steps:  Optional[List[int]]   = None,
+    snapshot_as_x0:  bool                  = True,
 ) -> Iterable:
 
     num_batches = max((len(inputs.seeds) - 1) // max_batch_size + 1, 1)
     inputs.rank_batches = np.array_split(np.arange(len(inputs.seeds)), num_batches)
 
-    image_iter = ImageIterable(solver, dynamics, verbose, snapshot_steps=snapshot_steps)(inputs)
+    image_iter = ImageIterable(solver, dynamics, verbose,
+                               snapshot_steps=snapshot_steps,
+                               snapshot_as_x0=snapshot_as_x0)(inputs)
     return image_iter
 
