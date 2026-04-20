@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 def build_viewer_html(manifest, base_dir, example_paths=None, prompts=None,
-                      baseline_paths=None, title="Sweep Viewer"):
+                      baseline_paths=None, title="Sweep Viewer", n_seeds=1):
     """
     Build an HTML viewer that references images by relative path.
 
@@ -58,6 +58,7 @@ def build_viewer_html(manifest, base_dir, example_paths=None, prompts=None,
         "prompts":        prompts or [],
         "fixed":          manifest.get("fixed", {}),
         "snapshot_steps": manifest.get("snapshot_steps", []),
+        "n_seeds":        n_seeds,
     })
 
     return _HTML_TEMPLATE.replace("__DATA_PLACEHOLDER__", js_data).replace("__TITLE__", title)
@@ -322,10 +323,17 @@ const prompts = DATA.prompts;
 const snapshotSteps = DATA.snapshot_steps || [];   // e.g. [0, 10, 25, 49]
 const hasSnapshots = snapshotSteps.length > 0;
 const nImages = entries.length > 0 ? entries[0].images.length : 0;
+const nSeeds = DATA.n_seeds || 1;
+const nExamples = nSeeds > 0 ? Math.floor(nImages / nSeeds) : nImages;
 
 let mode = "grid";
-let currentSample = 0;
-let currentStepIdx = snapshotSteps.length > 0 ? snapshotSteps.length - 1 : -1; // -1 = final image
+let currentSample = 0;  // example index
+let currentSeed = 0;    // seed index within the example
+let currentStepIdx = -1; // -1 = final image
+
+function imgIndex(sampleIdx, seedIdx) {
+    return sampleIdx * nSeeds + seedIdx;
+}
 
 // Which panels are visible in single mode
 const panels = {
@@ -360,11 +368,12 @@ function lookupEntry(params) {
 
 // Return the correct image path for an entry given the current step selection.
 // stepIdx == -1 means "final image"; otherwise index into snapshotSteps.
-function imageForStep(entry, sampleIdx, stepIdx) {
+function imageForStep(entry, sampleIdx, seedIdx, stepIdx) {
+    const i = imgIndex(sampleIdx, seedIdx);
     if (stepIdx >= 0 && entry && entry.snapshots_dir) {
-        return `${entry.snapshots_dir}/img_${sampleIdx}_step_${stepIdx}.png`;
+        return `${entry.snapshots_dir}/img_${i}_step_${stepIdx}.png`;
     }
-    return entry ? entry.images[sampleIdx] : null;
+    return entry ? entry.images[i] : null;
 }
 
 function setMode(m) {
@@ -397,17 +406,31 @@ function togglePanel(key) {
 
 function buildSampleSelector() {
     const container = document.getElementById("sample-selector");
-    if (nImages <= 1) { container.innerHTML = ""; return; }
-    let html = '<span style="font-size:0.85rem;color:var(--text-muted)">Sample:</span>';
-    for (let i = 0; i < nImages; i++) {
-        const label = prompts[i] ? `${i}: ${prompts[i].substring(0, 30)}` : `#${i}`;
-        html += `<div class="sample-btn ${i === currentSample ? 'active' : ''}" onclick="setSample(${i})">${label}</div>`;
+    let html = "";
+    if (nExamples > 1) {
+        html += '<span style="font-size:0.85rem;color:var(--text-muted)">Sample:</span>';
+        for (let i = 0; i < nExamples; i++) {
+            const label = prompts[i] ? `${i}: ${prompts[i].substring(0, 30)}` : `#${i}`;
+            html += `<div class="sample-btn ${i === currentSample ? 'active' : ''}" onclick="setSample(${i})">${label}</div>`;
+        }
+    }
+    if (nSeeds > 1) {
+        html += '<span style="font-size:0.85rem;color:var(--text-muted);margin-left:1rem;">Seed:</span>';
+        for (let s = 0; s < nSeeds; s++) {
+            html += `<div class="sample-btn ${s === currentSeed ? 'active' : ''}" onclick="setSeed(${s})">#${s}</div>`;
+        }
     }
     container.innerHTML = html;
 }
 
 function setSample(i) {
     currentSample = i;
+    buildSampleSelector();
+    render();
+}
+
+function setSeed(s) {
+    currentSeed = s;
     buildSampleSelector();
     render();
 }
@@ -509,7 +532,7 @@ function renderGrid() {
 
     if (axisNames.length === 0) {
         const entry = entries[0];
-        const src = imageForStep(entry, currentSample, currentStepIdx);
+        const src = imageForStep(entry, currentSample, currentSeed, currentStepIdx);
         container.innerHTML = src ? `<img src="${src}" style="width:25vw;min-width:120px;border-radius:4px;image-rendering:pixelated;">` : "";
         return;
     }
@@ -531,7 +554,7 @@ function renderGrid() {
         colVals.forEach(cv => {
             const params = { ...filterParams, [gridRowAxis]: rv, [gridColAxis]: cv };
             const entry = lookupEntry(params);
-            const src = imageForStep(entry, currentSample, currentStepIdx);
+            const src = imageForStep(entry, currentSample, currentSeed, currentStepIdx);
             if (src) {
                 html += `<td><img src="${src}"></td>`;
             } else {
@@ -561,20 +584,30 @@ function renderSingle() {
         </div>`;
     }
 
-    // Baseline (no PPG)
-    if (panels.baseline.on && baselines[currentSample]) {
-        html += `<div class="single-card">
-            <div class="label">Baseline (no PPG)</div>
-            <img src="${baselines[currentSample]}">
-        </div>`;
+    // Baseline (no PPG) — NxN grid across seeds
+    if (panels.baseline.on && baselines.length > 0) {
+        const srcs = [];
+        for (let s = 0; s < nSeeds; s++) {
+            const idx = imgIndex(currentSample, s);
+            if (baselines[idx]) srcs.push({src: baselines[idx], seed: s});
+        }
+        if (srcs.length > 0) {
+            html += `<div class="single-card">
+                <div class="label">Baseline (no PPG)</div>
+                ${seedGridHTML(srcs)}
+            </div>`;
+        }
     }
 
-    // Final generated image
+    // Generated — NxN grid across seeds
     if (panels.generated.on) {
         html += `<div class="single-card"><div class="label">Generated</div>`;
-        const finalSrc = entry ? entry.images[currentSample] : null;
-        if (finalSrc) {
-            html += `<img src="${finalSrc}">`;
+        if (entry) {
+            const srcs = [];
+            for (let s = 0; s < nSeeds; s++) {
+                srcs.push({src: entry.images[imgIndex(currentSample, s)], seed: s});
+            }
+            html += seedGridHTML(srcs);
         } else {
             html += `<div style="padding:4rem;color:var(--text-muted)">No image for these parameters</div>`;
         }
@@ -592,9 +625,10 @@ function renderSingle() {
         </div>`;
     }
 
-    // Denoising timeline (only if this entry has snapshots)
+    // Denoising timeline (only if this entry has snapshots) — uses currentSeed
     if (panels.timeline.on && hasSnapshots && entry && entry.snapshots_dir) {
-        const snapSrc = (idx) => `${entry.snapshots_dir}/img_${currentSample}_step_${idx}.png`;
+        const imgI = imgIndex(currentSample, currentSeed);
+        const snapSrc = (idx) => `${entry.snapshots_dir}/img_${imgI}_step_${idx}.png`;
         const initIdx = 0;
         html += `<div class="single-card" style="min-width:300px;">
             <div class="label">Denoising Timeline</div>
@@ -615,10 +649,30 @@ function renderSingle() {
 
 function updateSnapImg(idx, snapDir) {
     const i = parseInt(idx);
+    const imgI = imgIndex(currentSample, currentSeed);
     const img = document.getElementById("snap-img");
-    if (img) img.src = `${snapDir}/img_${currentSample}_step_${i}.png`;
+    if (img) img.src = `${snapDir}/img_${imgI}_step_${i}.png`;
     const lbl = document.getElementById("snap-label");
     if (lbl) lbl.textContent = `Step ${snapshotSteps[i]}`;
+}
+
+function seedGridHTML(srcs) {
+    // srcs: [{src, seed}]. Render as a near-square grid: cols = ceil(sqrt(n)).
+    const n = srcs.length;
+    if (n === 0) return "";
+    if (n === 1) return `<img src="${srcs[0].src}">`;
+    const cols = Math.ceil(Math.sqrt(n));
+    const cellW = `calc(25vw / ${cols})`;
+    let html = `<div style="display:grid;grid-template-columns:repeat(${cols}, 1fr);gap:2px;width:25vw;min-width:120px;">`;
+    for (const {src, seed} of srcs) {
+        const label = nSeeds > 1 ? `<div style="position:absolute;top:2px;left:4px;font-size:0.65rem;color:#fff;text-shadow:0 0 2px #000;">s${seed}</div>` : "";
+        html += `<div style="position:relative;">
+            <img src="${src}" style="width:100%;border-radius:2px;image-rendering:pixelated;display:block;">
+            ${label}
+        </div>`;
+    }
+    html += "</div>";
+    return html;
 }
 
 // Init

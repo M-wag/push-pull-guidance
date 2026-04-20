@@ -92,8 +92,16 @@ class IdentityMapConfig(BaseMapConfig):
     type: Literal["identity"]
 
 
+class NonlinearMapConfig(BaseMapConfig):
+    type:            Literal["nonlinear"]
+    map_type:        str
+    map_kwargs:      Optional[Dict[str, Any]] = None
+    pullback:        Literal["jvp", "numdiff", "linear"] = "jvp"
+    pullback_kwargs: Optional[Dict[str, Any]] = None
+
+
 MapConfig = Annotated[
-    Union[LinearMapConfig, SpgMapConfig, IdentityMapConfig],
+    Union[LinearMapConfig, SpgMapConfig, IdentityMapConfig, NonlinearMapConfig],
     Field(discriminator="type")
 ]
 

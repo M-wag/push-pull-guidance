@@ -298,7 +298,7 @@ class Gallery:
             plot_fn(logs_data, os.path.dirname(logs_path))
 
     def build_html(self, output_path=None, example_paths=None, prompts=None,
-                   plot_fn=None, baseline_paths=None):
+                   plot_fn=None, baseline_paths=None, n_seeds=1):
         if output_path is None:
             output_path = os.path.join(self.output_dir, "viewer.html")
 
@@ -318,6 +318,7 @@ class Gallery:
             prompts=prompts,
             baseline_paths=baseline_rel,
             title=self.config.title,
+            n_seeds=n_seeds,
         )
         Path(output_path).write_text(html)
         print(f"Viewer saved to {output_path}")
