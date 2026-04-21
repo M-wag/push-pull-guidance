@@ -552,7 +552,7 @@ def calculate_metrics_from_stats(
 # Calculate FD metrics and (optionally) per-image cosine similarity metrics
 # in a single pass over `image_iter`. Returns a flat dict of float results.
 
-def calculate_metrics_from_generator(
+def calculate_metrics_from_iterable(
     image_iter,
     ref_stats,                              # Path or already-loaded {metric: {mu, sigma}}.
     example_features_dir = None,            # None = skip cosine-sim.
