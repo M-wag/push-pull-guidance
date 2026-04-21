@@ -177,9 +177,16 @@ class ImageIterable:
         self.snapshot_as_x0 = snapshot_as_x0
 
     def __call__(self, iter_state: InputsIterable) -> Iterable:
+        self._inputs = iter_state
+        return self
+
+    def __iter__(self):
         self.solver.verbose = self.verbose
-        for state in iter_state:
+        for state in self._inputs:
             yield self._process_batch(state)
+
+    def __len__(self):
+        return len(self._inputs)
 
     def _process_batch(self, state):
         if len(state.seeds) > 0:
