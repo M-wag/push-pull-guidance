@@ -352,6 +352,29 @@ class LabelsIterable:
         state.labels = torch.nn.functional.one_hot(batch_labels, self.num_classes).float()
 
 
+class MetadataIterable:
+    """Extension that adds arbitrary per-image metadata fields to each batch state.
+
+    Pass any number of keyword arguments mapping field names to lists or tensors
+    of length N (one entry per seed). Each field is sliced by state.indices and
+    written onto the state under the same name.
+
+    Example:
+        MetadataIterable(class_id=class_labels, example_id=example_ids)
+        # -> state.class_id and state.example_id available in every batch
+    """
+
+    def __init__(self, **fields):
+        self.fields = fields  # name -> list | Tensor, length N
+
+    def enrich(self, state: EasyDict) -> None:
+        for name, values in self.fields.items():
+            if isinstance(values, torch.Tensor):
+                state[name] = values[list(state.indices)]
+            else:
+                state[name] = [values[i] for i in state.indices]
+
+
 class PrecomputedNoiseIterable:
     """Extension that injects a precomputed noise tensor into each batch state."""
 
@@ -389,7 +412,7 @@ class CombinedInputs(InputsIterable):
     def __iter__(self):
         for state in self.base:
             for ext in self.extensions:
-                ext.enrich(state)
+                (ext.enrich if hasattr(ext, "enrich") else ext)(state)
             yield state
 
     def __len__(self) -> int:
