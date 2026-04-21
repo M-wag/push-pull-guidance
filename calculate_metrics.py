@@ -24,7 +24,6 @@ import transformers
 from torch_utils import distributed as dist
 from torch_utils import misc
 from training import dataset
-import generate
 from typing import Optional
 
 
@@ -89,17 +88,17 @@ class DINOv2Detector(Detector):
 #----------------------------------------------------------------------------
 # CLIP Model 
 
-class ClipImageModel():
-    def __init__(self, device=None):
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = transformers.CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
+class ClipDetector(Detector):
+    def __init__(self):
+        super().__init__(feature_dim=768)
+        self.model = transformers.CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
         self.processor = transformers.AutoProcessor.from_pretrained("openai/clip-vit-large-patch14", use_fast=True)
+        self.model.eval().requires_grad_(False)
 
     def __call__(self, x):
-        inputs = self.processor(images=x, return_tensors="pt").to(self.device)
+        inputs = self.processor(images=x, return_tensors="pt").to(x.device)
         with torch.no_grad():
-            image_features = self.model.get_image_features(**inputs)
-        return image_features
+            return self.model.to(x.device).get_image_features(**inputs)
 
 #----------------------------------------------------------------------------
 # Metric specifications.
@@ -107,6 +106,7 @@ class ClipImageModel():
 metric_specs = {
     'fid':          dnnlib.EasyDict(detector_kwargs=dnnlib.EasyDict(class_name=InceptionV3Detector)),
     'fd_dinov2':    dnnlib.EasyDict(detector_kwargs=dnnlib.EasyDict(class_name=DINOv2Detector)),
+    'clip':         dnnlib.EasyDict(detector_kwargs=dnnlib.EasyDict(class_name=ClipDetector)),
 }
 
 #----------------------------------------------------------------------------
@@ -299,6 +299,125 @@ def load_csv(path: str):
         return [(int(col) for col in row) for row in csv.reader(f)] 
 
 #----------------------------------------------------------------------------
+# Module-level helpers.
+
+def _all_reduce(x):
+    """Clone and torch.distributed.all_reduce; no-op if distributed not init."""
+    x = x.clone()
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.all_reduce(x)
+    return x
+
+
+def _is_one_hot(vec):
+    """Check if `vec` is a 1-D one-hot tensor."""
+    vec = vec.to(torch.int)
+    return vec.dim() == 1 and torch.all((vec == 0) | (vec == 1)) and vec.sum() == 1
+
+
+def _extract_images_and_meta(batch):
+    """Unpack a batch from an image iterable.
+
+    Supports two shapes:
+      - EasyDict state (from generate.generate_images): has .images tensor,
+        optionally .class_id / .example_id from MetadataIterable.
+      - (imgs, labels) tuple/list (from torch DataLoader).
+
+    Returns (imgs_tensor, class_id_list_or_None, example_id_list_or_None).
+    """
+    if isinstance(batch, dict) and 'images' in batch:
+        imgs = batch['images']
+        class_id = batch.get('class_id')
+        example_id = batch.get('example_id')
+        if class_id is None and 'labels' in batch:
+            class_id = torch.argmax(batch['labels'], axis=1)
+            example_id = batch.get('example_idx')
+        if class_id is not None and isinstance(class_id, torch.Tensor):
+            class_id = class_id.tolist()
+        if example_id is None and class_id is not None:
+            example_id = [None] * len(class_id)
+        return imgs, class_id, example_id
+
+    if isinstance(batch, (tuple, list)) and len(batch) == 2:
+        imgs, labels = batch
+        if labels is None:
+            return imgs, None, None
+        if _is_one_hot(labels):
+            class_id = torch.argmax(labels, axis=1).tolist()
+        else:
+            class_id = labels.tolist() if isinstance(labels, torch.Tensor) else list(labels)
+        return imgs, class_id, [None] * len(class_id)
+
+    raise TypeError(f'Unsupported batch type: {type(batch)}')
+
+
+def _save_features(features_per_metric, feature_dir, batch_idx, class_id, example_id):
+    """Save per-rank feature parts (.pt) and metadata (.csv) for one batch."""
+    rank = dist.get_rank()
+    for metric, features in features_per_metric.items():
+        metric_dir = os.path.join(feature_dir, metric)
+        os.makedirs(metric_dir, exist_ok=True)
+        file_path = f"features.rank{rank:01d}.part{batch_idx:04d}.pt"
+        torch.save(features.cpu().detach(), os.path.join(metric_dir, file_path))
+
+    if class_id is not None and example_id is not None:
+        with open(os.path.join(feature_dir, f"features.rank{rank:01d}.part{batch_idx:04d}.csv"), "w") as f:
+            csv.writer(f).writerows(zip(class_id, example_id))
+
+
+#----------------------------------------------------------------------------
+# Compute detector features for every batch in an image iterable.
+# Yields dnnlib.EasyDict(features, images, batch_idx, num_batches, num_images_in_batch).
+
+def compute_features_for_iterable(
+    image_iter,                                         # Iterable of image batches.
+    metrics         = ('fid', 'fd_dinov2'),             # Metric names (keys of metric_specs).
+    feature_dir     = None,                             # If set, save per-rank feature parts here.
+    verbose         = True,                             # Enable status prints.
+    device          = torch.device('cuda'),             # Compute device.
+):
+    num_batches = len(image_iter)
+    detectors = {m: get_detector(m, verbose=verbose) for m in metrics}
+    if verbose:
+        dist.print0('Computing detector features...')
+
+    for batch_idx, batch in enumerate(image_iter):
+        imgs, class_id, example_id = _extract_images_and_meta(batch)
+        imgs = torch.as_tensor(imgs).to(device)
+
+        features = {m: detectors[m](imgs).to(torch.float64) for m in metrics}
+
+        if feature_dir:
+            _save_features(features, feature_dir, batch_idx, class_id, example_id)
+
+        yield dnnlib.EasyDict(
+            features            = features,
+            images              = batch,
+            batch_idx           = batch_idx,
+            num_batches         = num_batches,
+            num_images_in_batch = imgs.shape[0],
+        )
+
+    if feature_dir and dist.get_rank() == 0:
+        merge_metric_feature_directories(feature_dir)
+        merge_feature_csvs(feature_dir)
+
+
+#----------------------------------------------------------------------------
+# Generic reducer. Consumes any iterable of batches and accumulates state
+# via `per_batch_fn(state, batch) -> state`. On the last batch, calls
+# `final_fn(state, batch) -> result` and attaches the result onto the yielded
+# batch as `.result`. Earlier batches yield with `.result = None`.
+
+def reduce_iterable(iterable, per_batch_fn, final_fn, init_state=None):
+    state = init_state
+    for batch in iterable:
+        state = per_batch_fn(state, batch)
+        batch.result = final_fn(state, batch) if batch.batch_idx == batch.num_batches - 1 else None
+        yield batch
+
+
+#----------------------------------------------------------------------------
 # Calculate feature statistics for the given image batches
 # in a distributed fashion. Returns an iterable that yields
 # dnnlib.EasyDict(stats, images, batch_idx, num_batches)
@@ -309,126 +428,54 @@ def calculate_stats_for_iterable(
     verbose         = True,                 # Enable status prints?
     dest_path       = None,                 # Where to save the statistics. None = do not save.
     feature_dir     = None,                 # Where to save the feature. None = do not save.
-    calculate_clip  = True,                 # Save clip features for images?
     device          = torch.device('cuda'), # Which compute device to use.
 ):
+    num_batches  = len(image_iter)
+    feature_dims = {m: get_detector(m, verbose=verbose).feature_dim for m in metrics}
 
-    # Initialize.
-    num_batches = len(image_iter)
-    detectors = [get_detector(metric, verbose=verbose) for metric in metrics]
+    accumulator = dnnlib.EasyDict(
+        per_metric = {m: dnnlib.EasyDict(
+            cum_mu    = torch.zeros([feature_dims[m]], dtype=torch.float64, device=device),
+            cum_sigma = torch.zeros([feature_dims[m], feature_dims[m]], dtype=torch.float64, device=device),
+        ) for m in metrics},
+        total_images = torch.zeros([], dtype=torch.int64, device=device),
+    )
 
-    # Initialize CLIP feature extrator
-    if calculate_clip:
-        if verbose:
-            dist.print0('Setting up CLIP model...')
-        get_clip_features = ClipImageModel(device=device)
+    def per_batch(acc, batch):
+        for m in metrics:
+            acc.per_metric[m].cum_mu    += batch.features[m].sum(0)
+            acc.per_metric[m].cum_sigma += batch.features[m].T @ batch.features[m]
+        acc.total_images += batch.num_images_in_batch
+        return acc
 
-    if verbose:
-        dist.print0('Calculating feature statistics...')
+    def final_fn(acc, batch):
+        n = int(_all_reduce(acc.total_images).cpu())
+        assert n >= 2
+        stats = dict(num_images=n)
+        for m in metrics:
+            mu    = _all_reduce(acc.per_metric[m].cum_mu) / n
+            sigma = (_all_reduce(acc.per_metric[m].cum_sigma) - mu.ger(mu) * n) / (n - 1)
+            stats[m] = dict(mu=mu.cpu().numpy(), sigma=sigma.cpu().numpy())
+        if dest_path is not None and dist.get_rank() == 0:
+            save_stats(stats=stats, path=dest_path, verbose=False)
+        return stats
 
-    # Return an iterable over the batches.
+    feature_iter = compute_features_for_iterable(
+        image_iter, metrics=metrics, feature_dir=feature_dir, verbose=verbose, device=device,
+    )
+
     class StatsIterable:
         def __len__(self):
             return num_batches
-
-        def all_reduce(self, x):
-            """Convenience wrapper for torch.distributed.all_reduce()."""
-            x = x.clone()
-            torch.distributed.all_reduce(x)
-            return x
-        
-        def is_one_hot(self, vec):
-            """Convenience function for checking if torch tensor is one hot"""
-            vec = vec.to(torch.int)
-            return vec.dim() == 1 and torch.all((vec == 0) | (vec == 1)) and vec.sum() == 1
-
-        def save_features(self, features_per_metric, feature_dir, batch_idx, images):
-            """ Save features parts to seperate file"""
-            rank = dist.get_rank()
-            # Save features in parts for each metric
-            for metric, features in features_per_metric.items():
-                metric_dir = os.path.join(feature_dir, metric)
-                os.makedirs(metric_dir, exist_ok=True) 
-                file_path = f"features.rank{rank:01d}.part{batch_idx:04d}.pt"
-                torch.save(features.cpu().detach(), os.path.join(metric_dir, file_path))
-
-            # If classes and examples are passed also save CSV
-            if isinstance(images, dict) and 'images' in images: # dict(images)
-                classes = torch.argmax(images.labels, axis=1)
-                examples = images.example_idx
-            elif isinstance(images, (tuple, list)) and len(images) == 2: # (images, labels)
-                labels = images[1]
-                if labels is None:
-                    classes = None
-                    examples = None
-                else:
-                    if self.is_one_hot(labels):
-                        classes = torch.argmax(labels, axis=1)
-                    else:
-                        classes = labels
-                    examples = [None] * classes.shape[0]
-
-            # Document the the examples the features correspond to
-            if classes is not None and examples is not None: 
-                with open(os.path.join(feature_dir, f"features.rank{rank:01d}.part{batch_idx:04d}.csv"), "w") as f:
-                    writer = csv.writer(f)
-                    writer.writerows(zip(classes.tolist(), examples))
-
         def __iter__(self):
-            state = [dnnlib.EasyDict(metric=metric, detector=detector) for metric, detector in zip(metrics, detectors)]
-            for s in state:
-                s.cum_mu = torch.zeros([s.detector.feature_dim], dtype=torch.float64, device=device)
-                s.cum_sigma = torch.zeros([s.detector.feature_dim, s.detector.feature_dim], dtype=torch.float64, device=device)
-            cum_images = torch.zeros([], dtype=torch.int64, device=device)
-
-            # Loop over batches.
-            for batch_idx, images in enumerate(image_iter):
-                if isinstance(images, dict) and 'images' in images: # dict(images)
-                    imgs = images.images
-                elif isinstance(images, (tuple, list)) and len(images) == 2: # (images, labels)
-                    imgs = images[0]
-                imgs = torch.as_tensor(imgs).to(device)
-
-                # Accumulate statistics.
-                features_per_metric = {}
-                if imgs is not None:
-                    for s in state:
-                        features = s.detector(imgs).to(torch.float64)
-                        s.cum_mu += features.sum(0)
-                        s.cum_sigma += features.T @ features
-                        features_per_metric[s.metric]= features
-
-                    cum_images += imgs.shape[0]
-
-                    #############################################################
-                    # Hijack to get features and clip score saved
-                    if calculate_clip:
-                        clip_features = get_clip_features(imgs).to(torch.float64)
-                        features_per_metric["clip"]= clip_features
-                    #############################################################
-
-                    # Save features of each image 
-                    if feature_dir:
-                        self.save_features(features_per_metric, feature_dir, batch_idx, images)
-
-                # Output results.
-                r = dnnlib.EasyDict(stats=None, images=images, batch_idx=batch_idx, num_batches=num_batches)
-                r.num_images = int(self.all_reduce(cum_images).cpu())
-                if batch_idx == num_batches - 1:
-                    assert r.num_images >= 2
-                    r.stats = dict(num_images=r.num_images)
-                    for s in state:
-                        mu = self.all_reduce(s.cum_mu) / r.num_images
-                        sigma = (self.all_reduce(s.cum_sigma) - mu.ger(mu) * r.num_images) / (r.num_images - 1)
-                        r.stats[s.metric] = dict(mu=mu.cpu().numpy(), sigma=sigma.cpu().numpy())
-                    if dest_path is not None and dist.get_rank() == 0:
-                        save_stats(stats=r.stats, path=dest_path, verbose=False)
-
-                yield r
-            # Merge files in case features were saved
-            if feature_dir and dist.get_rank() == 0:
-                merge_metric_feature_directories(feature_dir)
-                merge_feature_csvs(feature_dir)
+            for batch in reduce_iterable(feature_iter, per_batch, final_fn, init_state=accumulator):
+                yield dnnlib.EasyDict(
+                    stats       = batch.result,
+                    images      = batch.images,
+                    batch_idx   = batch.batch_idx,
+                    num_batches = batch.num_batches,
+                    num_images  = int(_all_reduce(accumulator.total_images).cpu()),
+                )
 
     return StatsIterable()
 
@@ -502,6 +549,98 @@ def calculate_metrics_from_stats(
     return results
 
 #----------------------------------------------------------------------------
+# Calculate FD metrics and (optionally) per-image cosine similarity metrics
+# in a single pass over `image_iter`. Returns a flat dict of float results.
+
+def calculate_metrics_from_generator(
+    image_iter,
+    ref_stats,                              # Path or already-loaded {metric: {mu, sigma}}.
+    example_features_dir = None,            # None = skip cosine-sim.
+    fd_metrics           = ['fid', 'fd_dinov2'],
+    verbose              = True,
+    device               = torch.device('cuda'),
+) -> dict[str, float]:
+
+    if isinstance(ref_stats, str):
+        ref_stats = load_stats(ref_stats, verbose=verbose)
+
+    # Discover cosine-sim metrics from .npy files present in the directory.
+    sim_metrics      = []
+    example_features = {}
+    example_index    = {}
+    if example_features_dir is not None:
+        for m in metric_specs:
+            p = os.path.join(example_features_dir, f'{m}.npy')
+            if os.path.exists(p):
+                sim_metrics.append(m)
+                example_features[m] = np.load(p, mmap_mode='r')
+        example_index = {
+            (cls, eid): row
+            for row, (cls, eid) in enumerate(load_csv(
+                os.path.join(example_features_dir, 'index.csv')
+            ))
+        }
+
+    all_metrics  = list(dict.fromkeys(list(fd_metrics) + sim_metrics))
+    feature_dims = {m: get_detector(m, verbose=False).feature_dim for m in fd_metrics}
+    feature_iter = compute_features_for_iterable(
+        image_iter, metrics=all_metrics, verbose=verbose, device=device,
+    )
+
+    accumulator = dnnlib.EasyDict(
+        fd={
+            m: dnnlib.EasyDict(
+                cum_mu    = torch.zeros([feature_dims[m]], dtype=torch.float64, device=device),
+                cum_sigma = torch.zeros([feature_dims[m], feature_dims[m]], dtype=torch.float64, device=device),
+            )
+            for m in fd_metrics
+        },
+        total_images = torch.zeros([], dtype=torch.int64, device=device),
+        cum_sim      = {m: torch.zeros([], dtype=torch.float64, device=device) for m in sim_metrics},
+    )
+
+    def per_batch(acc, batch):
+        for m in fd_metrics:
+            acc.fd[m].cum_mu    += batch.features[m].sum(0)
+            acc.fd[m].cum_sigma += batch.features[m].T @ batch.features[m]
+        acc.total_images += batch.num_images_in_batch
+
+        if sim_metrics:
+            class_ids   = batch.images.class_id
+            example_ids = batch.images.example_id
+            rows = [example_index[int(cls), int(eid)] for cls, eid in zip(class_ids, example_ids)]
+            for m in sim_metrics:
+                gen_feats = batch.features[m].to(torch.float32)
+                ex_feats  = torch.from_numpy(np.ascontiguousarray(example_features[m][rows])).to(device=device, dtype=torch.float32)
+                acc.cum_sim[m] += torch.nn.functional.cosine_similarity(gen_feats, ex_feats).sum().to(torch.float64)
+
+        return acc
+
+    def final_fn(acc, batch):
+        n = int(_all_reduce(acc.total_images).cpu())
+        results = {}
+        if fd_metrics:
+            stats = {'num_images': n}
+            for m in fd_metrics:
+                mu    = _all_reduce(acc.fd[m].cum_mu) / n
+                sigma = (_all_reduce(acc.fd[m].cum_sigma) - mu.ger(mu) * n) / (n - 1)
+                stats[m] = dict(mu=mu.cpu().numpy(), sigma=sigma.cpu().numpy())
+            results.update(calculate_metrics_from_stats(stats, ref_stats, fd_metrics, verbose=verbose))
+        for m in sim_metrics:
+            results[f'{m}_sim'] = float(_all_reduce(acc.cum_sim[m]).cpu()) / n
+        return results
+
+    r = None
+    for r in tqdm.tqdm(
+        reduce_iterable(feature_iter, per_batch, final_fn, init_state=accumulator),
+        unit='batch', total=len(image_iter), disable=(dist.get_rank() != 0),
+    ):
+        pass
+
+    return r.result
+
+
+#----------------------------------------------------------------------------
 # Parse a comma separated list of strings.
 
 def parse_metric_list(s):
@@ -511,72 +650,6 @@ def parse_metric_list(s):
             raise click.ClickException(f'Invalid metric "{metric}"')
     return metrics
 
-
-#----------------------------------------------------------------------------
-# Calculate metrics for a generative model
-
-def calculate_metrics_from_generator(
-    network_pkl:    str,
-    ref_path:       str,
-    metrics:        list[str] = ['fid', 'fd_dinov2'],
-    seed:           int = 0,
-    max_batch_size: int = 32,
-    verbose:        bool = True,
-    outdir          = None,                 # Where to save the output images. None = do not save.
-    feature_dir     = None,                 # Where to save the features of images. None = do not save.
-    subdirs         = False,                # Create subdirectory for every 1000 seeds?
-    template_dir    = None,                 # Where templates are stored
-    sampler_kwargs  = None,
-    gradient_kwargs = None,
-    gvf_kwargs      = None,
-    generate_kwargs = {},
-) -> dict[str, float]:
-    """Calculate metrics for a generative model."""
-
-    if not torch.distributed.is_initialized():
-        dist.init()
-    
-    # Load reference stats
-    if dist.get_rank() == 0:
-        ref = load_stats(ref_path) # do this first in case it fails
-    
-    # Copy and pop num_images from generate_kwargs
-    generate_kwargs = dict(generate_kwargs)
-    num_images = generate_kwargs.pop("num_images")
-
-    # Generate images
-    seeds = range(seed, seed + num_images)
-    image_iter = generate.generate_images(
-        net=network_pkl,
-        seeds=seeds,
-        max_batch_size=max_batch_size,
-        outdir=outdir,
-        subdirs=subdirs,
-        template_dir=template_dir,
-        sampler_kwargs=sampler_kwargs,
-        gradient_kwargs=gradient_kwargs,
-        gvf_args=gvf_kwargs,
-        **generate_kwargs,
-    )
-
-    # Calculate statistics
-    stats_iter = calculate_stats_for_iterable(
-        image_iter=image_iter,
-        metrics=metrics,
-        feature_dir=feature_dir,
-        verbose=verbose
-    )
-    
-    for r in tqdm.tqdm(stats_iter, unit='batch', disable=(dist.get_rank() != 0)):
-        pass
-
-    # Compute and return metrics
-    results = {}
-    if dist.get_rank() == 0:
-        results = calculate_metrics_from_stats(r.stats, ref, metrics, verbose)
-    
-    torch.distributed.barrier()
-    return results
 
 #----------------------------------------------------------------------------
 # Calculate reference statistics for a dataset
