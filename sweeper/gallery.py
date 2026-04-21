@@ -9,7 +9,6 @@ Usage:
 """
 
 import copy
-import itertools
 import json
 import os
 from pathlib import Path
@@ -17,76 +16,9 @@ from pathlib import Path
 import numpy as np
 import yaml
 from PIL import Image
-from pydantic import BaseModel
 
-from .schema import SweepConfig, ListAxis, LinspaceAxis
-
-
-def _resolve_axis(axis) -> list:
-    if isinstance(axis, ListAxis):
-        return list(axis.values)
-    start, stop, n = axis.linspace
-    vals = np.linspace(start, stop, int(n))
-    if axis.round_int:
-        vals = np.round(vals).astype(int)
-    return vals.tolist()
-
-
-def _extract_axes(node, prefix="") -> dict:
-    """Recursively find all Axis fields in a Pydantic model tree."""
-    axes = {}
-    if isinstance(node, BaseModel):
-        for name in node.model_fields:
-            value = getattr(node, name)
-            path  = f"{prefix}.{name}" if prefix else name
-            if isinstance(value, (ListAxis, LinspaceAxis)):
-                axes[path] = _resolve_axis(value)
-            else:
-                axes.update(_extract_axes(value, path))
-    elif isinstance(node, list):
-        for i, item in enumerate(node):
-            axes.update(_extract_axes(item, f"{prefix}[{i}]"))
-    return axes
-
-
-def _set_path(obj, path: str, value):
-    """Set a dotted/indexed path on a nested structure of dicts and lists."""
-    parts = _split_path(path)
-    for part in parts[:-1]:
-        if isinstance(part, int):
-            obj = obj[part]
-        else:
-            obj = obj[part]
-    last = parts[-1]
-    if isinstance(last, int):
-        obj[last] = value
-    else:
-        obj[last] = value
-
-
-def _split_path(path: str) -> list:
-    """Split 'ppg.gate.n' or 'maps[1].dim_out' into a list of str/int keys."""
-    parts = []
-    for segment in path.replace("]", "").split("."):
-        if "[" in segment:
-            name, idx = segment.split("[")
-            if name:
-                parts.append(name)
-            parts.append(int(idx))
-        else:
-            parts.append(segment)
-    return parts
-
-
-def _unflatten(flat_cell: dict, base: SweepConfig) -> SweepConfig:
-    """Return a new SweepConfig with all axis paths replaced by their cell values."""
-    raw = base.model_dump()
-    for path, value in flat_cell.items():
-        # Axis values that are Pydantic models (e.g. MapConfig) need model_dump too
-        if isinstance(value, BaseModel):
-            value = value.model_dump()
-        _set_path(raw, path, value)
-    return SweepConfig.model_validate(raw)
+from .schema import SweepConfig
+from .grid import extract_axes, iter_grid, unflatten
 
 
 class Gallery:
@@ -97,14 +29,10 @@ class Gallery:
         self.output_dir  = config.output_dir
         self.images_dir  = os.path.join(self.output_dir, "images")
         self.manifest_path = os.path.join(self.output_dir, "manifest.json")
-        self._axes       = _extract_axes(config)
+        self._axes       = extract_axes(config)
 
     def _grid(self):
-        """Cartesian product of all axes. Yields (index, flat_cell dict)."""
-        names = list(self._axes.keys())
-        value_lists = [self._axes[n] for n in names]
-        for idx, combo in enumerate(itertools.product(*value_lists)):
-            yield idx, dict(zip(names, combo))
+        return iter_grid(self._axes)
 
     def _cell_dir(self, idx, flat_cell):
         parts = [f"{idx:04d}"] + [str(v) for v in flat_cell.values()]
@@ -216,7 +144,7 @@ class Gallery:
 
             print(f"[rank {rank}] [{idx+1}/{total}] run   {flat_cell}")
             try:
-                cell = _unflatten(flat_cell, self.config)
+                cell = unflatten(flat_cell, self.config)
                 build_fn(cell)
                 output = run_fn()
             except Exception as e:
