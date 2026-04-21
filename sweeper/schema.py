@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 # Axis specs
 
 class ListAxis(BaseModel):
-    values: List[Union[float, int, str]]
+    values: List[Union[float, int, str, bool]]
 
 class LinspaceAxis(BaseModel):
     linspace: Tuple[float, float, int]
@@ -57,10 +57,25 @@ ModelConfig = Annotated[
 # ---------------------------------------------------------------------------
 # Solver
 
-class SolverConfig(BaseModel):
+class DDIMSolverConfig(BaseModel):
+    type:           Literal["ddim"] = "ddim"
     num_steps:      int   = 50
-    guidance_scale: float = 7.5   # SD only
-    ddim_eta:       float = 0.0   # SD only
+    guidance_scale: float = 7.5
+    ddim_eta:       Union[float, Axis] = 0.0
+
+
+class EDMSolverConfig(BaseModel):
+    type:         Literal["edm"] = "edm"
+    num_steps:    int = 50
+    sigma_max:    Union[float, Axis] = 80.0
+    stochastic:   Union[bool, Axis]  = False
+    second_order: Union[bool, Axis]  = True
+
+
+SolverConfig = Annotated[
+    Union[DDIMSolverConfig, EDMSolverConfig],
+    Field(discriminator="type"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -117,8 +132,8 @@ class SweepConfig(BaseModel):
     examples:     Dict[str, Any] = {}
     logging:      Dict[str, Any] = {}
     snapshots:    Dict[str, Any] = {}
-    noise_source: Literal["random", "ddim_inversion"] = "random"
-    solver:       SolverConfig = SolverConfig()
+    noise_source: Literal["random", "ddim_inversion", "sdedit"] = "random"
+    solver:       SolverConfig
     ppg:          Optional[PPGConfig] = None
     maps:         List[MapConfig] = []
 
@@ -128,4 +143,8 @@ class SweepConfig(BaseModel):
 def load_sweep_config(path: str) -> SweepConfig:
     with open(path) as f:
         raw = yaml.safe_load(f)
+    # Default solver.type to match model.type when omitted (keeps old YAMLs working).
+    solver = raw.setdefault("solver", {})
+    if "type" not in solver:
+        solver["type"] = raw.get("model", {}).get("type", "edm")
     return SweepConfig.model_validate(raw)
