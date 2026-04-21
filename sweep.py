@@ -28,7 +28,28 @@ from generate import (generate_images_local, InputsIterable, NoiseIterable,
 from sweeper import Gallery, load_sweep_config
 from sweeper.schema import (SweepConfig, SDModelConfig, EDMModelConfig,
                              LinearMapConfig, SpgMapConfig, IdentityMapConfig,
-                             NonlinearMapConfig, MapConfig)
+                             NonlinearMapConfig, MapConfig,
+                             DDIMSolverConfig, EDMSolverConfig)
+
+# EDM paper Table 5 stochastic preset (ImageNet-64).
+EDM_STOCHASTIC_PRESET = dict(S_churn=40.0, S_min=0.05, S_max=50.0, S_noise=1.003)
+EDM_DETERMINISTIC_PRESET = dict(S_churn=0.0, S_min=0.0, S_max=float("inf"), S_noise=1.0)
+
+
+def _apply_edm_stochastic(solver, stochastic: bool):
+    preset = EDM_STOCHASTIC_PRESET if stochastic else EDM_DETERMINISTIC_PRESET
+    for k, v in preset.items():
+        setattr(solver, k, v)
+
+
+def _reset_solver_to_schema_defaults(solver, solver_cfg):
+    if isinstance(solver_cfg, EDMSolverConfig):
+        d = EDMSolverConfig()
+        solver.sigma_max       = d.sigma_max
+        solver.apply_2nd_order = d.second_order
+        _apply_edm_stochastic(solver, d.stochastic)
+    elif isinstance(solver_cfg, DDIMSolverConfig):
+        solver.ddim_eta = DDIMSolverConfig().ddim_eta
 
 SEED_BY_DATASET_INDEX = True
 RAISE_ERRORS = True
@@ -53,10 +74,11 @@ MODEL_DEFAULTS = {
         "max_batch_size": 3,
     },
     "edm": {
-        "latent_dim":     3 * 64 * 64,
-        "noise_shape":    (3, 64, 64),
-        "max_batch_size": 128,
-        "vae_latent_dim": 4 * (64 // 8) * (64 // 8),  # SD VAE: C+1 channels, H/8 x W/8
+        "latent_dim":      3 * 64 * 64,
+        "noise_shape":     (3, 64, 64),
+        "max_batch_size":  128,
+        "vae_noise_shape": (4, 64 // 8, 64 // 8),      # SD VAE output shape for 64x64 EDM input
+        "vae_latent_dim":  4 * (64 // 8) * (64 // 8),
     },
 }
 
@@ -141,13 +163,18 @@ def setup_pipeline_sd(model_cfg: SDModelConfig, solver_cfg):
     return pipe, dynamics, solver
 
 
-def setup_pipeline_edm(model_cfg: EDMModelConfig, solver_cfg):
+def setup_pipeline_edm(model_cfg: EDMModelConfig, solver_cfg: EDMSolverConfig):
     from edm.dnnlib.util import import_net_from_url
     from generate import EDMDynamics, EDMSolver
 
     net, encoder = import_net_from_url(model_cfg.net_pkl, device="cuda")
     dynamics = EDMDynamics(net=net, encoder=encoder)
-    solver   = EDMSolver(num_steps=solver_cfg.num_steps)
+    solver   = EDMSolver(
+        num_steps       = solver_cfg.num_steps,
+        sigma_max       = solver_cfg.sigma_max,
+        apply_2nd_order = solver_cfg.second_order,
+    )
+    _apply_edm_stochastic(solver, solver_cfg.stochastic)
     return dynamics, solver, encoder
 
 
@@ -324,11 +351,6 @@ def build_map_layers(cfg: MapConfig, vf_inner, proj_cache: ProjectionCache, defa
     raise ValueError(f"Unknown map config type: {type(cfg)}")
 
 
-def build_map(cfg: MapConfig, vf_inner, proj_cache: ProjectionCache, defaults: dict):
-    maps, pullbacks, vf_inner = build_map_layers(cfg, vf_inner, proj_cache, defaults)
-    return create_ppg_composed(vf_inner, maps, pullbacks, scale=cfg.scale, device="cuda")
-
-
 # ---------------------------------------------------------------------------
 # Sweep runner
 
@@ -368,8 +390,12 @@ class SweepRunner:
 
     def build(self, cell: SweepConfig):
         self.noise_source = cell.noise_source
-        if hasattr(self.solver, "ddim_eta"):
+        if isinstance(cell.solver, DDIMSolverConfig):
             self.solver.ddim_eta = cell.solver.ddim_eta
+        elif isinstance(cell.solver, EDMSolverConfig):
+            self.solver.sigma_max       = cell.solver.sigma_max
+            self.solver.apply_2nd_order = cell.solver.second_order
+            _apply_edm_stochastic(self.solver, cell.solver.stochastic)
 
         self.dynamics.ppg = None
         if cell.ppg is None:
@@ -389,14 +415,16 @@ class SweepRunner:
         map_cfgs = cell.maps or [IdentityMapConfig(type="identity")]
         all_maps, all_pullbacks = [], []
         cur_vf_inner = vf_inner
-        cur_latent_dim = self.defaults["latent_dim"]
+        cur_latent_dim  = self.defaults["latent_dim"]
+        cur_noise_shape = self.defaults["noise_shape"]
         for cfg in map_cfgs:
-            effective_defaults = {**self.defaults, "latent_dim": cur_latent_dim}
+            effective_defaults = {**self.defaults, "latent_dim": cur_latent_dim, "noise_shape": cur_noise_shape}
             layers, pullbacks, cur_vf_inner = build_map_layers(cfg, cur_vf_inner, self.proj_cache, effective_defaults)
             all_maps.extend(layers)
             all_pullbacks.extend(pullbacks)
             if isinstance(cfg, NonlinearMapConfig):
-                cur_latent_dim = self.defaults.get("vae_latent_dim", cur_latent_dim)
+                cur_latent_dim  = self.defaults.get("vae_latent_dim",  cur_latent_dim)
+                cur_noise_shape = self.defaults.get("vae_noise_shape", cur_noise_shape)
             elif isinstance(cfg, (LinearMapConfig, SpgMapConfig)) and cfg.dim_out is not None:
                 cur_latent_dim = round(cfg.dim_out)
         composed_scale = 1.0
@@ -480,12 +508,17 @@ class SweepRunner:
             )
         else:
             from generate import LabelsIterable
-            return CombinedInputs(
-                base,
+            solver = self.solver
+            def sdedit_mix(state):
+                state.noise = state.examples / solver.sigma_max + state.noise
+            extensions = [
                 NoiseIterable(shape=noise_shape, device="cuda"),
                 LabelsIterable(labels=self.class_labels, num_classes=1000, device="cuda"),
                 ExampleImagesIterable(self.paths_example, precomputed=precomputed),
-            )
+            ]
+            if self.noise_source == "sdedit":
+                extensions.append(sdedit_mix)
+            return CombinedInputs(base, *extensions)
 
     def _collect_result(self, per_image_logs, batch_logs_accum):
         if self.log_mode is None:
@@ -688,8 +721,20 @@ def main():
             print("Warning: no baseline_dir in config, skipping baseline.")
         else:
             n = runner.n_images
+            _reset_solver_to_schema_defaults(solver, config.solver)
+            baseline_solver_meta = {
+                k: v for k, v in config.solver.model_dump().items()
+                if not isinstance(v, dict)  # drop Axis specs
+            }
+            if isinstance(config.solver, EDMSolverConfig):
+                d = EDMSolverConfig()
+                baseline_solver_meta.setdefault("sigma_max", d.sigma_max)
+                baseline_solver_meta.setdefault("stochastic", d.stochastic)
+                baseline_solver_meta.setdefault("second_order", d.second_order)
+            elif isinstance(config.solver, DDIMSolverConfig):
+                baseline_solver_meta.setdefault("ddim_eta", DDIMSolverConfig().ddim_eta)
             baseline_meta = {"examples": examples_cfg, "n_images": n,
-                             "solver": config.solver.model_dump()}
+                             "solver": baseline_solver_meta}
             baseline_paths = _run_baseline(
                 config.baseline_dir, baseline_meta, n,
                 dynamics, solver, runner._make_inputs,
