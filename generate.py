@@ -209,13 +209,23 @@ class SavingIterable:
         self.dir_save = dir_save
 
     def __call__(self, iterable):
-        for states in iterable:
+        self._iterable = iterable
+        return self
+
+    def __len__(self):
+        return len(self._iterable)
+
+    def __iter__(self):
+        for states in self._iterable:
             if self.dir_save is not None:
                 self.save(states)
             yield states
 
     def save(self, states):
-        images = (states.images.permute(0, 2, 3, 1).detach().cpu().numpy() * 255).astype(np.uint8)
+        imgs = states.images.permute(0, 2, 3, 1).detach().cpu()
+        if imgs.dtype != torch.uint8:
+            imgs = (imgs * 255).clamp(0, 255).to(torch.uint8)
+        images = imgs.numpy()
         os.makedirs(self.dir_save, exist_ok=True)
         for image, seed in zip(images, states.seeds):
             PIL.Image.fromarray(image, 'RGB').save(os.path.join(self.dir_save, f"{seed}.png"))
