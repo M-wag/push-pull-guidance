@@ -1,12 +1,22 @@
 """Miscellaneous utility classes and functions."""
 
+import glob
+import hashlib
+import html
+import io
 import os
+import re
+import requests
+import tempfile
+import urllib
+import urllib.parse
+import uuid
 import numpy as np
 import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from typing import Any
+from typing import Any, BinaryIO, Optional
 from PIL import Image
 
 #----------------------------------------------------------------------------
@@ -25,6 +35,44 @@ class EasyDict(dict):
 
     def __delattr__(self, name: str) -> None:
         del self[name]
+
+#----------------------------------------------------------------------------
+# Cached construction of constant tensors. Avoids CPU=>GPU copy when the
+# same constant is used multiple times.
+
+_constant_cache = dict()
+
+def constant(value, shape=None, dtype=None, device=None, memory_format=None):
+    value = np.asarray(value)
+    if shape is not None:
+        shape = tuple(shape)
+    if dtype is None:
+        dtype = torch.get_default_dtype()
+    if device is None:
+        device = torch.device('cpu')
+    if memory_format is None:
+        memory_format = torch.contiguous_format
+
+    key = (value.shape, value.dtype, value.tobytes(), shape, dtype, device, memory_format)
+    tensor = _constant_cache.get(key, None)
+    if tensor is None:
+        tensor = torch.as_tensor(value.copy(), dtype=dtype, device=device)
+        if shape is not None:
+            tensor, _ = torch.broadcast_tensors(tensor, torch.empty(shape))
+        tensor = tensor.contiguous(memory_format=memory_format)
+        _constant_cache[key] = tensor
+    return tensor
+
+#----------------------------------------------------------------------------
+# Variant of constant() that inherits dtype and device from the given
+# reference tensor by default.
+
+def const_like(ref, value, shape=None, dtype=None, device=None, memory_format=None):
+    if dtype is None:
+        dtype = ref.dtype
+    if device is None:
+        device = ref.device
+    return constant(value, shape=shape, dtype=dtype, device=device, memory_format=memory_format)
 
 #----------------------------------------------------------------------------
 # Helper functions for loading in images from a path
@@ -215,3 +263,118 @@ def load_images(batch_template_info, device=None, dtype=None, for_torch=True, re
         batch_templates = torch.concat(batch_templates)
 
     return batch_templates
+
+#----------------------------------------------------------------------------
+
+_cache_dir = None
+
+def set_cache_dir(path: str) -> None:
+    global _cache_dir
+    _cache_dir = path
+
+def make_cache_dir_path(*paths: str) -> str:
+    if _cache_dir is not None:
+        return os.path.join(_cache_dir, *paths)
+    if 'DNNLIB_CACHE_DIR' in os.environ:
+        return os.path.join(os.environ['DNNLIB_CACHE_DIR'], *paths)
+    if 'HOME' in os.environ:
+        return os.path.join(os.environ['HOME'], '.cache', 'dnnlib', *paths)
+    if 'USERPROFILE' in os.environ:
+        return os.path.join(os.environ['USERPROFILE'], '.cache', 'dnnlib', *paths)
+    return os.path.join(tempfile.gettempdir(), '.cache', 'dnnlib', *paths)
+
+def _is_url(obj: Any, allow_file_urls: bool = False) -> bool:
+    if not isinstance(obj, str) or '://' not in obj:
+        return False
+    if allow_file_urls and obj.startswith('file://'):
+        return True
+    try:
+        res = urllib.parse.urlparse(obj)
+        if not res.scheme or not res.netloc or '.' not in res.netloc:
+            return False
+        res = urllib.parse.urlparse(urllib.parse.urljoin(obj, '/'))
+        if not res.scheme or not res.netloc or '.' not in res.netloc:
+            return False
+    except:
+        return False
+    return True
+
+def open_url(url: str, cache_dir: Optional[str] = None, num_attempts: int = 10,
+             verbose: bool = True, return_filename: bool = False, cache: bool = True) -> BinaryIO:
+    """Download the given URL and return a binary-mode file object to access the data."""
+    assert num_attempts >= 1
+    assert not (return_filename and not cache)
+
+    if not re.match('^[a-z]+://', url):
+        return url if return_filename else open(url, 'rb')  # type: ignore
+
+    if url.startswith('file://'):
+        filename = urllib.parse.urlparse(url).path
+        if re.match(r'^/[a-zA-Z]:', filename):
+            filename = filename[1:]
+        return filename if return_filename else open(filename, 'rb')  # type: ignore
+
+    assert _is_url(url)
+
+    if cache_dir is None:
+        cache_dir = make_cache_dir_path('downloads')
+
+    url_md5 = hashlib.md5(url.encode('utf-8')).hexdigest()
+    if cache:
+        cache_files = glob.glob(os.path.join(cache_dir, url_md5 + '_*'))
+        if len(cache_files) == 1:
+            filename = cache_files[0]
+            return filename if return_filename else open(filename, 'rb')  # type: ignore
+
+    url_name = None
+    url_data = None
+    with requests.Session() as session:
+        if verbose:
+            print('Downloading %s ...' % url, end='', flush=True)
+        for attempts_left in reversed(range(num_attempts)):
+            try:
+                with session.get(url) as res:
+                    res.raise_for_status()
+                    if len(res.content) == 0:
+                        raise IOError('No data received')
+                    if len(res.content) < 8192:
+                        content_str = res.content.decode('utf-8')
+                        if 'download_warning' in res.headers.get('Set-Cookie', ''):
+                            links = [html.unescape(link) for link in content_str.split('"') if 'export=download' in link]
+                            if len(links) == 1:
+                                url = urllib.parse.urljoin(url, links[0])
+                                raise IOError('Google Drive virus checker nag')
+                        if 'Google Drive - Quota exceeded' in content_str:
+                            raise IOError('Google Drive download quota exceeded -- please try again later')
+                    match = re.search(r'filename="([^"]*)"', res.headers.get('Content-Disposition', ''))
+                    url_name = match[1] if match else url
+                    url_data = res.content
+                    if verbose:
+                        print(' done')
+                    break
+            except KeyboardInterrupt:
+                raise
+            except:
+                if not attempts_left:
+                    if verbose:
+                        print(' failed')
+                    raise
+                if verbose:
+                    print('.', end='', flush=True)
+
+    assert url_data is not None
+    if cache:
+        assert url_name is not None
+        safe_name = re.sub(r'[^0-9a-zA-Z-._]', '_', url_name)
+        safe_name = safe_name[:min(len(safe_name), 128)]
+        cache_file = os.path.join(cache_dir, url_md5 + '_' + safe_name)
+        temp_file = os.path.join(cache_dir, 'tmp_' + uuid.uuid4().hex + '_' + url_md5 + '_' + safe_name)
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(temp_file, 'wb') as f:
+            f.write(url_data)
+        os.replace(temp_file, cache_file)
+        if return_filename:
+            return cache_file  # type: ignore
+
+    assert not return_filename
+    return io.BytesIO(url_data)
