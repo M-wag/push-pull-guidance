@@ -670,6 +670,12 @@ class Transform(ABC):
     def finalize(self, acc) -> Dict[str, float]:
         """All-reduce and return {feature_name: value}."""
 
+    @classmethod
+    def output_keys(cls, feature_names: List[str]) -> List[str]:
+        """Keys this transform's finalize() emits (without the transform prefix).
+        Override when a transform emits multiple values per feature."""
+        return list(feature_names)
+
 
 class FDTransform(Transform):
     def __init__(self, ref_stats):
@@ -741,10 +747,119 @@ class CSTransform(Transform):
         return results
 
 
+class PRTransform(Transform):
+    """k-NN precision and recall (Kynkäänniemi et al., 2019).
+
+    Real features come from `example_features_dir/{metric}.npy` (same layout as
+    CSTransform; index.csv ignored). Generated features stream in; precision is
+    accumulated per-batch, generated features are buffered for recall, which
+    needs the gen-gen k-NN radii known only after the last batch.
+    """
+    def __init__(self, example_features_dir, k=3, chunk_size=4096):
+        self.dir = example_features_dir
+        self.k = k
+        self.chunk_size = chunk_size
+
+    @classmethod
+    def output_keys(cls, feature_names):
+        return [f'{kind}_{f}' for f in feature_names for kind in ('precision', 'recall')]
+
+    def _kth_nn_radii(self, X):
+        out = torch.empty(X.shape[0], device=X.device, dtype=X.dtype)
+        for i0 in range(0, X.shape[0], self.chunk_size):
+            chunk = X[i0:i0 + self.chunk_size]
+            D = torch.cdist(chunk, X)
+            rows = torch.arange(D.shape[0], device=D.device)
+            D[rows, i0 + rows] = float('inf')
+            out[i0:i0 + D.shape[0]] = D.kthvalue(self.k, dim=1).values
+        return out
+
+    def init(self, feature_names, device):
+        self.device = device
+        acc = {}
+        for f in feature_names:
+            real = torch.from_numpy(np.ascontiguousarray(
+                np.load(os.path.join(self.dir, f'{f}.npy'))
+            )).to(device=device, dtype=torch.float32)
+            r_real = self._kth_nn_radii(real)
+            acc[f] = EasyDict(
+                real       = real,
+                r_real     = r_real,
+                gen_chunks = [],
+                prec_hits  = torch.zeros([], dtype=torch.int64, device=device),
+                gen_total  = torch.zeros([], dtype=torch.int64, device=device),
+            )
+        return acc
+
+    def update(self, acc, batch):
+        for f, s in acc.items():
+            g = batch.features[f].to(device=self.device, dtype=torch.float32)
+            hits = torch.zeros(g.shape[0], dtype=torch.bool, device=self.device)
+            for i0 in range(0, s.real.shape[0], self.chunk_size):
+                rchunk = s.real[i0:i0 + self.chunk_size]
+                D = torch.cdist(rchunk, g)
+                hits |= (D <= s.r_real[i0:i0 + rchunk.shape[0], None]).any(dim=0)
+            s.prec_hits += hits.sum().to(torch.int64)
+            s.gen_total += g.shape[0]
+            s.gen_chunks.append(g.detach())
+        return acc
+
+    def _all_gather_features(self, local):
+        if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
+            return local
+        world_size = torch.distributed.get_world_size()
+        parts = [None] * world_size
+        torch.distributed.all_gather_object(parts, local.cpu().numpy())
+        return torch.from_numpy(np.concatenate(parts, axis=0)).to(self.device)
+
+    def finalize(self, acc) -> Dict[str, float]:
+        results = {}
+        rank       = dist.get_rank()
+        world_size = dist.get_world_size()
+
+        for f, s in acc.items():
+            n_gen     = int(_all_reduce(s.gen_total).cpu())
+            prec_hits = int(_all_reduce(s.prec_hits).cpu())
+            results[f'precision_{f}'] = prec_hits / n_gen if n_gen > 0 else 0.0
+
+            dim = s.real.shape[1]
+            local_gen = (torch.cat(s.gen_chunks, dim=0) if s.gen_chunks
+                         else torch.zeros(0, dim, device=self.device, dtype=torch.float32))
+            all_gen = self._all_gather_features(local_gen)
+
+            r_gen = self._kth_nn_radii(all_gen)
+
+            real_shard = s.real[rank::world_size]
+            local_rec_hits = torch.zeros([], dtype=torch.int64, device=self.device)
+            for i0 in range(0, real_shard.shape[0], self.chunk_size):
+                rchunk = real_shard[i0:i0 + self.chunk_size]
+                hits = torch.zeros(rchunk.shape[0], dtype=torch.bool, device=self.device)
+                for j0 in range(0, all_gen.shape[0], self.chunk_size):
+                    gchunk = all_gen[j0:j0 + self.chunk_size]
+                    D = torch.cdist(rchunk, gchunk)
+                    hits |= (D <= r_gen[j0:j0 + gchunk.shape[0]][None, :]).any(dim=1)
+                local_rec_hits += hits.sum().to(torch.int64)
+            rec_hits = int(_all_reduce(local_rec_hits).cpu())
+            n_real = s.real.shape[0]
+            results[f'recall_{f}'] = rec_hits / n_real if n_real > 0 else 0.0
+
+        return results
+
+
 TRANSFORMS = {
     'fd': FDTransform,
     'cs': CSTransform,
+    'pr': PRTransform,
 }
+
+
+def metric_column_names(metrics: Dict[str, List[str]]) -> List[str]:
+    """Flat list of result keys produced by `calculate_metrics_from_iterable`
+    for the given {transform: [features]} spec, in stable order."""
+    cols = []
+    for t, fs in metrics.items():
+        cols += [f'{t}_{k}' for k in TRANSFORMS[t].output_keys(fs)]
+    return cols
 
 #----------------------------------------------------------------------------
 # Calculate metrics in a single pass over `image_iter`.
@@ -765,6 +880,7 @@ def calculate_metrics_from_iterable(
     transform_kwargs = {
         'fd': dict(ref_stats=ref_stats),
         'cs': dict(example_features_dir=example_features_dir),
+        'pr': dict(example_features_dir=example_features_dir),
     }
     transforms = {t: TRANSFORMS[t](**transform_kwargs[t]) for t in metrics}
 
