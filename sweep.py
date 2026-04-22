@@ -76,7 +76,7 @@ MODEL_DEFAULTS = {
     "edm": {
         "latent_dim":      3 * 64 * 64,
         "noise_shape":     (3, 64, 64),
-        "max_batch_size":  128,
+        "max_batch_size":  196,
         "vae_noise_shape": (4, 64 // 8, 64 // 8),      # SD VAE output shape for 64x64 EDM input
         "vae_latent_dim":  4 * (64 // 8) * (64 // 8),
     },
@@ -115,7 +115,7 @@ def load_wildti2i(path_dir, n_entries=None, indices=None):
     return path_imgs, target_prompts, dataset_indices
 
 
-def load_imgnet(path_dir, n_entries=None, indices=None):
+def load_imgnet_qualitative(path_dir, n_entries=None, indices=None):
     with open(os.path.join(path_dir, "imgnet_labels.yaml")) as f:
         label_names = yaml.safe_load(f)
     label_names = {int(k): str(v).split(",")[0] for k, v in label_names.items()}
@@ -668,7 +668,7 @@ def main():
         class_labels = None
         base_seeds = dataset_indices if SEED_BY_DATASET_INDEX else list(range(len(prompts)))
     else:
-        paths_example, class_labels, dataset_indices, prompts = load_imgnet(
+        paths_example, class_labels, dataset_indices, prompts = load_imgnet_qualitative(
             path_dir=examples_cfg.get("dataset", "data/imgnet64"),
             n_entries=examples_cfg.get("n_entries"),
             indices=examples_cfg.get("indices"))
@@ -710,11 +710,7 @@ def main():
         class_labels=class_labels_ex,
     )
 
-    gallery.generate(runner.build, runner.run,
-                     n_images=runner.n_images, rank=rank, world_size=world_size,
-                     raise_errors=RAISE_ERRORS)
-
-    # --- Baseline ---
+    # --- Baseline (run before sweep so solver state isn't left mutated) ---
     baseline_paths = None
     if rank == 0:
         if config.baseline_dir is None:
@@ -740,6 +736,12 @@ def main():
                 dynamics, solver, runner._make_inputs,
                 max_batch_size=runner.defaults["max_batch_size"],
             )
+    if world_size > 1:
+        torch.distributed.barrier()
+
+    gallery.generate(runner.build, runner.run,
+                     n_images=runner.n_images, rank=rank, world_size=world_size,
+                     raise_errors=RAISE_ERRORS)
 
     if world_size > 1:
         torch.distributed.barrier()
