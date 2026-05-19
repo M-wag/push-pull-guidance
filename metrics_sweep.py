@@ -141,7 +141,8 @@ def main():
         class_labels = None
         base_seeds = dataset_indices if SEED_BY_DATASET_INDEX else list(range(len(prompts)))
     else:
-        ds_path   = examples_cfg.get("dataset", "data/imgnet64")
+        default_ds = "data/imgnet512" if config.model.type == "edm2" else "data/imgnet64"
+        ds_path   = examples_cfg.get("dataset", default_ds)
         n_entries = examples_cfg.get("n_entries")
         paths_example, class_labels, dataset_indices, prompts = load_imgnet64(
             ds_path, n_entries=n_entries, seed=examples_cfg.get("seed", 0))
@@ -193,7 +194,7 @@ def main():
     axis_names = list(axes.keys())
 
     metric_columns = metric_column_names(metric_names)
-    fieldnames = ["cell_idx"] + axis_names + metric_columns + ["n_images", "seed"]
+    fieldnames = ["cell_idx"] + axis_names + metric_columns + ["n_images", "n_seeds", "seed"]
 
     for idx, flat_cell in iter_grid(axes):
         if rank == 0 and idx in done:
@@ -207,6 +208,8 @@ def main():
             continue
 
         cell_config = unflatten(flat_cell, config)
+        if rank == 0:
+            _save_cell_config(cell_config, config.output_dir, idx)
         runner.build(cell_config)
         inputs = runner._make_inputs()
 
@@ -222,6 +225,7 @@ def main():
             solver, dynamics, inputs,
             max_batch_size=runner.defaults["max_batch_size"],
             dir_out=cell_image_dir,
+            max_saved=n_sample_images,
         )
 
         dist.print0(f"[cell {idx}] {flat_cell}")
@@ -235,13 +239,15 @@ def main():
         if rank == 0:
             row = {"cell_idx": idx}
             for ax in axis_names:
-                row[ax] = flat_cell[ax]
+                row[ax] = cell_label(flat_cell[ax])
             for col in metric_columns:
                 row[col] = metrics.get(col)
             row["n_images"] = runner.n_images
+            row["n_seeds"] = n_seeds
             row["seed"] = examples_cfg.get("seed", 0)
             _append_csv_row(output_csv, row, fieldnames)
             done.add(idx)
+            _log_computed_cell(config.output_dir, idx, flat_cell, success=True, rank=rank)
 
         if world_size > 1:
             torch.distributed.barrier()
