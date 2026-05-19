@@ -329,6 +329,20 @@ class ProjectionCache:
                 basis, d, basis_kwargs, device="cuda")
         return self._spg_basis_cache[key]
 
+    def get_matrix_from_file(self, path):
+        if path not in self._cache:
+            data = torch.load(path, map_location="cpu", weights_only=False)
+            if isinstance(data, torch.Tensor):
+                mat = data.float()
+            elif isinstance(data, dict) and "components" in data:
+                mat = data["components"].float()
+            else:
+                raise ValueError(f"Cannot load matrix from {path!r}: expected a Tensor or dict with 'components'")
+            mat = mat.cuda()
+            mat_inv = torch.linalg.pinv(mat)
+            self._cache[path] = (mat, mat_inv)
+        return self._cache[path]
+
     def get_matrix(self, n_features, dim_in, dim_out, orthonormal, seed=2):
         if not orthonormal:
             return make_projection_matrix(
@@ -398,6 +412,14 @@ def build_map_layers(cfg: MapConfig, vf_inner, proj_cache: ProjectionCache, defa
                 device="cuda")
         elif cfg.projection == "lowpass":
             mat, mat_inv = proj_cache.get_lowpass(defaults["noise_shape"], dim_out)
+            maps = create_linear_maps(mat=mat, mat_inv=mat_inv, device="cuda")
+        elif cfg.projection == "matrix":
+            if cfg.matrix_path is None:
+                raise ValueError("projection='matrix' requires matrix_path to be set")
+            mat, mat_inv = proj_cache.get_matrix_from_file(cfg.matrix_path)
+            if dim_out is not None:
+                mat     = mat[:round(dim_out)]
+                mat_inv = torch.linalg.pinv(mat)
             maps = create_linear_maps(mat=mat, mat_inv=mat_inv, device="cuda")
         else:
             mat, mat_inv = proj_cache.get_matrix(
