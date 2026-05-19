@@ -182,3 +182,6 @@ data/
 !data/db/**
 outputs/
 
+.claude/
+trash/
+sweeps/
