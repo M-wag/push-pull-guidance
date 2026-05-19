@@ -78,9 +78,14 @@ MODEL_DEFAULTS = {
     "edm": {
         "latent_dim":      3 * 64 * 64,
         "noise_shape":     (3, 64, 64),
-        "max_batch_size":  196,
+        "max_batch_size":  128,
         "vae_noise_shape": (4, 64 // 8, 64 // 8),      # SD VAE output shape for 64x64 EDM input
         "vae_latent_dim":  4 * (64 // 8) * (64 // 8),
+    },
+    "edm2": {
+        "latent_dim":     4 * 64 * 64,                 # EDM2-img512 VAE latents: 4x64x64
+        "noise_shape":    (4, 64, 64),
+        "max_batch_size": 4,
     },
 }
 
@@ -165,7 +170,7 @@ def setup_pipeline_sd(model_cfg: SDModelConfig, solver_cfg):
     return pipe, dynamics, solver
 
 
-def setup_pipeline_edm(model_cfg: EDMModelConfig, solver_cfg: EDMSolverConfig):
+def setup_pipeline_edm(model_cfg, solver_cfg: EDMSolverConfig):
     from edm.dnnlib.util import import_net_from_url
     from generate import EDMDynamics, EDMSolver
 
@@ -175,14 +180,16 @@ def setup_pipeline_edm(model_cfg: EDMModelConfig, solver_cfg: EDMSolverConfig):
         num_steps       = solver_cfg.num_steps,
         sigma_max       = solver_cfg.sigma_max,
         apply_2nd_order = solver_cfg.second_order,
+        solver_seed     = solver_cfg.solver_seed,
     )
     _apply_edm_stochastic(solver, solver_cfg.stochastic)
     return dynamics, solver, encoder
 
 
 PIPELINE_SETUP = {
-    "sd":  setup_pipeline_sd,
-    "edm": setup_pipeline_edm,
+    "sd":   setup_pipeline_sd,
+    "edm":  setup_pipeline_edm,
+    "edm2": setup_pipeline_edm,
 }
 
 
