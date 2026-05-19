@@ -10,6 +10,7 @@ import argparse
 import gc
 import json
 import os
+import random
 import torch
 import torch.distributed
 import yaml
@@ -26,9 +27,9 @@ from ppg.ppg import (create_sgdm, create_spg, create_ppg_linear, make_projection
 from generate import (generate_images_local, InputsIterable, NoiseIterable,
                       ExampleImagesIterable, CombinedInputs)
 from sweeper import Gallery, load_sweep_config
-from sweeper.schema import (SweepConfig, SDModelConfig, EDMModelConfig,
+from sweeper.schema import (SweepConfig, SDModelConfig, EDMModelConfig, EDM2ModelConfig,
                              LinearMapConfig, SpgMapConfig, IdentityMapConfig,
-                             NonlinearMapConfig, MapConfig,
+                             NonlinearMapConfig, InterpolationMapConfig, MapConfig,
                              DDIMSolverConfig, EDMSolverConfig)
 
 # EDM paper Table 5 stochastic preset (ImageNet-64).
