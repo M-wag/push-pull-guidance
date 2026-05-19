@@ -644,13 +644,13 @@ def calculate_metrics_from_stats(
                 print(f'No statistics computed for {metric} -- skipping.')
             continue
         if verbose:
-            print(f'Calculating {metric}...')
+            dist.print0(f'Calculating {metric}...')
         m = np.square(stats[metric]['mu'] - ref[metric]['mu']).sum()
         s, _ = scipy.linalg.sqrtm(np.dot(stats[metric]['sigma'], ref[metric]['sigma']), disp=False)
         value = float(np.real(m + np.trace(stats[metric]['sigma'] + ref[metric]['sigma'] - s * 2)))
         results[metric] = value
         if verbose:
-            print(f'{metric} = {value:g}')
+            dist.print0(f'{metric} = {value:g}')
     return results
 
 #----------------------------------------------------------------------------
