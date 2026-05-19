@@ -393,8 +393,8 @@ def build_map_layers(cfg: MapConfig, vf_inner, proj_cache: ProjectionCache, defa
             basis_kwargs["shape"] = defaults["noise_shape"]
         basis_map = proj_cache.get_spg_basis(cfg.basis, d, basis_kwargs or None)
         vf_spg = create_spg(
-            type_gate=vf_inner.type_gate, nu=vf_inner.nu, d=d,
-            mean_scale=vf_inner.mean_scale, gate_n=vf_inner.gate_n,
+            type_gate=vf_inner.noise_gate.type_gate, nu=vf_inner.nu, d=d,
+            mean_scale=vf_inner._mean_scale_arg, gate_n=int(vf_inner.noise_gate.n),
             k_min=cfg.k_min, basis_map=basis_map, device="cuda")
         maps = create_linear_maps(device="cuda")
         pullbacks = [PullbackLinear()] * len(maps)
