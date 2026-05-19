@@ -205,8 +205,9 @@ class ImageIterable:
 # Wrapper around iterables that saves images to disk.
 
 class SavingIterable:
-    def __init__(self, dir_save):
+    def __init__(self, dir_save, max_images=None):
         self.dir_save = dir_save
+        self.max_images = max_images
 
     def __call__(self, iterable):
         self._iterable = iterable
@@ -216,19 +217,25 @@ class SavingIterable:
         return len(self._iterable)
 
     def __iter__(self):
+        saved = 0
         for states in self._iterable:
-            if self.dir_save is not None:
-                self.save(states)
+            if self.dir_save is not None and (self.max_images is None or saved < self.max_images):
+                saved += self.save(states, remaining=None if self.max_images is None else self.max_images - saved)
             yield states
 
-    def save(self, states):
+    def save(self, states, remaining=None):
         imgs = states.images.permute(0, 2, 3, 1).detach().cpu()
         if imgs.dtype != torch.uint8:
             imgs = (imgs * 255).clamp(0, 255).to(torch.uint8)
         images = imgs.numpy()
         os.makedirs(self.dir_save, exist_ok=True)
+        count = 0
         for image, seed in zip(images, states.seeds):
+            if remaining is not None and count >= remaining:
+                break
             PIL.Image.fromarray(image, 'RGB').save(os.path.join(self.dir_save, f"{seed}.png"))
+            count += 1
+        return count
 
 #----------------------------------------------------------------------------
 # HuggingFace Diffusers implementations
@@ -713,6 +720,7 @@ class EDMSolver(Solver):
         S_noise:          float = 1,
         apply_2nd_order:  bool  = True,
         verbose:          bool  = False,
+        solver_seed:      Optional[int] = None,
     ):
         self.num_steps       = num_steps
         self.sigma_min       = sigma_min
@@ -724,6 +732,7 @@ class EDMSolver(Solver):
         self.S_noise         = S_noise
         self.apply_2nd_order = apply_2nd_order
         self.verbose         = verbose
+        self.solver_seed     = solver_seed
 
     @torch.no_grad()
     def __call__(
@@ -750,6 +759,9 @@ class EDMSolver(Solver):
         # Initialize: x = σ_max · ε
         x_next = noise.to(torch.float64) * t_steps[0]
 
+        rng = (torch.Generator(device=noise.device).manual_seed(self.solver_seed)
+               if self.solver_seed is not None else None)
+
         xs = []
         x0s = []
         for i, (sigma_cur, sigma_next) in tqdm(
@@ -761,7 +773,7 @@ class EDMSolver(Solver):
             # Stochastic churn: temporarily increase noise
             gamma = min(self.S_churn / num_steps, np.sqrt(2) - 1) if (self.S_min <= sigma_cur <= self.S_max) else 0
             sigma_hat = sigma_cur + gamma * sigma_cur
-            x_hat = x_cur + (sigma_hat ** 2 - sigma_cur ** 2).sqrt() * self.S_noise * torch.randn_like(x_cur)
+            x_hat = x_cur + (sigma_hat ** 2 - sigma_cur ** 2).sqrt() * self.S_noise * torch.randn(x_cur.shape, dtype=x_cur.dtype, device=x_cur.device, generator=rng)
 
             # PF ODE d = -σ · score
             score = dynamics(x_hat, sigma_hat)
@@ -839,6 +851,7 @@ def generate_images(
 
     max_batch_size: int          = 32,
     dir_out:        Optional[str] = None,
+    max_saved:      Optional[int] = None,
     verbose:        bool          = False,
     device                       = torch.device("cuda"),
 ) -> Iterable:
@@ -862,7 +875,7 @@ def generate_images(
     image_iter = ImageIterable(solver, dynamics, verbose)(inputs)
 
     if dir_out:
-        image_iter = SavingIterable(dir_out)(image_iter)
+        image_iter = SavingIterable(dir_out, max_images=max_saved)(image_iter)
 
     return image_iter
 
