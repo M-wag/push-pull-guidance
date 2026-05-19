@@ -122,7 +122,57 @@ def load_wildti2i(path_dir, n_entries=None, indices=None):
     return path_imgs, target_prompts, dataset_indices
 
 
-def load_imgnet_qualitative(path_dir, n_entries=None, indices=None):
+def load_imgnet64(path_dir, n_entries=None, seed=0, combinations=None):
+    """Sample (init_img, class_label) pairs from data/imgnet64/<class>/<n>.png.
+
+    If combinations is given, select those specific (class, file_stem) pairs.
+    Otherwise randomly sample n_entries pairs deterministically by seed.
+    """
+    with open(os.path.join(path_dir, "imgnet_labels.yaml")) as f:
+        label_names = yaml.safe_load(f)
+    label_names = {int(k): str(v).split(",")[0] for k, v in label_names.items()}
+
+    class_dirs = sorted(
+        d for d in os.listdir(path_dir)
+        if d.isdigit() and os.path.isdir(os.path.join(path_dir, d))
+    )
+
+    global_index = {}
+    g = 0
+    for cls_dir in class_dirs:
+        cls_path = os.path.join(path_dir, cls_dir)
+        for fname in sorted(f for f in os.listdir(cls_path) if f.endswith('.png')):
+            global_index[(int(cls_dir), fname)] = g
+            g += 1
+
+    path_imgs, class_labels, dataset_indices, prompts = [], [], [], []
+
+    if combinations is not None:
+        for c in combinations:
+            cls_int, stem = int(c[0]), str(int(c[1]))
+            fname = stem + ".png"
+            full_path = os.path.join(path_dir, str(cls_int), fname)
+            path_imgs.append(full_path)
+            class_labels.append(cls_int)
+            dataset_indices.append(global_index.get((cls_int, fname), -1))
+            prompts.append(label_names.get(cls_int, str(cls_int)))
+    else:
+        rng = random.Random(seed)
+        for _ in range(n_entries):
+            cls = rng.choice(class_dirs)
+            cls_dir_path = os.path.join(path_dir, cls)
+            files = sorted(f for f in os.listdir(cls_dir_path) if f.endswith(".png"))
+            fname = rng.choice(files)
+            cls_int = int(cls)
+            path_imgs.append(os.path.join(cls_dir_path, fname))
+            class_labels.append(cls_int)
+            dataset_indices.append(global_index[(cls_int, fname)])
+            prompts.append(label_names.get(cls_int, cls))
+
+    return path_imgs, class_labels, dataset_indices, prompts
+
+
+def load_imgnet_qualitative(path_dir, n_entries=None, indices=None, combinations=None):
     with open(os.path.join(path_dir, "imgnet_labels.yaml")) as f:
         label_names = yaml.safe_load(f)
     label_names = {int(k): str(v).split(",")[0] for k, v in label_names.items()}
@@ -130,7 +180,14 @@ def load_imgnet_qualitative(path_dir, n_entries=None, indices=None):
     with open(os.path.join(path_dir, "my_samples.yaml")) as f:
         entries = yaml.safe_load(f)
 
-    if indices is not None:
+    if combinations is not None:
+        combo_set = {(int(c[0]), int(c[1])) for c in combinations}
+        selected = [(i, e) for i, e in enumerate(entries)
+                    if (int(e["source_label"]),
+                        int(os.path.splitext(os.path.basename(e["init_img"]))[0])) in combo_set]
+        dataset_indices = [i for i, _ in selected]
+        entries = [e for _, e in selected]
+    elif indices is not None:
         dataset_indices = list(indices)
         entries = [entries[i] for i in indices]
     elif n_entries is not None:
