@@ -6,15 +6,17 @@ See plan.md for the full design.
 
 import argparse
 import csv
+import json
 import os
 import random
+import time
 import yaml
 
 import torch
 import torch.distributed
 
 from generate import generate_images, MetadataIterable
-from sweeper import extract_axes, iter_grid, unflatten
+from sweeper import extract_axes, iter_grid, unflatten, cell_label
 from sweeper.schema import SDModelConfig
 from calculate_metrics import calculate_metrics_from_iterable, load_stats, metric_column_names
 from torch_utils import distributed as dist
@@ -22,51 +24,13 @@ from torch_utils import distributed as dist
 from sweep import (
     SweepRunner, ProjectionCache,
     PIPELINE_SETUP, precompute_ddim,
-    repeat_each, expand_seeds, load_wildti2i, load_imgnet_qualitative,
+    repeat_each, expand_seeds, load_wildti2i, load_imgnet_qualitative, load_imgnet64,
     SEED_BY_DATASET_INDEX,
 )
 
 
 # ---------------------------------------------------------------------------
 # Datasets
-
-def load_imgnet64(path_dir, n_entries, seed=0):
-    """Randomly sample (init_img, class_label) pairs from data/imgnet64/<class>/<n>.png.
-
-    source == target; each entry picks a random class and a random file within it.
-    Sampling is deterministic given `seed`.
-    """
-    with open(os.path.join(path_dir, "imgnet_labels.yaml")) as f:
-        label_names = yaml.safe_load(f)
-    label_names = {int(k): str(v).split(",")[0] for k, v in label_names.items()}
-
-    class_dirs = sorted(
-        d for d in os.listdir(path_dir)
-        if d.isdigit() and os.path.isdir(os.path.join(path_dir, d))
-    )
-
-    # Build global index map matching ImageNet64Iterable's ordering.
-    global_index = {}
-    g = 0
-    for cls_dir in class_dirs:
-        cls_path = os.path.join(path_dir, cls_dir)
-        for fname in sorted(f for f in os.listdir(cls_path) if f.endswith('.png')):
-            global_index[(int(cls_dir), fname)] = g
-            g += 1
-
-    rng = random.Random(seed)
-    path_imgs, class_labels, dataset_indices, prompts = [], [], [], []
-    for _ in range(n_entries):
-        cls = rng.choice(class_dirs)
-        cls_dir = os.path.join(path_dir, cls)
-        files = sorted(f for f in os.listdir(cls_dir) if f.endswith(".png"))
-        fname = rng.choice(files)
-        cls_int = int(cls)
-        path_imgs.append(os.path.join(cls_dir, fname))
-        class_labels.append(cls_int)
-        dataset_indices.append(global_index[(cls_int, fname)])
-        prompts.append(label_names.get(cls_int, cls))
-    return path_imgs, class_labels, dataset_indices, prompts
 
 
 # ---------------------------------------------------------------------------
