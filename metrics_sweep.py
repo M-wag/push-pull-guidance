@@ -45,15 +45,18 @@ def _load_metrics_sweep_config(path):
     output_csv           = raw.pop("output_csv", None)
     example_features_dir = raw.pop("example_features_dir", None)
     image_dir            = raw.pop("image_dir", None)
+    n_sample_images      = raw.pop("n_sample_images", None)
     solver = raw.setdefault("solver", {})
     if "type" not in solver:
-        solver["type"] = raw.get("model", {}).get("type", "edm")
+        model_type = raw.get("model", {}).get("type", "edm")
+        solver["type"] = "edm" if model_type == "edm2" else model_type
     from sweeper.schema import SweepConfig
     config = SweepConfig.model_validate(raw)
     if output_csv is None:
         output_csv = os.path.join(config.output_dir, "metrics.csv")
     return config, dict(ref_stats=ref_stats, metrics=metrics, output_csv=output_csv,
-                        example_features_dir=example_features_dir, image_dir=image_dir)
+                        example_features_dir=example_features_dir, image_dir=image_dir,
+                        n_sample_images=n_sample_images)
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +68,28 @@ def _read_done_indices(csv_path):
     with open(csv_path, newline="") as f:
         reader = csv.DictReader(f)
         return {int(r["cell_idx"]) for r in reader if r.get("cell_idx")}
+
+
+def _save_cell_config(cell_config, output_dir, idx):
+    configs_dir = os.path.join(output_dir, "configs")
+    os.makedirs(configs_dir, exist_ok=True)
+    with open(os.path.join(configs_dir, f"{idx:04d}.yaml"), "w") as f:
+        yaml.safe_dump(cell_config.model_dump(), f, sort_keys=False)
+
+
+def _log_computed_cell(output_dir, idx, flat_cell, success, rank=0, error=None):
+    os.makedirs(output_dir, exist_ok=True)
+    record = {
+        "idx":       idx,
+        "flat_cell": flat_cell,
+        "timestamp": time.time(),
+        "success":   success,
+        "rank":      rank,
+    }
+    if error is not None:
+        record["error"] = error
+    with open(os.path.join(output_dir, "computed_cells.jsonl"), "a") as f:
+        f.write(json.dumps(record, default=str) + "\n")
 
 
 def _append_csv_row(csv_path, row, fieldnames):
@@ -95,6 +120,7 @@ def main():
     output_csv           = extras["output_csv"]
     example_features_dir = extras["example_features_dir"]
     image_dir            = extras["image_dir"]
+    n_sample_images      = extras["n_sample_images"]
 
     # --- Pipeline setup ---
     pipeline = PIPELINE_SETUP[config.model.type](config.model, config.solver)
