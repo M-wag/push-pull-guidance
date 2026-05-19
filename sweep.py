@@ -48,6 +48,7 @@ def _reset_solver_to_schema_defaults(solver, solver_cfg):
         d = EDMSolverConfig()
         solver.sigma_max       = d.sigma_max
         solver.apply_2nd_order = d.second_order
+        solver.solver_seed     = d.solver_seed
         _apply_edm_stochastic(solver, d.stochastic)
     elif isinstance(solver_cfg, DDIMSolverConfig):
         solver.ddim_eta = DDIMSolverConfig().ddim_eta
@@ -396,6 +397,7 @@ class SweepRunner:
         elif isinstance(cell.solver, EDMSolverConfig):
             self.solver.sigma_max       = cell.solver.sigma_max
             self.solver.apply_2nd_order = cell.solver.second_order
+            self.solver.solver_seed     = cell.solver.solver_seed
             _apply_edm_stochastic(self.solver, cell.solver.stochastic)
 
         self.dynamics.ppg = None
