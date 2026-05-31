@@ -101,12 +101,28 @@ class ClipDetector(Detector):
             return self.model.to(x.device).get_image_features(**inputs)
 
 #----------------------------------------------------------------------------
+# Pixel-space "detector".
+
+class PixelDetector(Detector):
+    def __init__(self):
+        super().__init__(feature_dim=None)
+
+    def __call__(self, x): # NCHW, uint8 [0,255] => N(C*H*W), float32 in [-1, 1]
+        # Match the StandardRGBEncoder latent range so the cosine is computed in
+        # the same space as the encoded example pixels (state.examples).
+        x = (x.to(torch.float32) / 127.5 - 1).flatten(1)
+        if self.feature_dim is None:
+            self.feature_dim = x.shape[1]
+        return x
+
+#----------------------------------------------------------------------------
 # Metric specifications.
 
 metric_specs = {
     'inception': InceptionV3Detector,
     'dinov2':    DINOv2Detector,
     'clip':      ClipDetector,
+    'pixel':     PixelDetector,
 }
 
 #----------------------------------------------------------------------------
@@ -449,7 +465,7 @@ class ImageNet64Iterable:
 
 
 #----------------------------------------------------------------------------
-# Pre-compute and save features for cosine similarity (CSTransform).
+# Pre-compute and save features.
 # Saves {metric}.npy and index.csv to output_dir.
 
 def precompute_features_from_iterable(
@@ -714,27 +730,33 @@ class CSTransform(Transform):
 
     def init(self, feature_names, device):
         self.device = device
+        # Only learned features are read from disk; `pixel` comes from the batch.
         self.example_features = {
             f: np.load(os.path.join(self.dir, f'{f}.npy'), mmap_mode='r')
-            for f in feature_names
+            for f in feature_names if f != 'pixel'
         }
-        self.index = {
-            (cls, eid): row
-            for row, (cls, eid) in enumerate(load_csv(os.path.join(self.dir, 'index.csv')))
-        }
+        self.index = {}
+        if self.example_features:
+            self.index = {
+                (cls, eid): row
+                for row, (cls, eid) in enumerate(load_csv(os.path.join(self.dir, 'index.csv')))
+            }
         return {f: EasyDict(
             cum_sim = torch.zeros([], dtype=torch.float64, device=device),
             total   = torch.zeros([], dtype=torch.int64,   device=device),
         ) for f in feature_names}
 
     def update(self, acc, batch):
-        class_ids   = batch.images.class_id
-        example_ids = batch.images.example_id
-        rows = [self.index[int(c), int(e)] for c, e in zip(class_ids, example_ids)]
         for f, s in acc.items():
-            gen   = batch.features[f].to(torch.float32)
-            ref   = torch.from_numpy(np.ascontiguousarray(self.example_features[f][rows]))
-            ref   = ref.to(device=self.device, dtype=torch.float32)
+            gen = batch.features[f].to(torch.float32)
+            if f == 'pixel':
+                # Example rides along on the batch ([-1,1], row-aligned); use directly.
+                ref = batch.images.examples.to(device=self.device, dtype=torch.float32).flatten(1)
+            else:
+                rows = [self.index[int(c), int(e)]
+                        for c, e in zip(batch.images.class_id, batch.images.example_id)]
+                ref = torch.from_numpy(np.ascontiguousarray(self.example_features[f][rows]))
+                ref = ref.to(device=self.device, dtype=torch.float32)
             s.cum_sim += torch.nn.functional.cosine_similarity(gen, ref).sum().to(torch.float64)
             s.total   += batch.num_images_in_batch
         return acc
