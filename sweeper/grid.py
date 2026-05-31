@@ -35,6 +35,18 @@ def extract_axes(node, prefix="") -> dict:
     return axes
 
 
+def cell_label(v) -> str:
+    """Readable, path-safe string for a cell value (scalar or variant dict)."""
+    if isinstance(v, dict):
+        parts = [str(v["type"])] if "type" in v else []
+        for k, vv in v.items():
+            if k == "type":
+                continue
+            parts.append(f"{k}={cell_label(vv)}")
+        return "-".join(parts) if parts else "variant"
+    return str(v)
+
+
 def _split_path(path: str) -> list:
     """Split 'ppg.gate.n' or 'maps[1].dim_out' into a list of str/int keys."""
     parts = []
@@ -57,6 +69,25 @@ def _set_path(obj, path: str, value):
     obj[parts[-1]] = value
 
 
+def _merge_variants(obj):
+    """Recursively merge any 'variants' dict into its parent and drop the key.
+
+    A variant axis (ListAxis of dicts) lets you sweep a bundle like
+    {type: hill, n: 3} as a single cell. After _set_path, the chosen dict
+    sits at parent.variants; this pass hoists its keys onto the parent so
+    pydantic can validate without a stray 'variants' field.
+    """
+    if isinstance(obj, dict):
+        variant = obj.pop("variants", None)
+        if isinstance(variant, dict):
+            obj.update(variant)
+        for v in obj.values():
+            _merge_variants(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            _merge_variants(item)
+
+
 def unflatten(flat_cell: dict, base: SweepConfig) -> SweepConfig:
     """Return a new SweepConfig with all axis paths replaced by their cell values."""
     raw = base.model_dump()
@@ -64,6 +95,7 @@ def unflatten(flat_cell: dict, base: SweepConfig) -> SweepConfig:
         if isinstance(value, BaseModel):
             value = value.model_dump()
         _set_path(raw, path, value)
+    _merge_variants(raw)
     return SweepConfig.model_validate(raw)
 
 

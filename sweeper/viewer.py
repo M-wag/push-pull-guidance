@@ -222,10 +222,11 @@ h2 {
 }
 .single-card {
     text-align: center;
-}
-.single-card img {
     width: 25vw;
     min-width: 120px;
+}
+.single-card img {
+    width: 100%;
     border-radius: 4px;
     border: 1px solid var(--border);
     image-rendering: pixelated;
@@ -360,9 +361,33 @@ const fixedDiv = document.getElementById("fixed-params");
 const fixedParts = Object.entries(DATA.fixed).map(([k, v]) => `<span>${k}: ${v}</span>`);
 if (fixedParts.length) fixedDiv.innerHTML = "Fixed: " + fixedParts.join("");
 
+// Readable label for an axis value (mirrors Python _cell_label).
+function cellLabel(v) {
+    if (v === null || v === undefined) return String(v);
+    if (typeof v === "object") {
+        const parts = v.type ? [String(v.type)] : [];
+        for (const [k, vv] of Object.entries(v)) {
+            if (k === "type") continue;
+            parts.push(`${k}=${cellLabel(vv)}`);
+        }
+        return parts.length ? parts.join("-") : "variant";
+    }
+    return String(v);
+}
+
+// Stable string key for deep-equality comparison.
+function valKey(v) {
+    return (typeof v === "object" && v !== null) ? JSON.stringify(v) : String(v);
+}
+
+// Parse JSON if possible, otherwise return the raw string.
+function tryParseJSON(s) {
+    try { return JSON.parse(s); } catch { return s; }
+}
+
 function lookupEntry(params) {
     return entries.find(e =>
-        Object.keys(params).every(k => String(e.params[k]) === String(params[k]))
+        Object.keys(params).every(k => valKey(e.params[k]) === valKey(params[k]))
     );
 }
 
@@ -494,7 +519,9 @@ function buildControls() {
 function buildSelect(label, id, options, selected, onchange) {
     let html = `<div class="control-group"><label>${label}</label><select id="${id}" onchange="${onchange}">`;
     options.forEach(v => {
-        html += `<option value="${v}" ${String(v) === String(selected) ? 'selected' : ''}>${v}</option>`;
+        const key = valKey(v);
+        const safeKey = key.replace(/"/g, '&quot;');
+        html += `<option value="${safeKey}" ${valKey(selected) === key ? 'selected' : ''}>${cellLabel(v)}</option>`;
     });
     html += "</select></div>";
     return html;
@@ -512,8 +539,14 @@ function buildSlider(label, values, selected) {
 
 function setGridRow(v) { gridRowAxis = v; if (gridColAxis === v) gridColAxis = axisNames.find(n => n !== v) || v; buildControls(); render(); }
 function setGridCol(v) { gridColAxis = v; if (gridRowAxis === v) gridRowAxis = axisNames.find(n => n !== v) || v; buildControls(); render(); }
-function setFilter(axis, v) { filters[axis] = v; render(); }
-function setSingleVal(axis, v) { singleSelections[axis] = isNaN(v) ? v : (v.includes('.') ? parseFloat(v) : parseInt(v)); render(); }
+function setFilter(axis, v) { filters[axis] = tryParseJSON(v); render(); }
+function setSingleVal(axis, v) {
+    const parsed = tryParseJSON(v);
+    singleSelections[axis] = (typeof parsed === "string" && !isNaN(parsed) && parsed !== "")
+        ? (parsed.includes('.') ? parseFloat(parsed) : parseInt(parsed))
+        : parsed;
+    render();
+}
 function setSingleSlider(axis, idx, values) {
     singleSelections[axis] = values[idx];
     const el = document.getElementById(`slider-val-${axis}`);
@@ -546,11 +579,11 @@ function renderGrid() {
     });
 
     let html = "<table><thead><tr><th></th>";
-    colVals.forEach(cv => { html += `<th>${gridColAxis}=${cv}</th>`; });
+    colVals.forEach(cv => { html += `<th>${gridColAxis}=${cellLabel(cv)}</th>`; });
     html += "</tr></thead><tbody>";
 
     rowVals.forEach(rv => {
-        html += `<tr><td class="row-label">${gridRowAxis}=${rv}</td>`;
+        html += `<tr><td class="row-label">${gridRowAxis}=${cellLabel(rv)}</td>`;
         colVals.forEach(cv => {
             const params = { ...filterParams, [gridRowAxis]: rv, [gridColAxis]: cv };
             const entry = lookupEntry(params);
@@ -611,7 +644,7 @@ function renderSingle() {
         } else {
             html += `<div style="padding:4rem;color:var(--text-muted)">No image for these parameters</div>`;
         }
-        const paramStr = Object.entries(params).map(([k, v]) => `${k}=${v}`).join(", ");
+        const paramStr = Object.entries(params).map(([k, v]) => `${k}=${cellLabel(v)}`).join(", ");
         html += `<div class="caption">${paramStr}</div>`;
         if (prompts[currentSample]) html += `<div class="caption">${prompts[currentSample]}</div>`;
         html += "</div>";

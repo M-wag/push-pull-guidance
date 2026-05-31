@@ -431,9 +431,16 @@ def build_map_layers(cfg: MapConfig, vf_inner, proj_cache: ProjectionCache, defa
 
     if isinstance(cfg, NonlinearMapConfig):
         map_instance = proj_cache.get_map_instance(cfg.map_type, cfg.map_kwargs)
-        pb_kwargs = cfg.pullback_kwargs or {}
+        pb_kwargs = cfg.pullback.kwargs or {}
         maps = [FunctionMap(map_instance.forward, map_instance.inv)]
-        pullbacks = [registry_pullback[cfg.pullback](pb_kwargs)]
+        pullbacks = [registry_pullback[cfg.pullback.type](pb_kwargs)]
+        return maps, pullbacks, vf_inner
+
+    if isinstance(cfg, InterpolationMapConfig):
+        from ppg.ppg import InterpolationMap
+        maps = [InterpolationMap(cfg.shape_out, shape_in=cfg.shape_in, mode=cfg.mode,
+                                 align_corners=cfg.align_corners, antialias=cfg.antialias).to("cuda")]
+        pullbacks = [PullbackLinear()]
         return maps, pullbacks, vf_inner
 
     raise ValueError(f"Unknown map config type: {type(cfg)}")
@@ -458,7 +465,9 @@ class SweepRunner:
         self.class_labels  = class_labels
 
         self.noise_source     = config.noise_source
-        self.defaults         = MODEL_DEFAULTS[config.model.type]
+        self.defaults         = dict(MODEL_DEFAULTS[config.model.type])
+        if config.max_batch_size is not None:
+            self.defaults["max_batch_size"] = int(config.max_batch_size)
         self._example_tensors = None
 
         log_mode = config.logging.get("mode") if config.logging else None
@@ -511,9 +520,26 @@ class SweepRunner:
             layers, pullbacks, cur_vf_inner = build_map_layers(cfg, cur_vf_inner, self.proj_cache, effective_defaults)
             all_maps.extend(layers)
             all_pullbacks.extend(pullbacks)
-            if isinstance(cfg, NonlinearMapConfig):
-                cur_latent_dim  = self.defaults.get("vae_latent_dim",  cur_latent_dim)
-                cur_noise_shape = self.defaults.get("vae_noise_shape", cur_noise_shape)
+            if isinstance(cfg, InterpolationMapConfig):
+                C = cur_noise_shape[0]
+                cur_noise_shape = (C, cfg.shape_out[0], cfg.shape_out[1])
+                cur_latent_dim  = C * cfg.shape_out[0] * cfg.shape_out[1]
+            elif isinstance(cfg, NonlinearMapConfig):
+                orig_shape = self.defaults.get("noise_shape")
+                vae_shape  = self.defaults.get("vae_noise_shape")
+                if orig_shape and vae_shape and len(orig_shape) == len(vae_shape) == len(cur_noise_shape):
+                    # Scale VAE output shape proportionally to handle upstream spatial changes
+                    new_vae = tuple(
+                        round(v * c / o)
+                        for v, c, o in zip(vae_shape, cur_noise_shape, orig_shape)
+                    )
+                    cur_noise_shape = new_vae
+                    cur_latent_dim  = 1
+                    for s in new_vae:
+                        cur_latent_dim *= s
+                else:
+                    cur_latent_dim  = self.defaults.get("vae_latent_dim",  cur_latent_dim)
+                    cur_noise_shape = self.defaults.get("vae_noise_shape", cur_noise_shape)
             elif isinstance(cfg, (LinearMapConfig, SpgMapConfig)) and cfg.dim_out is not None:
                 cur_latent_dim = round(cfg.dim_out)
         composed_scale = 1.0
@@ -730,6 +756,8 @@ def _run_baseline(baseline_dir, meta, n_images, dynamics, solver, make_inputs_fn
 def main():
     parser = argparse.ArgumentParser(description="PPG parameter sweep")
     parser.add_argument("config", help="Path to sweep config YAML")
+    parser.add_argument("--build-html", action="store_true",
+                        help="Rebuild the HTML viewer from existing results without running the model")
     args = parser.parse_args()
 
     torch.set_grad_enabled(False)
@@ -757,10 +785,20 @@ def main():
         class_labels = None
         base_seeds = dataset_indices if SEED_BY_DATASET_INDEX else list(range(len(prompts)))
     else:
-        paths_example, class_labels, dataset_indices, prompts = load_imgnet_qualitative(
-            path_dir=examples_cfg.get("dataset", "data/imgnet64"),
-            n_entries=examples_cfg.get("n_entries"),
-            indices=examples_cfg.get("indices"))
+        default_ds = "data/imgnet512" if config.model.type == "edm2" else "data/imgnet64"
+        ds_path = examples_cfg.get("dataset", default_ds)
+        if "samples_yaml" in examples_cfg:
+            paths_example, class_labels, dataset_indices, prompts = load_imgnet_qualitative(
+                path_dir=os.path.dirname(examples_cfg["samples_yaml"]),
+                n_entries=examples_cfg.get("n_entries"),
+                indices=examples_cfg.get("indices"),
+                combinations=examples_cfg.get("combinations"))
+        else:
+            paths_example, class_labels, dataset_indices, prompts = load_imgnet64(
+                path_dir=ds_path,
+                n_entries=examples_cfg.get("n_entries"),
+                seed=examples_cfg.get("seed", 0),
+                combinations=examples_cfg.get("combinations"))
         base_seeds = dataset_indices if SEED_BY_DATASET_INDEX else list(range(len(class_labels)))
 
     # Expand everything example-major: image index i => example i//n_seeds, seed i%n_seeds
