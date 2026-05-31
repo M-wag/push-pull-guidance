@@ -25,7 +25,7 @@ Axis = Union[ListAxis, LinspaceAxis]
 class GateConfig(BaseModel):
     type: Literal["quadratic", "heaviside", "hill"] = "quadratic"
     nu:   Union[float, Axis]
-    n:    Union[int, Axis] = 3
+    n:    Union[int, float, Axis] = 3  # n = .inf turns the hill gate into a heaviside gate
     variants: Optional[ListAxis] = None
 
 
