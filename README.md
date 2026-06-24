@@ -1,6 +1,5 @@
 
 #   Push-Pull Guidance: Image Editing by Pushing-Forward the gradients of Latent Space
-- Mathematical diagram
 
 <p align="center">
   <img src="demo/fish.gif" width="480" alt="Push-Pull Guidance fish demo">
