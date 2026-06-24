@@ -11,7 +11,7 @@
 
 
 
-Given an input image, Push-Pull Guidance allows you to generated similar images, by using off the-shelf denoising diffusuin models. The method requires no re-training or finetuning and only requires a user to provide an image and indicate how strongly they want generated image to match the input. To be more precise, diffusion models operate by evolving a stochastic differential equation (SDE). We add an additional term to the SDE which guides the generation process towards a target image. 
+Given an input image, Push-Pull Guidance allows you to generate similar images, by using off the-shelf denoising diffusion models. The method requires no re-training or finetuning and only requires a user to provide an image and indicate how strongly they want the generated images to match the input. 
 
 ##  Exploring Different Parameters with Sweep Viewer
 We visualize our results using `sweep.py` which calls a config.
