@@ -1,0 +1,56 @@
+title: "EDM ImageNet 64x64 — PPG Pullback  Sweep"
+
+output_dir: demo/sweeps/fish
+baseline_dir: sweeps/baselines_fish
+
+model:
+  type: edm
+
+examples:
+  combinations: [[1, 0]]
+  n_seeds: 4
+  
+  
+snapshots:
+  enabled: true
+  steps: [1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31]
+
+noise_source: random
+max_batch_size: 48
+
+solver:
+  num_steps: 32
+  stochastic: true
+  second_order: true
+  solver_seed: 314
+
+ppg:
+  mean_scale: ve
+  normalize_variance: 
+    values: [none, decomposed]
+  gate:
+    decimals: 2 
+    type: hill
+    n:
+      values: [2, .inf]
+    nu:
+      values: [66.93, 55.74, 46.19, 38.07, 31.22, 25.45, 20.61, 16.59, 13.26, 10.52, 8.28, 6.46, 5.0, 3.83, 2.9, 2.17, 1.61, 1.17, 0.84]
+
+maps:
+  - type: interpolation
+    shape_in: [64,64]
+    antialias: true
+    shape_out: [128, 128]
+  - type: nonlinear
+    map_type: hf
+    map_kwargs:
+      autoencoder: kl
+      name: runwayml/stable-diffusion-v1-5
+      compile: true
+      half_precision: true
+      # compile_mode: max-autotune
+    pullback:
+      variants:
+        values: 
+          - {type: numdiff, kwargs: {step_size_slope: 1, step_size_intercept: 0}}
+
