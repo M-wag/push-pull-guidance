@@ -3,7 +3,7 @@
 - Mathematical diagram
 
 <p align="center">
-  <video src="demo/fish.mp4" width="480" autoplay loop muted playsinline></video>
+  <img src="demo/fish.gif" width="480" alt="Push-Pull Guidance fish demo">
 </p>
 
 ##  Official Pytorch Implemetation of Push-Pull Guidance
