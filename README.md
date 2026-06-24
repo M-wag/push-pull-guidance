@@ -13,6 +13,18 @@
 
 Given an input image, Push-Pull Guidance allows you to generate similar images, by using off the-shelf denoising diffusion models. The method requires no re-training or finetuning and only requires a user to provide an image and indicate how strongly they want the generated images to match the input. 
 
+##  Requirements
+
+Create the conda environment from the provided `requirements.yaml`:
+
+```.bash
+conda env create -f requirements.yaml
+conda activate edm-cuda
+```
+
+The PPG algorithm lives in a git submodule, so clone with `--recurse-submodules`
+(or run `git submodule update --init` after cloning).
+
 ##  Exploring Different Parameters with Sweep Viewer
 We visualize our results using `sweep.py` which calls a config.
 
