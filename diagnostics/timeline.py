@@ -198,7 +198,7 @@ def make_timeline_report(save_path="timeline.html"):
     snapshot_indices = [0, 4, 9, 14, 19, 24, 29, 34, 39, 44, 49]
     solver = DDIMSolver(scheduler=pipe.scheduler, num_inference_steps=num_vis_steps)
     dynamics = StableDiffusionDynamics(
-        unet=pipe.unet, vae=pipe.vae, guidance_scale=7.5, scheduler=pipe.scheduler)
+        net=pipe.unet, encoder=VAEEncoder(pipe.vae), guidance_scale=7.5, scheduler=pipe.scheduler)
     encoder = dynamics.encoder
 
     # Use a single prompt/seed for clarity
