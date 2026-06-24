@@ -19,7 +19,7 @@ import yaml
 from PIL import Image
 
 from .schema import SweepConfig
-from .grid import extract_axes, iter_grid, unflatten, cell_label
+from .grid import extract_axes, iter_grid, unflatten, cell_label, inf_to_json, json_to_inf
 
 
 def _freeze(v):
@@ -71,7 +71,7 @@ class Gallery:
             record["error"] = error
         path = os.path.join(self.output_dir, "computed_cells.jsonl")
         with open(path, "a") as f:
-            f.write(json.dumps(record, default=str) + "\n")
+            f.write(json.dumps(inf_to_json(record), default=str) + "\n")
 
     def _cell_complete(self, cell_dir, n_images):
         if not os.path.isdir(cell_dir):

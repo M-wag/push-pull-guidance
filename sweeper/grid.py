@@ -1,11 +1,40 @@
 """Axis discovery, grid iteration, and cell materialization for parameter sweeps."""
 
 import itertools
+import math
 
 import numpy as np
 from pydantic import BaseModel
 
 from .schema import SweepConfig, ListAxis, LinspaceAxis
+
+
+# JSON has no literal for non-finite floats. Python's json writes the bare
+# token `Infinity`, which is valid inline JS but breaks JSON.parse and renders
+# as `null` under JSON.stringify. Round-trip non-finite floats as strings so the
+# on-disk JSON is valid everywhere and the value stays self-describing.
+def inf_to_json(obj):
+    """Recursively replace non-finite floats with string sentinels for JSON."""
+    if isinstance(obj, float) and not math.isfinite(obj):
+        if math.isnan(obj):
+            return "nan"
+        return "inf" if obj > 0 else "-inf"
+    if isinstance(obj, dict):
+        return {k: inf_to_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [inf_to_json(v) for v in obj]
+    return obj
+
+
+def json_to_inf(obj):
+    """Inverse of inf_to_json: restore non-finite floats from string sentinels."""
+    if isinstance(obj, str):
+        return {"inf": math.inf, "-inf": -math.inf, "nan": math.nan}.get(obj, obj)
+    if isinstance(obj, dict):
+        return {k: json_to_inf(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [json_to_inf(v) for v in obj]
+    return obj
 
 
 def _resolve_axis(axis) -> list:
@@ -69,6 +98,32 @@ def _set_path(obj, path: str, value):
     obj[parts[-1]] = value
 
 
+def _variant_key_unions(obj, path=()):
+    """Find every variants axis and the union of keys across its option dicts.
+
+    Returns a list of (path_to_parent, union_of_keys). Used to strip keys that
+    _prefill_variants copied from the first variant onto the parent but that the
+    chosen variant does not set (e.g. a numdiff variant's `kwargs` leaking into a
+    jvp cell).
+    """
+    results = []
+    if isinstance(obj, dict):
+        variants = obj.get("variants")
+        if isinstance(variants, dict):
+            keys = set()
+            for val in (variants.get("values") or []):
+                if isinstance(val, dict):
+                    keys |= set(val.keys())
+            if keys:
+                results.append((path, keys))
+        for k, v in obj.items():
+            results.extend(_variant_key_unions(v, path + (k,)))
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            results.extend(_variant_key_unions(item, path + (i,)))
+    return results
+
+
 def _merge_variants(obj):
     """Recursively merge any 'variants' dict into its parent and drop the key.
 
@@ -91,10 +146,22 @@ def _merge_variants(obj):
 def unflatten(flat_cell: dict, base: SweepConfig) -> SweepConfig:
     """Return a new SweepConfig with all axis paths replaced by their cell values."""
     raw = base.model_dump()
+    # Capture variant key sets before _set_path overwrites the variants axis.
+    variant_unions = _variant_key_unions(raw)
     for path, value in flat_cell.items():
         if isinstance(value, BaseModel):
             value = value.model_dump()
         _set_path(raw, path, value)
+    # Drop keys prefilled from the first variant that the chosen variant omits,
+    # so they don't leak across variants (e.g. numdiff `kwargs` into jvp).
+    for path, keys in variant_unions:
+        parent = raw
+        for part in path:
+            parent = parent[part]
+        chosen = parent.get("variants")
+        chosen_keys = set(chosen) if isinstance(chosen, dict) else set()
+        for k in keys - chosen_keys:
+            parent.pop(k, None)
     _merge_variants(raw)
     return SweepConfig.model_validate(raw)
 

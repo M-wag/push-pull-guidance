@@ -542,8 +542,10 @@ function setGridCol(v) { gridColAxis = v; if (gridRowAxis === v) gridRowAxis = a
 function setFilter(axis, v) { filters[axis] = tryParseJSON(v); render(); }
 function setSingleVal(axis, v) {
     const parsed = tryParseJSON(v);
-    singleSelections[axis] = (typeof parsed === "string" && !isNaN(parsed) && parsed !== "")
-        ? (parsed.includes('.') ? parseFloat(parsed) : parseInt(parsed))
+    // Number() (not parseInt) so "Infinity" maps to Infinity, matching how
+    // gate.n=inf is serialized; parseInt("Infinity") would give NaN.
+    singleSelections[axis] = (typeof parsed === "string" && parsed !== "" && !isNaN(parsed))
+        ? Number(parsed)
         : parsed;
     render();
 }
