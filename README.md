@@ -25,6 +25,7 @@ conda activate edm-cuda
 The PPG algorithm lives in a git submodule, so clone with `--recurse-submodules`
 (or run `git submodule update --init` after cloning).
 
+
 ##  Exploring Different Parameters with Sweep Viewer
 We visualize our results using `sweep.py` which calls a config.
 
@@ -135,6 +136,83 @@ it should be computed over:
 Each row of the output CSV is one grid cell (one parameter combination) with a
 column per requested `type × extractor`, so you can rank settings or plot a
 metric against any swept axis (e.g. content similarity vs. gate steepness `nu`).
+
+##  Preparing the Data
+
+The sweep and metrics scripts read everything from `data/`. The repository ships
+the small YAML configs, but the images, reference statistics, and cached features
+have to be assembled locally. The layout is:
+
+```
+data/
+├── refs/                       # reference dataset statistics (for FD)
+│   ├── edm-1-imagnet-64x64.pkl
+│   └── edm-2-imagenet-64x64.pkl
+├── imgnet64/
+│   ├── <class_id>/*.png        # validation images, one folder per ImageNet class
+│   ├── imgnet_labels.yaml      # class id → human-readable label  (in repo)
+│   ├── my_samples.yaml         # hand-picked editing examples     (in repo)
+│   └── features/               # cached features (built locally)
+│       ├── clip.npy
+│       ├── dinov2.npy
+│       └── index.csv
+├── imgnet512/                  # same structure as imgnet64
+└── wild-ti2i/
+    ├── data/                   # source images
+    ├── wild-ti2i-real.yaml     # real-image editing prompts        (in repo)
+    └── wild-ti2i-fake.yaml     # generated-image editing prompts    (in repo)
+```
+
+### Reference statistics (`data/refs/`)
+
+The `.pkl` files hold the precomputed Inception/DINOv2 statistics of the
+reference dataset used for the Fréchet Distance metric. They come from NVlabs'
+[edm](https://github.com/NVlabs/edm) and
+[edm2](https://github.com/NVlabs/edm2) repositories — follow their instructions
+for computing (or downloading) reference statistics and place the resulting
+`.pkl` files here.
+
+### `imgnet64` and `imgnet512`
+
+**Class images.** Each `<class_id>/` folder holds the ImageNet validation
+images for that class (e.g. `data/imgnet64/65/0.png`). For building the cropped
+64×64 validation set, see this
+[Kaggle notebook](https://www.kaggle.com/code/brandonchinalien/download-cropped-validation-set-64x64);
+the 512×512 set is assembled the same way at the higher resolution. `imgnet512`
+mirrors the `imgnet64` layout exactly.
+
+**`imgnet_labels.yaml`.** The class id → label mapping (`0: "tench, Tinca
+tinca"`, …). Shipped in the repo; no action needed.
+
+**`my_samples.yaml`.** A hand-picked set of editing examples referenced by the
+sweep configs (`examples.samples_yaml`). Each entry points at one source image
+and its source/target labels:
+
+```yaml
+- init_img: "data/imgnet64/my_samples/237/21.png"
+  source_label: 237
+  target_label: 237
+```
+
+This file provided to the repo. To curate your own, just list the images you
+want to edit in the same format.
+
+**`features/`.** Cached embeddings of the class images, used to compute content
+similarity and precision/recall without re-extracting on every run (see
+`example_features_dir` in the metrics config). Build them by running each feature
+extractor (`clip`, `dinov2`) over the class images and saving one array per
+extractor plus an index that maps array rows back to images:
+
+- `clip.npy`, `dinov2.npy` — an `N × D` array, one row per image, in a fixed order.
+- `index.csv` — `N` rows of `<class_id>,<image_index>` giving, for each row of
+  the feature arrays, which image it was computed from (e.g. `65,0` ↔
+  `data/imgnet64/65/0.png`).
+
+### `wild-ti2i`
+
+The image-to-image translation benchmark is taken from the
+[Plug-and-Play](https://github.com/MichalGeyer/plug-and-play) repository. Place
+its source images under `data/wild-ti2i/data/`. 
 
 ##  References
 This repository was heavily inspired by the following repositories:
