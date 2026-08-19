@@ -1,0 +1,54 @@
+title: "EDM ImageNet 64x64 — PPG Pixel Sweep"
+
+output_dir: sweeps/survey/pushpull
+baseline_dir: sweeps/survey/baselines
+
+model:
+  type: edm
+
+examples:
+  samples_yaml: data/imgnet64/my_samples.yaml
+  n_entries : 50
+  n_seeds : 9
+  seed: 0
+  
+snapshots:
+  enabled: true
+  steps: [1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31]
+
+noise_source: random
+max_batch_size: 24
+
+solver:
+  type: edm
+  num_steps: 32
+  stochastic: true
+  second_order: true
+  solver_seed: 0
+
+
+ppg:
+  mean_scale: ve
+  normalize_variance: decomposed
+  gate:
+    type: heaviside
+    nu:
+      values: [80.0, 66.93, 55.74, 46.19, 38.07, 31.22, 25.45, 20.61, 16.59, 13.26, 10.52, 8.28, 6.46, 5.0, 3.83, 2.9, 2.17, 1.61, 1.17, 0.84, 0.6, 0.0]
+
+
+maps:
+  - type: interpolation
+    shape_in: [64,64]
+    antialias: true
+    shape_out: [128, 128]
+  - type: nonlinear
+    map_type: hf
+    map_kwargs:
+      autoencoder: kl
+      name: runwayml/stable-diffusion-v1-5
+      compile: true
+      half_precision: true
+      compile_mode: max-autotune
+    pullback:
+      type: numdiff
+      kwargs: {step_size_slope: 1, step_size_intercept: 0}

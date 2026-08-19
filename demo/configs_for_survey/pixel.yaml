@@ -1,0 +1,38 @@
+title: "EDM ImageNet 64x64 — PPG Pixel Sweep"
+
+output_dir: sweeps/survey/pixel
+baseline_dir: sweeps/survey/baselines
+
+model:
+  type: edm
+
+examples:
+  samples_yaml: data/imgnet64/my_samples.yaml
+  n_entries : 50
+  n_seeds : 9
+  seed: 0
+  
+snapshots:
+  enabled: true
+  steps: [1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31]
+
+noise_source: random
+max_batch_size: 396
+
+solver:
+  type: edm
+  num_steps: 32
+  stochastic: true
+  second_order: true
+  solver_seed: 0
+
+ppg:
+  mean_scale: ve
+  normalize_variance: decomposed 
+  gate:
+    decimals: 2
+    type: quadratic
+    nu:
+      values: [80.0, 66.93, 55.74, 46.19, 38.07, 31.22, 25.45, 20.61, 16.59, 13.26, 10.52, 8.28, 6.46, 5.0, 3.83, 2.9, 2.17, 1.61, 1.17, 0.84, 0.6, 0.0]
+
+
