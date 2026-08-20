@@ -159,8 +159,13 @@ class Solver(ABC):
         self,
         dynamics: Dynamics,
         noise: torch.Tensor,
+        sample_seeds: Optional[List[int]] = None,
     ) -> Tuple[List[torch.Tensor], Any]:
-        """Integrate dynamics from t=T to t=0. Returns (xs, aux); xs[-1] is final latent."""
+        """Integrate dynamics from t=T to t=0. Returns (xs, aux); xs[-1] is final latent.
+
+        sample_seeds: one seed per row of noise, identifying the sample globally.
+        Randomness is keyed per sample so results do not depend on batching.
+        """
 
 
 #----------------------------------------------------------------------------
@@ -191,7 +196,7 @@ class ImageIterable:
     def _process_batch(self, state):
         if len(state.seeds) > 0:
             self.dynamics.update(state)
-            xs, x0s = self.solver(self.dynamics, state.noise)
+            xs, x0s = self.solver(self.dynamics, state.noise, state.seeds)
             state.images = self.dynamics.encoder.decode(xs[-1])
             if self.snapshot_steps is not None:
                 snap_src = (x0s if (self.snapshot_as_x0 and x0s) else xs)
@@ -734,11 +739,21 @@ class EDMSolver(Solver):
         self.verbose         = verbose
         self.solver_seed     = solver_seed
 
+    def _churn_noise_fn(self, noise, sample_seeds):
+        """Return eps(x) drawing churn noise: per-sample when seeds are given, so results
+        are batch-size invariant; else per-batch as keyed by solver_seed; else global."""
+        if self.solver_seed is not None and sample_seeds is not None:
+            rnd = StackedRandomGenerator(noise.device, [int(s) * 1000003 + self.solver_seed + 1 for s in sample_seeds])
+            return lambda x: rnd.randn(x.shape, dtype=x.dtype, device=x.device)
+        rng = torch.Generator(device=noise.device).manual_seed(self.solver_seed) if self.solver_seed is not None else None
+        return lambda x: torch.randn(x.shape, dtype=x.dtype, device=x.device, generator=rng)
+
     @torch.no_grad()
     def __call__(
         self,
         dynamics: Dynamics,
         noise: torch.Tensor,
+        sample_seeds: Optional[List[int]] = None,
     ) -> Tuple[List[torch.Tensor], Any]:
 
         num_steps = self.num_steps
@@ -759,8 +774,7 @@ class EDMSolver(Solver):
         # Initialize: x = σ_max · ε
         x_next = noise.to(torch.float64) * t_steps[0]
 
-        rng = (torch.Generator(device=noise.device).manual_seed(self.solver_seed)
-               if self.solver_seed is not None else None)
+        churn_noise = self._churn_noise_fn(noise, sample_seeds)
 
         xs = []
         x0s = []
@@ -773,7 +787,7 @@ class EDMSolver(Solver):
             # Stochastic churn: temporarily increase noise
             gamma = min(self.S_churn / num_steps, np.sqrt(2) - 1) if (self.S_min <= sigma_cur <= self.S_max) else 0
             sigma_hat = sigma_cur + gamma * sigma_cur
-            x_hat = x_cur + (sigma_hat ** 2 - sigma_cur ** 2).sqrt() * self.S_noise * torch.randn(x_cur.shape, dtype=x_cur.dtype, device=x_cur.device, generator=rng)
+            x_hat = x_cur + (sigma_hat ** 2 - sigma_cur ** 2).sqrt() * self.S_noise * churn_noise(x_cur)
 
             # PF ODE d = -σ · score
             score = dynamics(x_hat, sigma_hat)
