@@ -185,3 +185,7 @@ outputs/
 .claude/
 trash/
 sweeps/
+.scratch/
+runs/
+cache/
+scratch/
